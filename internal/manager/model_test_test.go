@@ -943,7 +943,7 @@ func TestBuildModelProbeAntigravityUsesCloudCodeGenerateContent(t *testing.T) {
 		t.Fatalf("buildModelProbe() supported=%v error=%v", supported, errProbe)
 	}
 	if model != defaultAntigravityProbeModel || probe.kind != "antigravity" ||
-		probe.url != "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent" {
+		probe.url != antigravityGenerateContentURLs[0] {
 		t.Fatalf("probe = %#v model=%q", probe, model)
 	}
 	if probe.headers["User-Agent"] != antigravityQuotaUserAgent || probe.headers["Authorization"] != "Bearer $TOKEN$" {
@@ -1007,6 +1007,54 @@ func TestHandleAccountModelTestAntigravityAcceptsWrappedCloudCodeCandidates(t *t
 	}
 	if strings.Contains(string(response.Body), "ag-secret") || strings.Contains(received.Data, "ag-secret") {
 		t.Fatal("model test leaked access token")
+	}
+}
+
+func TestHandleAccountModelTestAntigravityFallsThrough404Hosts(t *testing.T) {
+	host := &fakeAuthHost{
+		entries: []cpaapi.HostAuthFileEntry{{
+			AuthIndex: "ag-1", Name: "ag.json", Provider: "antigravity", Type: "antigravity",
+			ProjectID: "gcp-project", Source: "file", Path: "/auths/ag.json",
+		}},
+		details: map[string]cpaapi.HostAuthGetResponse{
+			"ag-1": {AuthIndex: "ag-1", Name: "ag.json", Path: "/auths/ag.json", JSON: json.RawMessage(`{"type":"antigravity","access_token":"ag-secret","project_id":"gcp-project"}`)},
+		},
+	}
+	var urls []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var call managementAPICallRequest
+		_ = json.NewDecoder(request.Body).Decode(&call)
+		urls = append(urls, call.URL)
+		status := http.StatusNotFound
+		body := `{"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND"}}`
+		if strings.Contains(call.URL, "cloudcode-pa.googleapis.com/v1internal:generateContent") && !strings.Contains(call.URL, "daily-") {
+			status = http.StatusOK
+			body = `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]}}]}}`
+		}
+		_ = json.NewEncoder(writer).Encode(managementAPICallResponse{StatusCode: status, Body: managementAPICallBody(body)})
+	}))
+	defer server.Close()
+	app := NewApp(host, []byte("index"))
+	app.modelTests.doer = server.Client()
+	app.Configure([]byte("data_dir: " + t.TempDir() + "\nmanagement_base_url: " + server.URL + "\n"))
+	defer app.Close()
+	response := app.HandleManagement(context.Background(), cpaapi.ManagementRequest{
+		Method: http.MethodPost, Path: "/v0/management/plugins/cpa-account-config-manager/accounts/model-test",
+		Headers: http.Header{"Authorization": []string{"Bearer management-secret"}},
+		Body:    []byte(`{"account_id":"ag-1","model":"gemini-3.7-flash-high"}`),
+	})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("model test = %d %s", response.StatusCode, response.Body)
+	}
+	var result ModelTestResult
+	if errDecode := json.Unmarshal(response.Body, &result); errDecode != nil {
+		t.Fatalf("decode result: %v", errDecode)
+	}
+	if result.Status != "available" || result.ReasonCode != "model_response_ok" {
+		t.Fatalf("result = %#v urls=%v", result, urls)
+	}
+	if len(urls) < 2 || urls[0] == urls[len(urls)-1] {
+		t.Fatalf("expected host fallback, urls=%v", urls)
 	}
 }
 

@@ -20,15 +20,20 @@ import (
 )
 
 const (
-	modelTestTimeout              = 20 * time.Second
-	maxModelTestResponseBytes     = 256 << 10
-	maxModelTestBodyBytes         = 128 << 10
-	maxModelIdentifierLength      = 128
-	defaultCodexFallbackModel     = "gpt-5.5"
-	codexCompatibilityMiniModel   = "gpt-5.4-mini"
-	defaultAntigravityProbeModel  = "gemini-3.7-flash-high"
-	antigravityGenerateContentURL = "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent"
+	modelTestTimeout             = 20 * time.Second
+	maxModelTestResponseBytes    = 256 << 10
+	maxModelTestBodyBytes        = 128 << 10
+	maxModelIdentifierLength     = 128
+	defaultCodexFallbackModel    = "gpt-5.5"
+	codexCompatibilityMiniModel  = "gpt-5.4-mini"
+	defaultAntigravityProbeModel = "gemini-3.7-flash-high"
 )
+
+var antigravityGenerateContentURLs = []string{
+	"https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent",
+	"https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:generateContent",
+	"https://cloudcode-pa.googleapis.com/v1internal:generateContent",
+}
 
 var (
 	ErrModelTestBusy            = errors.New("too many model tests are running")
@@ -132,6 +137,7 @@ type modelProbe struct {
 	kind    string
 	method  string
 	url     string
+	urls    []string
 	headers map[string]string
 	data    string
 }
@@ -532,7 +538,7 @@ func shouldFallbackCodexModel(probe modelProbe, model string, response modelProb
 func (s *ModelTestService) callAccountProbe(ctx context.Context, managementBaseURL, managementKey, callbackID string, account Account, probe modelProbe) (modelProbeHTTPResponse, error) {
 	provider := strings.ToLower(strings.TrimSpace(firstNonEmpty(account.Provider, account.Type)))
 	if provider != agentIdentityProvider {
-		return s.callManagementAPI(ctx, managementBaseURL, managementKey, account.ID, probe)
+		return s.callManagementAPIWithFallback(ctx, managementBaseURL, managementKey, account.ID, probe)
 	}
 	if s == nil || s.agentIdentity == nil || s.accounts == nil || s.accounts.host == nil {
 		return modelProbeHTTPResponse{}, fmt.Errorf("Agent Identity model-test executor is unavailable")
@@ -753,7 +759,10 @@ func buildModelProbe(provider, requestedModel string, metadata modelTestAuthMeta
 				"generationConfig": map[string]int{"maxOutputTokens": 1},
 			},
 		})
-		return modelProbe{kind: "antigravity", method: http.MethodPost, url: antigravityGenerateContentURL, headers: antigravityQuotaHeaders(), data: data}, model, true, errMarshal
+		return modelProbe{
+			kind: "antigravity", method: http.MethodPost, url: antigravityGenerateContentURLs[0],
+			urls: antigravityGenerateContentURLs[1:], headers: antigravityQuotaHeaders(), data: data,
+		}, model, true, errMarshal
 	case "xai", "grok":
 		if model == "" {
 			model = "grok-4"
@@ -812,6 +821,25 @@ func bearerJSONHeaders(streaming bool) map[string]string {
 		"Authorization": "Bearer $TOKEN$",
 		"Content-Type":  "application/json",
 	}
+}
+
+func (s *ModelTestService) callManagementAPIWithFallback(ctx context.Context, managementBaseURL, managementKey, authIndex string, probe modelProbe) (modelProbeHTTPResponse, error) {
+	response, errCall := s.callManagementAPI(ctx, managementBaseURL, managementKey, authIndex, probe)
+	if errCall != nil {
+		return response, errCall
+	}
+	for _, nextURL := range probe.urls {
+		if response.StatusCode != http.StatusNotFound && response.StatusCode != http.StatusForbidden {
+			return response, nil
+		}
+		next := probe
+		next.url = nextURL
+		response, errCall = s.callManagementAPI(ctx, managementBaseURL, managementKey, authIndex, next)
+		if errCall != nil {
+			return response, errCall
+		}
+	}
+	return response, nil
 }
 
 func (s *ModelTestService) callManagementAPI(ctx context.Context, managementBaseURL, managementKey, authIndex string, probe modelProbe) (modelProbeHTTPResponse, error) {
