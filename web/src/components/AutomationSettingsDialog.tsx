@@ -28,7 +28,7 @@ export function AutomationSettingsDialog({
   const [scanManuallyDisabled, setScanManuallyDisabled] = useState(inspection.scan_manually_disabled);
   const [probeInterval, setProbeInterval] = useState(String(inspection.model_probe_interval_minutes));
   const [probeBatchSize, setProbeBatchSize] = useState(String(inspection.model_probe_batch_size));
-  const [probeModels, setProbeModels] = useState({ ...inspection.model_probe_models });
+  const [probeModels, setProbeModels] = useState({ antigravity: "gemini-3.7-flash-high", ...inspection.model_probe_models });
   const [failureThreshold, setFailureThreshold] = useState(String(inspection.failure_threshold));
   const [recoveryThreshold, setRecoveryThreshold] = useState(String(inspection.recovery_threshold));
   const [passiveCircuit, setPassiveCircuit] = useState(inspection.passive_circuit_enabled ?? false);
@@ -154,6 +154,7 @@ export function AutomationSettingsDialog({
             <ProbeModel label="ui.openai_model" value={probeModels.openai} disabled={saving} onChange={(value) => setProbeModels((current) => ({ ...current, openai: value }))} />
             <ProbeModel label="ui.claude_model" value={probeModels.claude} disabled={saving} onChange={(value) => setProbeModels((current) => ({ ...current, claude: value }))} />
             <ProbeModel label="ui.gemini_model" value={probeModels.gemini} disabled={saving} onChange={(value) => setProbeModels((current) => ({ ...current, gemini: value }))} />
+            <ProbeModel label="ui.antigravity_model" value={probeModels.antigravity} disabled={saving} onChange={(value) => setProbeModels((current) => ({ ...current, antigravity: value }))} />
             <ProbeModel label="ui.grok_xai_model" value={probeModels.xai} disabled={saving} onChange={(value) => setProbeModels((current) => ({ ...current, xai: value }))} />
           </div>
           <p className="automation-setting-note">{tx("ui.active_probe_key_memory_note")}</p>

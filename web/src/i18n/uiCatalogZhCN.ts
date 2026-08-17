@@ -1049,6 +1049,7 @@ export const zhCNUI: Record<UIMessageKey, string> = {
   "ui.openai_model": "OpenAI 测试模型",
   "ui.claude_model": "Claude 测试模型",
   "ui.gemini_model": "Gemini 测试模型",
+  "ui.antigravity_model": "Antigravity 测试模型",
   "ui.grok_xai_model": "Grok / xAI 测试模型",
   "ui.active_probe_key_memory_note": "管理密钥仅保留在进程内存中。CPA 重启后，经过认证访问本页面即可重新激活定时测试。",
   "ui.model_probe_interval_must_be_between_5_and_1440_minutes": "模型测试周期必须在 5 到 1440 分钟之间",

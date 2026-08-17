@@ -1049,6 +1049,7 @@ export const ruUI: Record<UIMessageKey, string> = {
   "ui.openai_model": "Модель OpenAI",
   "ui.claude_model": "Модель Claude",
   "ui.gemini_model": "Модель Gemini",
+  "ui.antigravity_model": "Модель Antigravity",
   "ui.grok_xai_model": "Модель Grok / xAI",
   "ui.active_probe_key_memory_note": "Ключ управления хранится только в памяти процесса. После перезапуска CPA авторизованное открытие страницы повторно активирует проверки.",
   "ui.model_probe_interval_must_be_between_5_and_1440_minutes": "Интервал проверки моделей должен быть от 5 до 1440 минут",

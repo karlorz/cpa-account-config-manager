@@ -728,6 +728,7 @@ export interface InspectionPolicy {
     openai: string;
     claude: string;
     gemini: string;
+    antigravity: string;
     xai: string;
   };
   failure_threshold: number;

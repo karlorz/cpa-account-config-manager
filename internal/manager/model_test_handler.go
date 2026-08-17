@@ -33,6 +33,8 @@ func (a *App) handleAccountModelTest(ctx context.Context, req cpaapi.ManagementR
 			return jsonResponse(http.StatusTooManyRequests, map[string]any{"error": ErrModelTestBusy.Error()})
 		case errors.Is(errTest, ErrManagementBaseURLInvalid):
 			return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": ErrManagementBaseURLInvalid.Error()})
+		case errors.Is(errTest, errAntigravityProjectIDRequired):
+			return jsonResponse(http.StatusUnprocessableEntity, map[string]any{"error": errAntigravityProjectIDRequired.Error()})
 		default:
 			return jsonResponse(http.StatusBadRequest, map[string]any{"error": errTest.Error()})
 		}

@@ -1047,6 +1047,7 @@ export const enUI = {
   "ui.openai_model": "OpenAI model",
   "ui.claude_model": "Claude model",
   "ui.gemini_model": "Gemini model",
+  "ui.antigravity_model": "Antigravity model",
   "ui.grok_xai_model": "Grok / xAI model",
   "ui.active_probe_key_memory_note": "The Management Key stays in process memory only. After CPA restarts, an authenticated visit rearms scheduled probes.",
   "ui.model_probe_interval_must_be_between_5_and_1440_minutes": "Model probe interval must be between 5 and 1440 minutes",

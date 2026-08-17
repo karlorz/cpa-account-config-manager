@@ -617,7 +617,7 @@ describe("management API client", () => {
       policy: {
         enabled: true, scan_interval_minutes: 30,
         model_probe_enabled: true, model_probe_full_sweep: true, scan_manually_disabled: true, model_probe_interval_minutes: 60, model_probe_batch_size: 20,
-        model_probe_models: { codex: "gpt-5.4", openai: "gpt-5.4", claude: "claude-sonnet-4-5-20250929", gemini: "gemini-2.0-flash", xai: "grok-4" },
+        model_probe_models: { codex: "gpt-5.4", openai: "gpt-5.4", claude: "claude-sonnet-4-5-20250929", gemini: "gemini-2.0-flash", antigravity: "gemini-3.7-flash-high", xai: "grok-4" },
         failure_threshold: 3, recovery_threshold: 2, auto_disable: true, auto_enable: true,
         auto_delete: true, auto_delete_invalid_credentials: true, delete_grace_hours: 168, delete_batch_size: 10,
         anomaly_trigger_enabled: true, anomaly_threshold_percent: 50, anomaly_minimum_accounts: 10, anomaly_cooldown_minutes: 60,
@@ -692,7 +692,7 @@ describe("management API client", () => {
 		const inspectionPolicy = {
 			enabled: true, scan_interval_minutes: 30,
 			model_probe_enabled: true, model_probe_full_sweep: true, scan_manually_disabled: true, model_probe_interval_minutes: 60, model_probe_batch_size: 20,
-			model_probe_models: { codex: "gpt-5.4", openai: "gpt-5.4", claude: "claude-sonnet-4-5-20250929", gemini: "gemini-2.0-flash", xai: "grok-4" },
+			model_probe_models: { codex: "gpt-5.4", openai: "gpt-5.4", claude: "claude-sonnet-4-5-20250929", gemini: "gemini-2.0-flash", antigravity: "gemini-3.7-flash-high", xai: "grok-4" },
 			failure_threshold: 3, recovery_threshold: 2, passive_circuit_enabled: true, passive_failure_threshold: 5,
 			passive_failure_window_minutes: 180, passive_circuit_minutes: 15, auto_disable: true, auto_enable: true,
 			auto_delete: false, auto_delete_invalid_credentials: false, delete_grace_hours: 168, delete_batch_size: 10,

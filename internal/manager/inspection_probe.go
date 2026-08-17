@@ -285,6 +285,8 @@ func inspectionProbeModel(account Account, models ModelProbeModels) string {
 		return models.Claude
 	case "gemini":
 		return models.Gemini
+	case "antigravity":
+		return models.Antigravity
 	case "xai":
 		return models.XAI
 	default:

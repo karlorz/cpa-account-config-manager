@@ -1049,6 +1049,7 @@ export const zhTWUI: Record<UIMessageKey, string> = {
   "ui.openai_model": "OpenAI 測試模型",
   "ui.claude_model": "Claude 測試模型",
   "ui.gemini_model": "Gemini 測試模型",
+  "ui.antigravity_model": "Antigravity 測試模型",
   "ui.grok_xai_model": "Grok / xAI 測試模型",
   "ui.active_probe_key_memory_note": "管理金鑰僅保留在程序記憶體中。CPA 重新啟動後，經過驗證造訪本頁即可重新啟用定時測試。",
   "ui.model_probe_interval_must_be_between_5_and_1440_minutes": "模型測試週期必須介於 5 到 1440 分鐘",

@@ -43,6 +43,26 @@ func TestDefaultInspectionProbeModelsUseCurrentOpenAIModel(t *testing.T) {
 	}
 }
 
+func TestInspectionProbeModelKeepsGeminiCLISeparateFromAntigravity(t *testing.T) {
+	models := ModelProbeModels{
+		Gemini: "gemini-2.0-flash", Antigravity: "gemini-3.7-flash-high",
+	}
+	geminiCLI := Account{Provider: "gemini-cli", Type: "gemini-cli"}
+	antigravity := Account{Provider: "antigravity", Type: "antigravity"}
+	if got := inspectionProbeProvider(geminiCLI); got != "gemini" {
+		t.Fatalf("gemini-cli provider = %q, want gemini", got)
+	}
+	if got := inspectionProbeProvider(antigravity); got != "antigravity" {
+		t.Fatalf("antigravity provider = %q, want antigravity", got)
+	}
+	if got := inspectionProbeModel(geminiCLI, models); got != "gemini-2.0-flash" {
+		t.Fatalf("gemini-cli probe model = %q, want gemini-2.0-flash", got)
+	}
+	if got := inspectionProbeModel(antigravity, models); got != "gemini-3.7-flash-high" {
+		t.Fatalf("antigravity probe model = %q, want gemini-3.7-flash-high", got)
+	}
+}
+
 func TestPolicyBlockedProbeDoesNotOverwriteInspectionEvidence(t *testing.T) {
 	now := time.Date(2026, time.July, 25, 8, 0, 0, 0, time.UTC)
 	record := inspectionRecord{Probe: inspectionProbeSignal{

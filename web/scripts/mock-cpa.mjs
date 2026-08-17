@@ -60,6 +60,7 @@ let inspectionPolicy = {
     openai: defaultOpenAIProbeModel,
     claude: "claude-sonnet-4-5-20250929",
     gemini: "gemini-2.0-flash",
+    antigravity: "gemini-3.7-flash-high",
     xai: "grok-4",
   },
   failure_threshold: 3,
@@ -1175,7 +1176,7 @@ const server = http.createServer(async (request, response) => {
       "codex-agent-identity": ["gpt-5.5", "gpt-5.6-sol"],
       claude: ["claude-sonnet-4-5-20250929", "claude-opus-4-1"],
       gemini: ["gemini-2.0-flash", "gemini-2.5-pro"],
-      antigravity: ["gemini-2.0-flash", "gemini-2.5-pro"],
+      antigravity: ["gemini-3.7-flash-high", "gemini-3-flash", "gemini-2.5-pro"],
     };
     const models = sameProvider ? (byProvider[provider] || []).map((id) => ({ id, display_name: id.toUpperCase(), owned_by: provider })) : [];
     return json(response, 200, {
@@ -1755,6 +1756,7 @@ const server = http.createServer(async (request, response) => {
         openai: String(body.model_probe_models?.openai || defaultOpenAIProbeModel),
         claude: String(body.model_probe_models?.claude || "claude-sonnet-4-5-20250929"),
         gemini: String(body.model_probe_models?.gemini || "gemini-2.0-flash"),
+        antigravity: String(body.model_probe_models?.antigravity || "gemini-3.7-flash-high"),
         xai: String(body.model_probe_models?.xai || "grok-4"),
       },
       failure_threshold: Math.min(10, Math.max(2, Number(body.failure_threshold) || 3)),

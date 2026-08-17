@@ -172,11 +172,12 @@ type InspectionNotificationPolicy struct {
 }
 
 type ModelProbeModels struct {
-	Codex  string `json:"codex" yaml:"codex"`
-	OpenAI string `json:"openai" yaml:"openai"`
-	Claude string `json:"claude" yaml:"claude"`
-	Gemini string `json:"gemini" yaml:"gemini"`
-	XAI    string `json:"xai" yaml:"xai"`
+	Codex       string `json:"codex" yaml:"codex"`
+	OpenAI      string `json:"openai" yaml:"openai"`
+	Claude      string `json:"claude" yaml:"claude"`
+	Gemini      string `json:"gemini" yaml:"gemini"`
+	Antigravity string `json:"antigravity" yaml:"antigravity"`
+	XAI         string `json:"xai" yaml:"xai"`
 }
 
 type InspectionPolicyUpdateRequest struct {
@@ -479,11 +480,12 @@ func cloneInspectionPolicy(policy InspectionPolicy) InspectionPolicy {
 
 func defaultModelProbeModels() ModelProbeModels {
 	return ModelProbeModels{
-		Codex:  defaultOpenAIProbeModel,
-		OpenAI: defaultOpenAIProbeModel,
-		Claude: "claude-sonnet-4-5-20250929",
-		Gemini: "gemini-2.0-flash",
-		XAI:    "grok-4",
+		Codex:       defaultOpenAIProbeModel,
+		OpenAI:      defaultOpenAIProbeModel,
+		Claude:      "claude-sonnet-4-5-20250929",
+		Gemini:      "gemini-2.0-flash",
+		Antigravity: defaultAntigravityProbeModel,
+		XAI:         "grok-4",
 	}
 }
 
@@ -513,6 +515,9 @@ func normalizeInspectionPolicy(policy InspectionPolicy) InspectionPolicy {
 	}
 	if strings.TrimSpace(policy.ModelProbeModels.Gemini) == "" {
 		policy.ModelProbeModels.Gemini = defaults.Gemini
+	}
+	if strings.TrimSpace(policy.ModelProbeModels.Antigravity) == "" {
+		policy.ModelProbeModels.Antigravity = defaults.Antigravity
 	}
 	if strings.TrimSpace(policy.ModelProbeModels.XAI) == "" {
 		policy.ModelProbeModels.XAI = defaults.XAI
@@ -577,7 +582,8 @@ func validateInspectionPolicy(policy InspectionPolicy) (InspectionPolicy, error)
 	}
 	for provider, model := range map[string]string{
 		"codex": policy.ModelProbeModels.Codex, "openai": policy.ModelProbeModels.OpenAI,
-		"claude": policy.ModelProbeModels.Claude, "gemini": policy.ModelProbeModels.Gemini, "xai": policy.ModelProbeModels.XAI,
+		"claude": policy.ModelProbeModels.Claude, "gemini": policy.ModelProbeModels.Gemini,
+		"antigravity": policy.ModelProbeModels.Antigravity, "xai": policy.ModelProbeModels.XAI,
 	} {
 		if safeModelIdentifier(model) == "" {
 			return InspectionPolicy{}, fmt.Errorf("model_probe_models.%s contains unsupported characters or exceeds 128 characters", provider)

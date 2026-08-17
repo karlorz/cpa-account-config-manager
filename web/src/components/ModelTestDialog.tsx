@@ -28,6 +28,7 @@ const modelSuggestions: Record<string, string[]> = {
   "gemini-cli": ["gemini-2.0-flash", "gemini-2.5-pro"],
   "gemini-interactions": ["gemini-2.0-flash", "gemini-2.5-pro"],
   aistudio: ["gemini-2.0-flash", "gemini-2.5-pro"],
+  antigravity: ["gemini-3.7-flash-high", "gemini-3-flash", "gemini-2.5-pro"],
   xai: ["grok-4", "grok-4-fast"],
 };
 

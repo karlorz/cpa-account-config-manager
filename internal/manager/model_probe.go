@@ -20,12 +20,14 @@ import (
 )
 
 const (
-	modelTestTimeout            = 20 * time.Second
-	maxModelTestResponseBytes   = 256 << 10
-	maxModelTestBodyBytes       = 128 << 10
-	maxModelIdentifierLength    = 128
-	defaultCodexFallbackModel   = "gpt-5.5"
-	codexCompatibilityMiniModel = "gpt-5.4-mini"
+	modelTestTimeout              = 20 * time.Second
+	maxModelTestResponseBytes     = 256 << 10
+	maxModelTestBodyBytes         = 128 << 10
+	maxModelIdentifierLength      = 128
+	defaultCodexFallbackModel     = "gpt-5.5"
+	codexCompatibilityMiniModel   = "gpt-5.4-mini"
+	defaultAntigravityProbeModel  = "gemini-3.7-flash-high"
+	antigravityGenerateContentURL = "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent"
 )
 
 var (
@@ -138,6 +140,7 @@ type modelTestAuthMetadata struct {
 	hasAPIKey      bool
 	hasAccessToken bool
 	accountID      string
+	projectID      string
 }
 
 type managementAPICallRequest struct {
@@ -329,6 +332,9 @@ func (s *ModelTestService) Run(ctx context.Context, request ModelTestRequest, ma
 	metadata := s.authMetadata(ctx, account.ID)
 	if !metadata.hasAccessToken && accountTypeUsesAPIKey(account.AccountType) {
 		metadata.hasAPIKey = true
+	}
+	if metadata.projectID == "" {
+		metadata.projectID = strings.TrimSpace(account.ProjectID)
 	}
 	startedAt := s.currentTime()
 	result := ModelTestResult{
@@ -571,6 +577,7 @@ func (s *ModelTestService) authMetadata(ctx context.Context, authIndex string) m
 		hasAPIKey:      modelTestRecordsHaveString(records, "api_key", "apiKey"),
 		hasAccessToken: modelTestRecordsHaveString(records, "access_token", "accessToken"),
 		accountID:      safeOperationIdentifier(modelTestResolveAccountID(records), 256),
+		projectID:      resolveAntigravityProjectID(Account{}, raw),
 	}
 	return metadata
 }
@@ -731,6 +738,22 @@ func buildModelProbe(provider, requestedModel string, metadata modelTestAuthMeta
 		}
 		probeURL := "https://generativelanguage.googleapis.com/v1beta/models/" + url.PathEscape(geminiModel) + ":generateContent"
 		return modelProbe{kind: "gemini", url: probeURL, headers: headers, data: data}, model, true, errMarshal
+	case "antigravity":
+		if model == "" {
+			model = defaultAntigravityProbeModel
+		}
+		projectID := strings.TrimSpace(metadata.projectID)
+		if projectID == "" {
+			return modelProbe{}, model, false, errAntigravityProjectIDRequired
+		}
+		data, errMarshal := marshal(map[string]any{
+			"model": model, "userAgent": "antigravity", "requestType": "agent", "project": projectID,
+			"request": map[string]any{
+				"contents":         []map[string]any{{"role": "user", "parts": []map[string]string{{"text": "hi"}}}},
+				"generationConfig": map[string]int{"maxOutputTokens": 1},
+			},
+		})
+		return modelProbe{kind: "antigravity", method: http.MethodPost, url: antigravityGenerateContentURL, headers: antigravityQuotaHeaders(), data: data}, model, true, errMarshal
 	case "xai", "grok":
 		if model == "" {
 			model = "grok-4"
@@ -1165,8 +1188,12 @@ func validModelProbeBody(kind string, body []byte) bool {
 	switch kind {
 	case "claude":
 		return strings.TrimSpace(modelTestStringValue(decoded, "id")) != "" && strings.EqualFold(modelTestStringValue(decoded, "type"), "message")
-	case "gemini":
-		candidates, ok := decoded["candidates"].([]any)
+	case "gemini", "antigravity":
+		if candidates, ok := decoded["candidates"].([]any); ok && len(candidates) > 0 {
+			return true
+		}
+		response, _ := decoded["response"].(map[string]any)
+		candidates, ok := response["candidates"].([]any)
 		return ok && len(candidates) > 0
 	default:
 		id := strings.TrimSpace(modelTestStringValue(decoded, "id"))
