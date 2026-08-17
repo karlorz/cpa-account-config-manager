@@ -117,13 +117,22 @@ describe("primary account batch flow", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const url = String(input);
       requests.push({ url, init });
-      if (url.endsWith("/plugin-store/cpa-account-config-manager/install")) {
+      if (url.includes("/plugin-store/cpa-account-config-manager/install")) {
         return jsonResponse({ status: "installed", id: "cpa-account-config-manager", version: "0.3.1319", restart_required: false });
       }
       if (url.endsWith("/v0/management/plugin-store")) {
         return jsonResponse({
           plugins_enabled: true,
-          plugins: [{ id: "cpa-account-config-manager", version: "0.3.1319", installed: true, installed_version: "0.3.1318", update_available: true }],
+          plugins: [{
+            id: "cpa-account-config-manager",
+            version: "0.3.1319",
+            installed: true,
+            installed_version: "0.3.1318",
+            update_available: true,
+            source_id: "source-karlorz",
+            source_url: "https://raw.githubusercontent.com/karlorz/cpa-account-config-manager/main/registry.json",
+            repository: "https://github.com/karlorz/cpa-account-config-manager",
+          }],
         });
       }
       if (url.endsWith("/updates")) {
@@ -147,7 +156,7 @@ describe("primary account batch flow", () => {
     expect(await screen.findByText("operator@example.com")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "账号" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("button", { name: "其他配置" })).not.toHaveAttribute("aria-current", "page");
-    await waitFor(() => expect(requests.some(({ url }) => url.endsWith("/plugin-store/cpa-account-config-manager/install"))).toBe(true));
+    await waitFor(() => expect(requests.some(({ url }) => url.includes("/plugin-store/cpa-account-config-manager/install?source=source-karlorz"))).toBe(true));
     expect(await screen.findByText(/插件 0\.3\.1319 已安装.*刷新页面/)).toBeInTheDocument();
   });
 

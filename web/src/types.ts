@@ -1000,7 +1000,7 @@ export interface UpdateSnapshot {
   pending: boolean;
   checked_at?: string;
   error?: string;
-  release_source?: "plugin_store" | "none";
+  release_source?: "fork_store" | "plugin_store" | "none";
   store_error?: string;
   runtime?: {
     active: boolean;
@@ -1020,6 +1020,9 @@ export interface PluginStoreEntry {
   installed: boolean;
   installed_version: string;
   update_available: boolean;
+  source_id?: string;
+  source_url?: string;
+  repository?: string;
 }
 
 export interface PluginStoreResponse {

@@ -107,9 +107,30 @@ conditions, then apply independent low-count and low-availability thresholds.
 
 ## Installation
 
-Installing from the CPA Plugin Store is recommended because CPA selects the
-platform archive, verifies checksums, and reports whether a host restart is
-required. Manual release archives are also available for:
+This fork is not the official Mxucc store listing. Add the karlorz registry
+as a CPA plugin-store source, then install or update from that channel.
+CPA always keeps the official store too; Other Settings ignores it and only
+installs `vX.Y.Z-N` from karlorz.
+
+```yaml
+plugins:
+  enabled: true
+  store-sources:
+    - https://raw.githubusercontent.com/karlorz/cpa-account-config-manager/main/registry.json
+```
+
+If this plugin was first installed from the official store, CPA will refuse
+a source switch until the installed store manifest is retargeted (or the
+plugin is uninstalled and reinstalled from the fork source). Point
+`plugins.configs.cpa-account-config-manager.store` at the karlorz
+`source-id` / `source-url` / `repository`, and keep `store.version` equal to
+the filename series (`<id>-v<version>.<ext>`). Do not rename a fork build
+down to an unsuffixed upstream version.
+
+Bump `registry.json` `version` to the same `X.Y.Z-N` string before tagging
+a fork release.
+
+Manual release archives are also available for:
 
 | Platform | Architecture | Library |
 | --- | --- | --- |
@@ -132,7 +153,7 @@ plugins:
 ```
 
 After CPA loads the plugin, open **CPA-A Manager** in the Management Center.
-Most CPA plugin-store updates need only a page refresh; restart CPA only when
+Most fork-channel updates need only a page refresh; restart CPA only when
 the host reports `restart_required: true` or the loaded library is locked.
 
 ## Configuration And Persistence
@@ -204,7 +225,8 @@ archives, four matching `.sha256` files, and `checksums.txt`.
 
 - Fork release tags always use the incrementing `vX.Y.Z-N` suffix
   (`v0.3.1332-0`, `v0.3.1332-1`, ...). The version string is the tag without
-  the leading `v`.
+  the leading `v`. Update `registry.json` `version` to that same string
+  before tagging.
 - Upstream (`Mxucc/cpa-account-config-manager`) owns unsuffixed tags such as
   `v0.3.1332` and `v0.3.1333`. Do not create, replace, or delete those names,
   and do not take the next upstream patch number for a fork release.

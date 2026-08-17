@@ -9,6 +9,7 @@ describe("operatorMessage", () => {
     expect(operatorMessage("default policy update failed")).toBe("默认策略字段更新失败");
     expect(operatorMessage("enabling auto_delete requires explicit confirmation")).toContain("明确确认");
     expect(operatorMessage("plugin store metadata is unavailable")).toContain("插件商店");
+    expect(operatorMessage("fork update channel is not configured")).toBe("未配置 karlorz 分支更新通道");
     expect(operatorMessage("plugin store install response was invalid")).toContain("安装结果");
     expect(operatorMessage("update state could not be persisted")).toContain("data_dir");
     expect(operatorMessage("plugin_update_requires_restart")).toContain("无法覆盖");

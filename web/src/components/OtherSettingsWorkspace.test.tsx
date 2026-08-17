@@ -9,6 +9,19 @@ function jsonResponse(body: unknown, status = 200, headers: Record<string, strin
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
 }
 
+function forkStorePlugin(version: string) {
+  return {
+    id: "cpa-account-config-manager",
+    version,
+    installed: true,
+    installed_version: "0.2.91",
+    update_available: true,
+    source_id: "source-karlorz",
+    source_url: "https://raw.githubusercontent.com/karlorz/cpa-account-config-manager/main/registry.json",
+    repository: "https://github.com/karlorz/cpa-account-config-manager",
+  };
+}
+
 describe("OtherSettingsWorkspace", () => {
   beforeEach(() => {
     _resetSessionForTest();
@@ -38,9 +51,9 @@ describe("OtherSettingsWorkspace", () => {
       }
       if (url.endsWith("/experiments")) return jsonResponse({ settings: { weekly_overdraft_enabled: false, agent_identity_enabled: false, auto_model_whitelist_enabled: false, sub2api_credit_usage_enabled: false } });
       if (url === "/v0/management/plugin-store") {
-        return jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.0", installed: true, installed_version: "0.2.91", update_available: true }] });
+        return jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.3.0")] });
       }
-      if (url.endsWith("/plugin-store/cpa-account-config-manager/install")) {
+      if (url.includes("/plugin-store/cpa-account-config-manager/install")) {
         return jsonResponse({ status: "installed", id: "cpa-account-config-manager", version: "0.3.0", restart_required: false });
       }
       if (url.endsWith("/operations/record")) return jsonResponse({});
@@ -74,7 +87,7 @@ describe("OtherSettingsWorkspace", () => {
     expect(within(plugin).getByText("0.2.91")).toBeInTheDocument();
     expect(within(plugin).getAllByText("0.3.0").length).toBeGreaterThan(0);
     await user.click(within(plugin).getByRole("button", { name: "更新" }));
-    await waitFor(() => expect(requests.some(({ url }) => url.endsWith("/plugin-store/cpa-account-config-manager/install"))).toBe(true));
+    await waitFor(() => expect(requests.some(({ url }) => url.includes("/plugin-store/cpa-account-config-manager/install?source=source-karlorz"))).toBe(true));
     expect(onNotice).toHaveBeenCalledWith(expect.stringMatching(/0\.3\.0.*刷新页面/));
     expect(within(plugin).queryByText(/原生插件更新后必须完整重启 CPA/)).not.toBeInTheDocument();
 
@@ -112,6 +125,33 @@ describe("OtherSettingsWorkspace", () => {
     expect(within(plugin).queryByText(/等待首次 CPA 重启/)).not.toBeInTheDocument();
     await user.click(within(plugin).getByRole("button", { name: "更新" }));
     await waitFor(() => expect(onNotice).toHaveBeenCalledWith(expect.stringMatching(/0\.3\.0.*重启 CPA/)));
+  });
+
+  it("labels plugin updates as the karlorz fork channel and hides install when that channel is missing", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, "getEffectiveUpdateStatus").mockResolvedValue({
+      policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
+      current_version: "0.3.1332-3",
+      update_available: false,
+      checking: false,
+      pending: false,
+      checked_at: "2026-08-17T08:00:00Z",
+      release_source: "none",
+      error: "fork update channel is not configured",
+    });
+    vi.spyOn(api, "getCPAServerVersionStatus").mockResolvedValue({ update_available: false, checked_at: "2026-08-17T08:00:00Z" });
+    vi.spyOn(api, "getExperimentalSettings").mockResolvedValue({ settings: { weekly_overdraft_enabled: false, agent_identity_enabled: false, auto_model_whitelist_enabled: false, sub2api_credit_usage_enabled: false } });
+    const install = vi.spyOn(api, "installPluginUpdate");
+
+    render(<OtherSettingsWorkspace onAPIError={() => undefined} onNotice={() => undefined} />);
+    const workspace = await screen.findByRole("region", { name: "其他配置" });
+    await user.click(within(workspace).getByRole("tab", { name: "插件配置与版本" }));
+    const plugin = within(workspace).getByRole("region", { name: "插件更新" });
+    expect(within(plugin).getByText("karlorz 分支更新通道")).toBeInTheDocument();
+    expect(within(plugin).getByText("karlorz")).toBeInTheDocument();
+    expect(within(plugin).getByText("未配置 karlorz 分支更新通道")).toBeInTheDocument();
+    expect(within(plugin).queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
+    expect(install).not.toHaveBeenCalled();
   });
 
   it("leaves automatic plugin-store installation to the authenticated app lifecycle", async () => {

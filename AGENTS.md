@@ -25,8 +25,9 @@ Follow the same fork-series convention as `karlorz/cpa-glm-vision-bridge`:
   policy violation: rename or delete it (e.g. `git tag -d v0.3.1333`), then
   re-fetch upstream tags. If the offending tag was pushed, also delete it
   from origin (`git push origin :refs/tags/<name>`).
-- Before a fork release: confirm HEAD is the intended commit, then tag and
-  push `v<same-version>` to **origin only**. The `check` job in
+- Before a fork release: bump `registry.json` `version` to the fork series
+  name, confirm HEAD is the intended commit, then tag and push
+  `v<same-version>` to **origin only**. The `check` job in
   `.github/workflows/release.yml` enforces both rules (pattern + upstream
   collision) and gates the build.
 
@@ -34,8 +35,8 @@ Follow the same fork-series convention as `karlorz/cpa-glm-vision-bridge`:
 
 `git fetch upstream --tags` is safe and expected. Sync upstream changes with
 `git merge upstream/main`. Keep fork-only files (`AGENTS.md` tag policy,
-`.github/workflows/release.yml` fork-tag check, `DefaultPluginRepository`)
-while taking upstream's code changes.
+`.github/workflows/release.yml` fork-tag check, `DefaultPluginRepository`,
+`registry.json`) while taking upstream's code changes.
 
 ## Commands
 

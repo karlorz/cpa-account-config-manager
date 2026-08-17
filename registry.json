@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "cpa-account-config-manager",
+      "name": "CPA Account Config Manager",
+      "description": "Authenticated CPA account management plugin: listing, batch edits, import/export, quota, model tests, inspection, and operation logs without exposing raw credentials to the browser.",
+      "author": "karlorz",
+      "version": "0.3.1332-4",
+      "repository": "https://github.com/karlorz/cpa-account-config-manager",
+      "homepage": "https://github.com/karlorz/cpa-account-config-manager",
+      "license": "MIT",
+      "tags": [
+        "account-management",
+        "management",
+        "quota",
+        "inspection"
+      ]
+    }
+  ]
+}

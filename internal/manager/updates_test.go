@@ -22,6 +22,10 @@ func TestReleaseVersionComparisonIgnoresDevelopmentSuffix(t *testing.T) {
 		{current: "0.2.0-dev", latest: "v0.3.0", want: true, ok: true},
 		{current: "0.2.0-dev", latest: "v0.2.0", want: false, ok: true},
 		{current: "1.2.3", latest: "v1.2.2", want: false, ok: true},
+		{current: "0.3.1332-3", latest: "0.3.1332-4", want: true, ok: true},
+		{current: "v0.3.1332-4", latest: "0.3.1332-3", want: false, ok: true},
+		{current: "0.3.1332-3", latest: "0.3.1332-3", want: false, ok: true},
+		{current: "0.3.1332-9", latest: "0.3.1333-0", want: true, ok: true},
 		{current: "development", latest: "v1.0.0", want: false, ok: false},
 	}
 	for _, test := range tests {
@@ -29,6 +33,21 @@ func TestReleaseVersionComparisonIgnoresDevelopmentSuffix(t *testing.T) {
 		if got != test.want || ok != test.ok {
 			t.Fatalf("releaseVersionNewer(%q, %q) = %v, _, %v", test.current, test.latest, got, ok)
 		}
+	}
+}
+
+func TestParseReleaseVersionKeepsNumericForkSeries(t *testing.T) {
+	_, current, currentOK := parseReleaseVersion("v0.3.1332-3")
+	_, latest, latestOK := parseReleaseVersion("0.3.1332-4")
+	_, stripped, strippedOK := parseReleaseVersion("0.2.0-dev")
+	if !currentOK || current != "0.3.1332-3" {
+		t.Fatalf("current = %q, %v", current, currentOK)
+	}
+	if !latestOK || latest != "0.3.1332-4" {
+		t.Fatalf("latest = %q, %v", latest, latestOK)
+	}
+	if !strippedOK || stripped != "0.2.0" {
+		t.Fatalf("dev suffix = %q, %v", stripped, strippedOK)
 	}
 }
 

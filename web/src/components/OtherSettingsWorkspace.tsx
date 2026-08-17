@@ -302,6 +302,7 @@ export function OtherSettingsWorkspace({ onAPIError, onNotice, forceLoading = fa
           <div className="settings-version-grid">
             <div><span>{tx("ui.current_version")}</span><code>{updates?.current_version || "-"}</code></div>
             <div><span>{tx("ui.latest_version")}</span><code>{updates?.latest_version || "-"}</code></div>
+            <div><span>{tx("ui.update_channel")}</span><code>karlorz</code></div>
             <div><span>{tx("ui.last_checked")}</span><time>{formatDateTime(updates?.checked_at)}</time></div>
             <div><span>{tx("ui.check_status")}</span><strong className={updates?.update_available ? "status-warning" : ""}>{pluginStatusLabel(updates, locale, tx)}</strong></div>
           </div>

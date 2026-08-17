@@ -38,9 +38,10 @@ type UpdateSnapshot struct {
 }
 
 type releaseVersion struct {
-	major int
-	minor int
-	patch int
+	major  int
+	minor  int
+	patch  int
+	series int
 }
 
 func defaultUpdatePolicy() UpdatePolicy {
@@ -71,7 +72,13 @@ func validateUpdatePolicy(policy UpdatePolicy) (UpdatePolicy, error) {
 func parseReleaseVersion(value string) (releaseVersion, string, bool) {
 	value = strings.TrimSpace(value)
 	value = strings.TrimPrefix(value, "v")
+	series := 0
+	hasSeries := false
 	if index := strings.IndexAny(value, "-+"); index >= 0 {
+		if parsed, ok := parseForkSeries(value[index+1:]); ok {
+			series = parsed
+			hasSeries = true
+		}
 		value = value[:index]
 	}
 	parts := strings.Split(value, ".")
@@ -90,7 +97,26 @@ func parseReleaseVersion(value string) (releaseVersion, string, bool) {
 		numbers[index] = parsed
 	}
 	normalized := fmt.Sprintf("%d.%d.%d", numbers[0], numbers[1], numbers[2])
-	return releaseVersion{major: numbers[0], minor: numbers[1], patch: numbers[2]}, normalized, true
+	if hasSeries {
+		normalized = fmt.Sprintf("%s-%d", normalized, series)
+	}
+	return releaseVersion{major: numbers[0], minor: numbers[1], patch: numbers[2], series: series}, normalized, true
+}
+
+func parseForkSeries(value string) (int, bool) {
+	if value == "" {
+		return 0, false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return 0, false
+		}
+	}
+	parsed, errParse := strconv.Atoi(value)
+	if errParse != nil || parsed < 0 || parsed > 1_000_000 {
+		return 0, false
+	}
+	return parsed, true
 }
 
 func releaseVersionNewer(current, latest string) (bool, string, bool) {
@@ -105,5 +131,8 @@ func releaseVersionNewer(current, latest string) (bool, string, bool) {
 	if latestVersion.minor != currentVersion.minor {
 		return latestVersion.minor > currentVersion.minor, normalizedLatest, true
 	}
-	return latestVersion.patch > currentVersion.patch, normalizedLatest, true
+	if latestVersion.patch != currentVersion.patch {
+		return latestVersion.patch > currentVersion.patch, normalizedLatest, true
+	}
+	return latestVersion.series > currentVersion.series, normalizedLatest, true
 }

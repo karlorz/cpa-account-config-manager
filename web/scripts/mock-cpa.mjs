@@ -1816,7 +1816,16 @@ const server = http.createServer(async (request, response) => {
   if (request.method === "GET" && url.pathname === "/v0/management/plugin-store") {
     return json(response, 200, {
       plugins_enabled: true,
-      plugins: [{ id: "cpa-account-config-manager", version: "0.3.0", installed: true, installed_version: "0.2.0", update_available: true }],
+      plugins: [{
+        id: "cpa-account-config-manager",
+        version: "0.3.0",
+        installed: true,
+        installed_version: "0.2.0",
+        update_available: true,
+        source_id: "source-karlorz",
+        source_url: "https://raw.githubusercontent.com/karlorz/cpa-account-config-manager/main/registry.json",
+        repository: "https://github.com/karlorz/cpa-account-config-manager",
+      }],
     });
   }
   if (request.method === "POST" && url.pathname === "/v0/management/plugin-store/cpa-account-config-manager/install") {

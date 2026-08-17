@@ -17,7 +17,7 @@
 | 模型测试 | 通过 CPA 对指定账号执行真实模型测试，展示 HTTP 状态、延迟、回退模型和脱敏后的上游响应；账号白名单与黑名单会自动约束手动测试、自动探测和巡检模型。 |
 | 账号巡检 | 结合 CPA 原生状态、Usage 记录、主动模型测试和被动失败进行全量巡检，实时展示进度、健康证据、恢复时间和建议操作，并支持批量执行建议。 |
 | 自动处置 | 可选自动禁用失败或额度耗尽账号、在恢复后启用由巡检自身禁用的账号，并对严格符合条件且经过风险确认和宽限期的账号执行自动删除。 |
-| 插件与 CPA 版本检测 | 从 CPA 插件商店检查并安装插件更新，同时展示当前 CPA 服务端版本和可用的新版本。CPA 主程序只做版本检测，插件不会自行替换 CPA 可执行文件。 |
+| 插件与 CPA 版本检测 | 从 karlorz 分支更新通道检查并安装 `vX.Y.Z-N` 插件更新，同时展示当前 CPA 服务端版本和可用的新版本。CPA 主程序只做版本检测，插件不会自行替换 CPA 可执行文件。 |
 | Codex 5h / 7d 额度透支 | 实验性额度透支功能会利用最后一条消息为 tool call 时可继续生成的行为；5 小时或 7 天额度耗尽后，自动禁用前最多进行 5 次可用性验证，任意一次成功就保留账号。 |
 | Agent Identity 与 PAT | 实验性支持 Codex Agent Identity 和 Personal Access Token 的导入、转换、登录和 CPA 原生插件鉴权路径，并兼容常见 sub2api 结构。 |
 | 用量与异常通知 | 使用可预览、可测试的 HTTPS GET URL 模板发送通知，可对接 Bark、ntfy 等服务；变量可组合账号总数、可用账号数、可用率、异常占比、额度受限数量和触发时间。 |
@@ -54,7 +54,23 @@
 
 ## 安装
 
-推荐从 CPA 插件商店安装，由 CPA 选择对应平台压缩包、校验 Checksum，并明确报告是否需要重启宿主。GitHub Release 也提供以下平台的手动安装包：
+本仓库是 `karlorz` 分支，不是官方 Mxucc 商店条目。把下面的 `registry.json` 加到 CPA `plugins.store-sources` 后，再从该通道安装或更新。官方商店源会始终存在；本插件的「其他配置」会忽略它，只安装 karlorz 的 `vX.Y.Z-N`。
+
+```yaml
+plugins:
+  enabled: true
+  store-sources:
+    - https://raw.githubusercontent.com/karlorz/cpa-account-config-manager/main/registry.json
+```
+
+如果当前安装来自官方商店，CPA 会拒绝直接换源，需要先把
+`plugins.configs.cpa-account-config-manager.store` 改到 karlorz 的
+`source-id` / `source-url` / `repository`，或卸载后从分支源重装。
+`store.version` 必须与文件名中的版本一致（`<id>-v<version>.<ext>`），不要把分支构建重命名成不带 `-N` 的上游版本。
+
+发布前把 `registry.json` 的 `version` 改成即将打的 `X.Y.Z-N`。
+
+GitHub Release 也提供以下平台的手动安装包：
 
 | 平台 | 架构 | 动态库 |
 | --- | --- | --- |
@@ -75,7 +91,7 @@ plugins:
       priority: 20
 ```
 
-CPA 加载插件后，在 Management Center 中打开 **CPA-A Manager**。大多数通过 CPA 插件商店完成的更新只需刷新页面；仅当宿主返回 `restart_required: true`，或已加载的动态库被系统锁定时，才需要重启 CPA。
+CPA 加载插件后，在 Management Center 中打开 **CPA-A Manager**。大多数通过分支更新通道完成的更新只需刷新页面；仅当宿主返回 `restart_required: true`，或已加载的动态库被系统锁定时，才需要重启 CPA。
 
 ## 配置与持久化
 

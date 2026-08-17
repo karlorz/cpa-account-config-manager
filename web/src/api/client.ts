@@ -43,6 +43,7 @@ import type {
   OperationListResponse,
   OperationRetentionSettings,
   PluginInstallResult,
+  PluginStoreEntry,
   PluginStoreResponse,
   PolicySnapshot,
 	QuotaMetadataResponse,
@@ -601,20 +602,47 @@ export async function getPluginStore(): Promise<PluginStoreResponse> {
 
 const pluginID = "cpa-account-config-manager";
 const pluginReleaseBaseURL = "https://github.com/karlorz/cpa-account-config-manager/releases/tag/v";
+const forkRepository = "https://github.com/karlorz/cpa-account-config-manager";
+const forkRegistryURL = "https://raw.githubusercontent.com/karlorz/cpa-account-config-manager/main/registry.json";
 
-function normalizedStableVersion(value: string | undefined): { value: string; parts: [number, number, number] } | null {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec((value ?? "").trim());
-  if (!match) return null;
-  const parts = [Number(match[1]), Number(match[2]), Number(match[3])] as [number, number, number];
-  if (parts.some((part) => !Number.isSafeInteger(part))) return null;
-  return { value: parts.join("."), parts };
+function normalizeLookupURL(value: string | undefined): string {
+  return (value ?? "").trim().replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
 }
 
-function compareStableVersions(left: [number, number, number], right: [number, number, number]): number {
+function isForkStoreEntry(entry: PluginStoreEntry | undefined): boolean {
+  if (!entry || entry.id !== pluginID) return false;
+  if (normalizeLookupURL(entry.repository) === normalizeLookupURL(forkRepository)) return true;
+  return normalizeLookupURL(entry.source_url) === normalizeLookupURL(forkRegistryURL);
+}
+
+function selectForkStorePlugin(store: PluginStoreResponse | null): PluginStoreEntry | undefined {
+  if (!store?.plugins_enabled) return undefined;
+  return arrayOrEmpty(store.plugins).find((entry) => isForkStoreEntry(entry));
+}
+
+function normalizedPluginVersion(value: string | undefined): { value: string; parts: [number, number, number, number] } | null {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.+-]+))?$/.exec((value ?? "").trim());
+  if (!match) return null;
+  const seriesToken = match[4];
+  const keepSeries = seriesToken !== undefined && /^\d+$/.test(seriesToken);
+  const parts = [Number(match[1]), Number(match[2]), Number(match[3]), keepSeries ? Number(seriesToken) : 0] as [number, number, number, number];
+  if (parts.some((part) => !Number.isSafeInteger(part))) return null;
+  return {
+    value: keepSeries ? `${parts[0]}.${parts[1]}.${parts[2]}-${parts[3]}` : `${parts[0]}.${parts[1]}.${parts[2]}`,
+    parts,
+  };
+}
+
+function comparePluginVersions(left: [number, number, number, number], right: [number, number, number, number]): number {
   for (let index = 0; index < left.length; index += 1) {
     if (left[index] !== right[index]) return left[index] - right[index];
   }
   return 0;
+}
+
+function storeLookupError(store: PluginStoreResponse | null, storeError: string, hasForkVersion: boolean): string {
+  if (storeError || !store?.plugins_enabled || hasForkVersion) return "plugin store metadata is unavailable";
+  return "fork update channel is not configured";
 }
 
 export function reconcileUpdateStatus(status: UpdateSnapshot, store: PluginStoreResponse | null, storeError = ""): UpdateSnapshot {
@@ -626,9 +654,9 @@ export function reconcileUpdateStatus(status: UpdateSnapshot, store: PluginStore
   ]);
   const statusError = status.error?.trim() || "";
   const retainedError = obsoleteDirectCheckErrors.has(statusError) ? "" : statusError;
-  const currentVersion = normalizedStableVersion(status.current_version);
-  const plugin = store?.plugins_enabled ? arrayOrEmpty(store.plugins).find((entry) => entry?.id === pluginID) : undefined;
-  const storeVersion = normalizedStableVersion(plugin?.version);
+  const currentVersion = normalizedPluginVersion(status.current_version);
+  const plugin = selectForkStorePlugin(store);
+  const storeVersion = normalizedPluginVersion(plugin?.version);
   const base: UpdateSnapshot = {
     policy: status.policy,
     current_version: status.current_version,
@@ -645,17 +673,17 @@ export function reconcileUpdateStatus(status: UpdateSnapshot, store: PluginStore
   if (!storeVersion || !currentVersion) {
     return {
       ...base,
-      error: retainedError || "plugin store metadata is unavailable",
+      error: retainedError || storeLookupError(store, storeError, Boolean(plugin && !storeVersion)),
     };
   }
-  const storeIsNewer = compareStableVersions(storeVersion.parts, currentVersion.parts) > 0;
+  const storeIsNewer = comparePluginVersions(storeVersion.parts, currentVersion.parts) > 0;
 
   return {
     ...base,
     latest_version: storeVersion.value,
     update_available: storeIsNewer,
     release_url: `${pluginReleaseBaseURL}${storeVersion.value}`,
-    release_source: "plugin_store",
+    release_source: "fork_store",
     error: retainedError || undefined,
   };
 }
@@ -677,23 +705,24 @@ export async function getEffectiveUpdateStatus(checkNow = false): Promise<Update
 
 export async function installPluginUpdate(version: string): Promise<PluginInstallResult> {
   try {
-    const requestedVersion = normalizedStableVersion(version);
+    const requestedVersion = normalizedPluginVersion(version);
     if (!requestedVersion) {
       throw new APIError(400, "plugin store install response was invalid");
     }
     const store = await getPluginStore();
-    const plugin = store.plugins_enabled ? arrayOrEmpty(store.plugins).find((entry) => entry.id === pluginID) : undefined;
-    const storeVersion = normalizedStableVersion(plugin?.version);
-    if (!plugin || !storeVersion || compareStableVersions(storeVersion.parts, requestedVersion.parts) !== 0) {
+    const plugin = selectForkStorePlugin(store);
+    const storeVersion = normalizedPluginVersion(plugin?.version);
+    const sourceID = plugin?.source_id?.trim() || "";
+    if (!plugin || !storeVersion || !sourceID || comparePluginVersions(storeVersion.parts, requestedVersion.parts) !== 0) {
       throw new APIError(404, "ui.the_account_manager_plugin_was_not_found_in_the_plugin_store");
     }
-    const installed = await managementRequest<PluginInstallResult>("/plugin-store/cpa-account-config-manager/install", {
+    const installed = await managementRequest<PluginInstallResult>(`/plugin-store/cpa-account-config-manager/install?source=${encodeURIComponent(sourceID)}`, {
       method: "POST",
       body: JSON.stringify({ version: requestedVersion.value }),
     });
-    const installedVersion = normalizedStableVersion(installed.version);
+    const installedVersion = normalizedPluginVersion(installed.version);
     if (installed.status !== "installed" || installed.id !== pluginID || !installedVersion ||
-      compareStableVersions(installedVersion.parts, requestedVersion.parts) !== 0) {
+      comparePluginVersions(installedVersion.parts, requestedVersion.parts) !== 0) {
       throw new APIError(502, "plugin store install response was invalid");
     }
     const result: PluginInstallResult = {

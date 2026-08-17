@@ -450,6 +450,9 @@ func compareRuntimeClaims(left, right runtimeClaim) int {
 		if leftVersion.patch != rightVersion.patch {
 			return compareInt(leftVersion.patch, rightVersion.patch)
 		}
+		if leftVersion.series != rightVersion.series {
+			return compareInt(leftVersion.series, rightVersion.series)
+		}
 	} else if compared := strings.Compare(left.PluginVersion, right.PluginVersion); compared != 0 {
 		return compared
 	}

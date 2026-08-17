@@ -636,9 +636,9 @@ describe("management API client", () => {
       .mockResolvedValueOnce(jsonResponse(inspectionSnapshot))
 			.mockResolvedValueOnce(jsonResponse({ status: "ok" }))
       .mockResolvedValueOnce(jsonResponse(updateSnapshot))
-      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.0", installed: true, installed_version: "0.2.0", update_available: true }] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.3.0")] }))
       .mockResolvedValueOnce(jsonResponse({ attempted: 0, succeeded: 0, failed: 0, skipped: 0 }))
-      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.0", installed: true, installed_version: "0.2.0", update_available: true }] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.3.0")] }))
       .mockResolvedValueOnce(jsonResponse({ status: "installed", id: "cpa-account-config-manager", version: "0.3.0", restart_required: false }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -677,7 +677,7 @@ describe("management API client", () => {
     expect(new Headers(storeInit.headers).get("Authorization")).toBe("Bearer management-secret");
 
 		const [installURL, installInit] = fetchMock.mock.calls[7] as [string, RequestInit];
-    expect(installURL).toBe("/v0/management/plugin-store/cpa-account-config-manager/install");
+    expect(installURL).toBe("/v0/management/plugin-store/cpa-account-config-manager/install?source=source-karlorz");
     expect(JSON.parse(String(installInit.body))).toEqual({ version: "0.3.0" });
     expect(new Headers(installInit.headers).get("Authorization")).toBe("Bearer management-secret");
 		await vi.waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(8));
@@ -742,7 +742,7 @@ describe("management API client", () => {
   it("preserves the stable restart-required plugin-store error code", async () => {
     setSession("", "management-secret");
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.0", installed: true, installed_version: "0.2.0", update_available: true }] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.3.0")] }))
       .mockResolvedValueOnce(jsonResponse({ error: "plugin_update_requires_restart", message: "loaded plugin cannot be overwritten while running" }, 409));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -759,7 +759,7 @@ describe("management API client", () => {
       { name: "legacy response without restart flag", response: { status: "installed", id: "cpa-account-config-manager", version: "0.3.0" }, wantRestart: false, wantStatus: "succeeded" },
     ]) {
       const fetchMock = vi.fn()
-        .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.0", installed: true, installed_version: "0.2.0", update_available: true }] }))
+        .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.3.0")] }))
         .mockResolvedValueOnce(jsonResponse(test.response))
         .mockResolvedValueOnce(jsonResponse({}));
       vi.stubGlobal("fetch", fetchMock);
@@ -778,7 +778,7 @@ describe("management API client", () => {
   it("rejects unverified versions and malformed plugin-store install responses", async () => {
     setSession("", "management-secret");
     const mismatchedStore = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.1", installed: true, installed_version: "0.2.0", update_available: true }] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.3.1")] }))
       .mockResolvedValueOnce(jsonResponse({}));
     vi.stubGlobal("fetch", mismatchedStore);
     await expect(installPluginUpdate("0.3.0")).rejects.toMatchObject({ status: 404 });
@@ -786,7 +786,7 @@ describe("management API client", () => {
     expect(String(mismatchedStore.mock.calls[1][0])).toContain("/operations/record");
 
     const malformedInstall = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.0", installed: true, installed_version: "0.2.0", update_available: true }] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.3.0")] }))
       .mockResolvedValueOnce(jsonResponse({ status: "installed", id: "another-plugin", version: "0.3.0", restart_required: false }))
       .mockResolvedValueOnce(jsonResponse({}));
     vi.stubGlobal("fetch", malformedInstall);
@@ -800,7 +800,7 @@ describe("management API client", () => {
     setSession("", "management-secret");
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ policy: { check_enabled: true, check_interval_hours: 24, auto_update: false }, current_version: "0.2.3", update_available: false, checking: false, pending: false, error: "release metadata request failed" }))
-      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.2.4", installed: true, installed_version: "0.2.3", update_available: true }] }));
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.2.4")] }));
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await getEffectiveUpdateStatus();
@@ -809,7 +809,7 @@ describe("management API client", () => {
       current_version: "0.2.3",
       latest_version: "0.2.4",
       update_available: true,
-      release_source: "plugin_store",
+      release_source: "fork_store",
     });
     expect(result.error).toBeUndefined();
     expect(result).not.toHaveProperty("github_error");
@@ -822,9 +822,9 @@ describe("management API client", () => {
       policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
       current_version: "0.2.3", update_available: false, checking: false, pending: false,
       error: "release metadata request failed",
-    }, { plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "v0.2.3", installed: true, installed_version: "0.2.3", update_available: false }] });
+    }, { plugins_enabled: true, plugins: [forkStorePlugin("v0.2.3")] });
 
-    expect(result).toMatchObject({ latest_version: "0.2.3", update_available: false, release_source: "plugin_store" });
+    expect(result).toMatchObject({ latest_version: "0.2.3", update_available: false, release_source: "fork_store" });
     expect(result.error).toBeUndefined();
   });
 
@@ -834,10 +834,12 @@ describe("management API client", () => {
       current_version: "0.2.3", update_available: false, checking: false, pending: false,
       error: "release metadata request failed",
     };
-    for (const store of [null, { plugins_enabled: true, plugins: null }, { plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "latest", installed: true, installed_version: "0.2.3", update_available: true }] }]) {
+    expect(reconcileUpdateStatus(status, null).error).toBe("plugin store metadata is unavailable");
+    expect(reconcileUpdateStatus(status, { plugins_enabled: true, plugins: [forkStorePlugin("latest")] }).error).toBe("plugin store metadata is unavailable");
+    for (const store of [{ plugins_enabled: true, plugins: null }, { plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "latest", installed: true, installed_version: "0.2.3", update_available: true }] }]) {
       const result = reconcileUpdateStatus(status, store);
       expect(result.release_source).toBe("none");
-      expect(result.error).toBe("plugin store metadata is unavailable");
+      expect(result.error).toBe("fork update channel is not configured");
       expect(result.update_available).toBe(false);
     }
   });
@@ -847,12 +849,105 @@ describe("management API client", () => {
       policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
       current_version: "0.2.3", latest_version: "9.9.9", update_available: true,
       release_url: "https://example.invalid/release", checking: false, pending: false,
-    }, { plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.2.4", installed: true, installed_version: "0.2.3", update_available: true }] });
+    }, { plugins_enabled: true, plugins: [forkStorePlugin("0.2.4")] });
 
-    expect(result).toMatchObject({ latest_version: "0.2.4", update_available: true, release_source: "plugin_store" });
+    expect(result).toMatchObject({ latest_version: "0.2.4", update_available: true, release_source: "fork_store" });
     expect(result.release_url).toBe("https://github.com/karlorz/cpa-account-config-manager/releases/tag/v0.2.4");
   });
+
+  it("treats a later fork series as an update and ignores official store versions", () => {
+    const status = {
+      policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
+      current_version: "0.3.1332-3", update_available: false, checking: false, pending: false,
+    };
+    const update = reconcileUpdateStatus(status, {
+      plugins_enabled: true,
+      plugins: [
+        officialStorePlugin("0.3.1333"),
+        forkStorePlugin("0.3.1332-4"),
+      ],
+    });
+    expect(update).toMatchObject({
+      latest_version: "0.3.1332-4",
+      update_available: true,
+      release_source: "fork_store",
+      release_url: "https://github.com/karlorz/cpa-account-config-manager/releases/tag/v0.3.1332-4",
+    });
+    expect(update.error).toBeUndefined();
+
+    const current = reconcileUpdateStatus(status, {
+      plugins_enabled: true,
+      plugins: [forkStorePlugin("0.3.1332-3")],
+    });
+    expect(current).toMatchObject({ latest_version: "0.3.1332-3", update_available: false, release_source: "fork_store" });
+
+    const officialOnly = reconcileUpdateStatus(status, {
+      plugins_enabled: true,
+      plugins: [officialStorePlugin("0.3.1333")],
+    });
+    expect(officialOnly).toMatchObject({
+      update_available: false,
+      release_source: "none",
+      error: "fork update channel is not configured",
+    });
+    expect(officialOnly.latest_version).toBeUndefined();
+  });
+
+  it("installs the matching fork-channel version through the selected store source", async () => {
+    setSession("", "management-secret");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        plugins_enabled: true,
+        plugins: [officialStorePlugin("0.3.1333"), forkStorePlugin("0.3.1332-4")],
+      }))
+      .mockResolvedValueOnce(jsonResponse({ status: "installed", id: "cpa-account-config-manager", version: "0.3.1332-4", restart_required: false }))
+      .mockResolvedValueOnce(jsonResponse({}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await installPluginUpdate("0.3.1332-4");
+    expect(result).toEqual({ status: "installed", id: "cpa-account-config-manager", version: "0.3.1332-4", restart_required: false });
+    expect(String(fetchMock.mock.calls[1][0])).toBe("/v0/management/plugin-store/cpa-account-config-manager/install?source=source-karlorz");
+    expect(JSON.parse(String((fetchMock.mock.calls[1] as [string, RequestInit])[1].body))).toEqual({ version: "0.3.1332-4" });
+  });
+
+  it("does not install from the official store when the fork channel is missing", async () => {
+    setSession("", "management-secret");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [officialStorePlugin("0.3.1333")] }))
+      .mockResolvedValueOnce(jsonResponse({}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(installPluginUpdate("0.3.1333")).rejects.toMatchObject({ status: 404 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1][0])).toContain("/operations/record");
+  });
 });
+
+function forkStorePlugin(version: string) {
+  return {
+    id: "cpa-account-config-manager",
+    version,
+    installed: true,
+    installed_version: "0.3.1332-3",
+    update_available: true,
+    source_id: "source-karlorz",
+    source_url: "https://raw.githubusercontent.com/karlorz/cpa-account-config-manager/main/registry.json",
+    repository: "https://github.com/karlorz/cpa-account-config-manager",
+  };
+}
+
+function officialStorePlugin(version: string) {
+  return {
+    id: "cpa-account-config-manager",
+    version,
+    installed: true,
+    installed_version: "0.3.1332-3",
+    update_available: true,
+    source_id: "official",
+    source_url: "https://raw.githubusercontent.com/router-for-me/CLIProxyAPI-Plugins-Store/main/registry.json",
+    repository: "https://github.com/Mxucc/cpa-account-config-manager",
+  };
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
