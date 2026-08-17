@@ -10,6 +10,31 @@ import (
 
 const inspectionProbeWorkers = 4
 
+func refreshInspectionAntigravityQuota(ctx context.Context, service *ModelTestService, accounts []Account, managementBaseURL, managementKey string) {
+	if service == nil || strings.TrimSpace(managementKey) == "" || len(accounts) == 0 {
+		return
+	}
+	var wait sync.WaitGroup
+	workers := make(chan struct{}, inspectionProbeWorkers)
+	for _, account := range accounts {
+		if !isAntigravityAccount(account) || ctx.Err() != nil {
+			continue
+		}
+		account := account
+		wait.Add(1)
+		workers <- struct{}{}
+		go func() {
+			defer wait.Done()
+			defer func() { <-workers }()
+			if ctx.Err() != nil {
+				return
+			}
+			service.RefreshAntigravityInspectionQuota(ctx, managementBaseURL, managementKey, account)
+		}()
+	}
+	wait.Wait()
+}
+
 func inspectionRunDue(now, lastRun time.Time, intervalMinutes int) bool {
 	if lastRun.IsZero() {
 		return true

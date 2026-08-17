@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1144,5 +1145,145 @@ func TestInspectionReloadRestoresBoundedLiveCheckpointWithoutSecrets(t *testing.
 		if bytes.Contains(raw, []byte(secret)) {
 			t.Fatalf("persisted live state leaked %q: %s", secret, raw)
 		}
+	}
+}
+
+func TestInspectionRefreshesAntigravityQuotaWindows(t *testing.T) {
+	host := antigravityQuotaMetadataHost()
+	var quotaCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var call managementAPICallRequest
+		_ = json.NewDecoder(request.Body).Decode(&call)
+		body := `{"groups":[{"buckets":[{"remainingFraction":0.835363,"window":"5h","resetTime":"2026-08-17T15:49:00Z"},{"remainingFraction":0.39436734,"window":"weekly","resetTime":"2026-08-22T02:22:00Z"}]}]}`
+		switch {
+		case strings.Contains(call.URL, "retrieveUserQuotaSummary"):
+			quotaCalls.Add(1)
+		case call.URL == antigravityLoadCodeAssistURL:
+			body = `{"currentTier":{"id":"g1-pro-tier"}}`
+		default:
+			body = `{"response":{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}}`
+		}
+		_ = json.NewEncoder(writer).Encode(managementAPICallResponse{StatusCode: http.StatusOK, Body: managementAPICallBody(body)})
+	}))
+	defer server.Close()
+
+	app := NewApp(host, []byte("index"))
+	app.modelTests.doer = server.Client()
+	app.Configure([]byte("data_dir: " + t.TempDir() + "\nmanagement_base_url: " + server.URL + "\n"))
+	defer app.Close()
+	app.usage.ObserveQuotaUsage("ag-1", &QuotaUsageSnapshot{
+		Provider: "antigravity",
+		FiveHour: &UsageWindowSnapshot{UsedPercent: 0, WindowMinutes: 300, ResetAt: timePointer(time.Date(2026, time.August, 17, 14, 28, 0, 0, time.UTC))},
+		SevenDay: &UsageWindowSnapshot{UsedPercent: 58, WindowMinutes: 10080, ResetAt: timePointer(time.Date(2026, time.August, 22, 2, 22, 0, 0, time.UTC))},
+	})
+
+	response := app.HandleManagement(context.Background(), cpaapi.ManagementRequest{
+		Method:  http.MethodPost,
+		Path:    "/v0/management/plugins/cpa-account-config-manager/inspection/scan",
+		Headers: http.Header{"Authorization": []string{"Bearer current-management-secret"}},
+	})
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("inspection scan = %d %s", response.StatusCode, response.Body)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := app.inspection.Snapshot()
+		if !snapshot.Pending && !snapshot.Running && !snapshot.LastRun.FinishedAt.IsZero() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if quotaCalls.Load() == 0 {
+		t.Fatal("inspection did not call retrieveUserQuotaSummary")
+	}
+	listed, errList := app.accounts.List(context.Background(), ListQuery{Page: 1, PageSize: 50})
+	if errList != nil || len(listed.Accounts) != 1 || listed.Accounts[0].Usage == nil || listed.Accounts[0].Usage.Quota == nil ||
+		listed.Accounts[0].Usage.Quota.FiveHour == nil || listed.Accounts[0].Usage.Quota.FiveHour.UsedPercent < 16 || listed.Accounts[0].Usage.Quota.FiveHour.UsedPercent > 17 ||
+		listed.Accounts[0].Usage.Quota.SevenDay == nil || listed.Accounts[0].Usage.Quota.SevenDay.UsedPercent < 60 || listed.Accounts[0].Usage.Quota.SevenDay.UsedPercent > 61 {
+		t.Fatalf("account quota after inspection = %#v err=%v", listed.Accounts, errList)
+	}
+	results := app.inspection.ListResults(InspectionResultQuery{Page: 1, PageSize: 50})
+	if len(results.Results) != 1 || results.Results[0].QuotaUsage == nil || results.Results[0].QuotaUsage.FiveHour == nil ||
+		results.Results[0].QuotaUsage.FiveHour.UsedPercent < 16 || results.Results[0].QuotaUsage.FiveHour.UsedPercent > 17 ||
+		results.Results[0].QuotaUsage.SevenDay == nil || results.Results[0].QuotaUsage.SevenDay.UsedPercent < 60 || results.Results[0].QuotaUsage.SevenDay.UsedPercent > 61 {
+		t.Fatalf("inspection quota = %#v", results.Results)
+	}
+}
+
+func TestNativeInspectionRefreshesAntigravityQuotaWindows(t *testing.T) {
+	host := antigravityQuotaMetadataHost()
+	var quotaCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var call managementAPICallRequest
+		_ = json.NewDecoder(request.Body).Decode(&call)
+		if strings.Contains(call.URL, "retrieveUserQuotaSummary") {
+			quotaCalls.Add(1)
+		}
+		body := `{"groups":[{"buckets":[{"remainingFraction":0.8,"window":"5h"},{"remainingFraction":0.4,"window":"weekly"}]}]}`
+		_ = json.NewEncoder(writer).Encode(managementAPICallResponse{StatusCode: http.StatusOK, Body: managementAPICallBody(body)})
+	}))
+	defer server.Close()
+
+	app := NewApp(host, []byte("index"))
+	app.modelTests.doer = server.Client()
+	app.Configure([]byte("data_dir: " + t.TempDir() + "\nmanagement_base_url: " + server.URL + "\n"))
+	defer app.Close()
+	app.inspection.ArmModelProbes("current-management-secret")
+	before := app.inspection.Snapshot().LastRun.StartedAt
+	app.inspection.RequestScan()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := app.inspection.Snapshot()
+		if !snapshot.Pending && !snapshot.Running && snapshot.LastRun.StartedAt.After(before) && !snapshot.LastRun.FinishedAt.IsZero() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if quotaCalls.Load() == 0 {
+		t.Fatal("native inspection did not call retrieveUserQuotaSummary")
+	}
+	results := app.inspection.ListResults(InspectionResultQuery{Page: 1, PageSize: 50})
+	if len(results.Results) != 1 || results.Results[0].QuotaUsage == nil || results.Results[0].QuotaUsage.FiveHour == nil ||
+		results.Results[0].QuotaUsage.FiveHour.UsedPercent < 19.9 || results.Results[0].QuotaUsage.FiveHour.UsedPercent > 20.1 ||
+		results.Results[0].QuotaUsage.SevenDay == nil || results.Results[0].QuotaUsage.SevenDay.UsedPercent < 59.9 ||
+		results.Results[0].QuotaUsage.SevenDay.UsedPercent > 60.1 {
+		t.Fatalf("native inspection quota = %#v", results.Results[0].QuotaUsage)
+	}
+}
+
+func TestInspectionKeepsStaleAntigravityQuotaWhenSummaryFails(t *testing.T) {
+	host := antigravityQuotaMetadataHost()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_ = json.NewEncoder(writer).Encode(managementAPICallResponse{StatusCode: http.StatusBadGateway, Body: `{"error":"unavailable"}`})
+	}))
+	defer server.Close()
+
+	app := NewApp(host, []byte("index"))
+	app.modelTests.doer = server.Client()
+	app.Configure([]byte("data_dir: " + t.TempDir() + "\nmanagement_base_url: " + server.URL + "\n"))
+	defer app.Close()
+	staleReset := time.Date(2026, time.August, 17, 14, 28, 0, 0, time.UTC)
+	app.usage.ObserveQuotaUsage("ag-1", &QuotaUsageSnapshot{
+		Provider: "antigravity",
+		FiveHour: &UsageWindowSnapshot{UsedPercent: 12, WindowMinutes: 300, ResetAt: timePointer(staleReset)},
+		SevenDay: &UsageWindowSnapshot{UsedPercent: 58, WindowMinutes: 10080},
+	})
+	app.inspection.ArmModelProbes("current-management-secret")
+	before := app.inspection.Snapshot().LastRun.StartedAt
+	app.inspection.RequestScan()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := app.inspection.Snapshot()
+		if !snapshot.Pending && !snapshot.Running && snapshot.LastRun.StartedAt.After(before) && !snapshot.LastRun.FinishedAt.IsZero() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	results := app.inspection.ListResults(InspectionResultQuery{Page: 1, PageSize: 50})
+	if len(results.Results) != 1 || results.Results[0].QuotaUsage == nil || results.Results[0].QuotaUsage.FiveHour == nil ||
+		results.Results[0].QuotaUsage.FiveHour.UsedPercent != 12 || results.Results[0].QuotaUsage.SevenDay == nil ||
+		results.Results[0].QuotaUsage.SevenDay.UsedPercent != 58 {
+		t.Fatalf("stale quota was replaced = %#v", results.Results)
 	}
 }

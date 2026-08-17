@@ -1529,6 +1529,12 @@ func (e *InspectionEngine) scanWithMode(ctx context.Context, scheduled, manualPr
 			previous[result.AccountID] = record
 		}
 	}
+	// Antigravity quota is not present on generateContent responses. Refresh it
+	// from retrieveUserQuotaSummary during every armed inspection so the result
+	// row does not keep a stale account-table snapshot.
+	if strings.TrimSpace(managementKey) != "" && modelTests != nil {
+		refreshInspectionAntigravityQuota(ctx, modelTests, accounts, config.ManagementBaseURL, managementKey)
+	}
 	// A normal quota probe can freeze an overdraft baseline while this scan is
 	// running. Refresh only the in-memory usage projection so remediation in
 	// the same scan uses the frozen recovery time rather than a later mutable

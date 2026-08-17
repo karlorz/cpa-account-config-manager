@@ -123,6 +123,7 @@ type ModelTestService struct {
 
 type credentialUsageObserver interface {
 	ObserveCredentialUsage(string, *CodexUsageSnapshot)
+	ObserveQuotaUsage(string, *QuotaUsageSnapshot)
 }
 
 type overdraftCycleObserver interface {
@@ -294,6 +295,30 @@ func (s *ModelTestService) SetExperimentalTransformer(transformer RequestTransfo
 		return
 	}
 	s.experimentalTransformer = transformer
+}
+
+func (s *ModelTestService) RefreshAntigravityInspectionQuota(ctx context.Context, managementBaseURL, managementKey string, account Account) {
+	if s == nil || s.usage == nil || !isAntigravityAccount(account) || strings.TrimSpace(managementKey) == "" {
+		return
+	}
+	client, errClient := newManagementClient(managementBaseURL, managementKey, s.doer)
+	if errClient != nil {
+		return
+	}
+	defer client.clearSecrets()
+	documentMetadata := map[string]any{}
+	if projectID := s.authMetadata(ctx, account.ID).projectID; projectID != "" {
+		documentMetadata["project_id"] = projectID
+	}
+	metadata, errFetch := fetchAntigravityQuotaMetadata(ctx, client, account, documentMetadata)
+	if errFetch != nil || metadata.quota == nil {
+		return
+	}
+	snapshot := metadata.quota
+	snapshot.Provider = "antigravity"
+	snapshot.PlanType = metadata.planType
+	snapshot.MetadataObservedAt = s.currentTime()
+	s.usage.ObserveQuotaUsage(account.ID, snapshot)
 }
 
 func (s *ModelTestService) SetAgentIdentityExperiment(experiment *AgentIdentityExperiment) {
