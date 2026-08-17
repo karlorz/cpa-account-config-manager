@@ -119,10 +119,17 @@ CPA 加载插件后，在 Management Center 中打开 **CPA-A Manager**。大多
 ```bash
 make verify
 make build
-make package VERSION=X.Y.Z
+make package VERSION=X.Y.Z-N
 ```
 
-`make verify` 会格式化并测试 Go 代码、测试和构建 React 界面、检查内嵌资源并验证发行元数据。Release 使用 `vX.Y.Z` annotated tag；发布工作流会构建四个平台压缩包、四个对应的 `.sha256` 文件和汇总的 `checksums.txt`。
+`make verify` 会格式化并测试 Go 代码、测试和构建 React 界面、检查内嵌资源并验证发行元数据。本仓库是 `karlorz` fork：Release 使用 `vX.Y.Z-N` annotated tag（如 `v0.3.1332-0`、`v0.3.1332-1`），发布工作流会构建四个平台压缩包、四个对应的 `.sha256` 文件和汇总的 `checksums.txt`。
+
+#### 标签规则（fork 必读）
+
+- fork 发布标签一律使用 `vX.Y.Z-N` 递增后缀（如 `v0.3.1332-0`、`v0.3.1332-1`），版本号 = 去掉前缀 `v`。
+- 上游（Mxucc/cpa-account-config-manager）拥有不带后缀的标签（`v0.3.1332`、`v0.3.1333` 等），fork 不得创建、覆盖或删除同名标签，也不得占用下一个上游补丁号。
+- 同步上游用 `git fetch upstream --tags`；若本地有与上游同名的标签，说明它是违规创建的，应先删除（本地 `git tag -d <name>`，已推送则 `git push origin :refs/tags/<name>`）再重新 fetch。
+- 发布工作流的第一个 job 会校验这两条规则（标签格式 + 与上游标签冲突检查），不合规的标签会在构建前直接失败。只推送到 `origin`，不要推送到 `upstream`。
 
 ## 致谢
 

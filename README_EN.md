@@ -191,13 +191,30 @@ for CGO.
 ```bash
 make verify
 make build
-make package VERSION=X.Y.Z
+make package VERSION=X.Y.Z-N
 ```
 
 `make verify` formats and tests Go code, tests and builds the React UI, checks
-embedded assets, and validates release metadata. Release tags are annotated as
-`vX.Y.Z`; the release workflow builds four platform archives, four matching
-`.sha256` files, and `checksums.txt`.
+embedded assets, and validates release metadata. This repository is the
+`karlorz` fork: release tags are annotated as `vX.Y.Z-N` (for example
+`v0.3.1332-0`, `v0.3.1332-1`). The release workflow builds four platform
+archives, four matching `.sha256` files, and `checksums.txt`.
+
+#### Tag policy (required on this fork)
+
+- Fork release tags always use the incrementing `vX.Y.Z-N` suffix
+  (`v0.3.1332-0`, `v0.3.1332-1`, ...). The version string is the tag without
+  the leading `v`.
+- Upstream (`Mxucc/cpa-account-config-manager`) owns unsuffixed tags such as
+  `v0.3.1332` and `v0.3.1333`. Do not create, replace, or delete those names,
+  and do not take the next upstream patch number for a fork release.
+- Sync upstream with `git fetch upstream --tags`. A local tag that collides
+  with an upstream name is a policy violation: delete it
+  (`git tag -d <name>`; if pushed, `git push origin :refs/tags/<name>`) and
+  fetch again.
+- The first release-workflow job enforces both rules (pattern + upstream
+  collision) and fails the run before any build. Push tags to `origin` only;
+  never push to `upstream`.
 
 ## Acknowledgements
 
