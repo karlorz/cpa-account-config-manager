@@ -36,6 +36,7 @@ import type {
   InspectionSnapshot,
   JobSnapshot,
   ModelTestResult,
+  UsageWindowSnapshot,
 } from "../types";
 import { AutomationSettingsDialog } from "./AutomationSettingsDialog";
 import { IconButton } from "./IconButton";
@@ -886,9 +887,10 @@ function LiveInspectionResult({ result, onModelTest, onToggle, onAction }: { res
 
 function InspectionQuotaUsage({ result, compact = false }: { result: InspectionResult; compact?: boolean }) {
   const { locale, formatDateTime, tx } = useI18n();
+  const source = result.quota_usage ?? result.codex_usage;
   const windows = [
-    { key: "five_hour", label: tx("ui.5_hour_usage"), value: result.codex_usage?.five_hour },
-    { key: "seven_day", label: tx("ui.7_day_usage"), value: result.codex_usage?.seven_day },
+    { key: "five_hour", label: inspectionQuotaWindowLabel(source?.five_hour, tx), value: source?.five_hour },
+    { key: "seven_day", label: inspectionQuotaWindowLabel(source?.seven_day, tx), value: source?.seven_day },
   ].filter((entry) => entry.value);
   const quotaLabel = result.quota_window ? quotaWindowLabel(result.quota_window, locale) : "";
   return (
@@ -1026,6 +1028,14 @@ function reviewStatusLabel(value: NonNullable<InspectionResult["review_status"]>
 
 function confidenceLabel(value: string, locale: Locale): string {
   return translateUI(locale, value === "high" ? "ui.high_confidence" : value === "medium" ? "ui.medium_confidence" : "ui.low_confidence");
+}
+
+function inspectionQuotaWindowLabel(window: UsageWindowSnapshot | undefined, tx: (key: UIMessageKey) => string): string {
+  const minutes = window?.window_minutes ?? 0;
+  if (minutes <= 360) return tx("ui.5_hour_usage");
+  if (minutes <= 24 * 60 + 60) return tx("ui.1_day_usage");
+  if (minutes <= 8 * 24 * 60) return tx("ui.7_day_usage");
+  return tx("ui.30_day_usage");
 }
 
 function quotaWindowLabel(value: NonNullable<InspectionResult["quota_window"]>, locale: Locale): string {

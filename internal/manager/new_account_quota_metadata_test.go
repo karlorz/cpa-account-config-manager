@@ -25,16 +25,22 @@ func TestQuotaMetadataBootstrapCollectsOnlyMissingCodexAccountsOnce(t *testing.T
 	missing := testQuotaBootstrapAccount("missing", "codex", time.Time{})
 	observed := testQuotaBootstrapAccount("observed", "codex", observedAt)
 	unsupported := testQuotaBootstrapAccount("unsupported", "gemini", time.Time{})
+	antigravity := testQuotaBootstrapAccount("antigravity", "antigravity", time.Time{})
+	observedAntigravity := testQuotaBootstrapAccount("ag-observed", "antigravity", observedAt)
 
-	engine.ObserveAccounts([]Account{missing, observed, unsupported})
+	engine.ObserveAccounts([]Account{missing, observed, unsupported, antigravity, observedAntigravity})
 	engine.reconcile(context.Background())
-	engine.ObserveAccounts([]Account{missing, observed, unsupported})
+	engine.ObserveAccounts([]Account{missing, observed, unsupported, antigravity, observedAntigravity})
 	engine.reconcile(context.Background())
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(calls) != 1 || calls[0] != missing.ID {
-		t.Fatalf("handler calls = %#v, want only %q", calls, missing.ID)
+	got := map[string]int{}
+	for _, id := range calls {
+		got[id]++
+	}
+	if len(got) != 2 || got[missing.ID] != 1 || got[antigravity.ID] != 1 {
+		t.Fatalf("handler calls = %#v, want missing Codex and Antigravity once", calls)
 	}
 }
 
@@ -135,9 +141,13 @@ func TestQuotaMetadataBootstrapShutdownCancelsWorkAndClearsManagementKey(t *test
 }
 
 func testQuotaBootstrapAccount(id, provider string, observedAt time.Time) Account {
-	account := Account{ID: id, AuthID: id, Name: id + ".json", Provider: provider, Type: provider, Email: id + "@example.com"}
+	account := Account{ID: id, AuthID: id, Name: id + ".json", Provider: provider, Type: provider, Email: id + "@example.com", ProjectID: "proj-" + id}
 	if !observedAt.IsZero() {
-		account.Usage = &AccountUsageSnapshot{Codex: &CodexUsageSnapshot{MetadataObservedAt: observedAt}}
+		if provider == "antigravity" {
+			account.Usage = &AccountUsageSnapshot{Quota: &QuotaUsageSnapshot{MetadataObservedAt: observedAt}}
+		} else {
+			account.Usage = &AccountUsageSnapshot{Codex: &CodexUsageSnapshot{MetadataObservedAt: observedAt}}
+		}
 	}
 	return account
 }

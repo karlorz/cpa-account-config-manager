@@ -295,6 +295,119 @@ func quotaMetadataHost() *fakeAuthHost {
 	}
 }
 
+func TestAntigravityQuotaMetadataRefreshPersistsWindowsAndPlan(t *testing.T) {
+	dataDir := t.TempDir()
+	host := antigravityQuotaMetadataHost()
+	var mu sync.Mutex
+	requests := make([]managementAPICallRequest, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var call managementAPICallRequest
+		if errDecode := json.NewDecoder(request.Body).Decode(&call); errDecode != nil {
+			t.Errorf("decode API call: %v", errDecode)
+		}
+		mu.Lock()
+		requests = append(requests, call)
+		mu.Unlock()
+		body := `{"groups":[{"buckets":[{"remainingFraction":0.25,"window":"5h","resetTime":"2099-01-01T00:00:00Z"},{"remainingFraction":0.5,"window":"weekly","resetTime":"2099-01-08T00:00:00Z"}]}]}`
+		if call.URL == antigravityLoadCodeAssistURL {
+			body = `{"currentTier":{"id":"g1-ultra-lite-tier"}}`
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"status_code": 200, "header": map[string][]string{}, "body": body})
+	}))
+	defer server.Close()
+
+	app := NewApp(host, []byte("index"))
+	app.Configure([]byte(fmt.Sprintf("data_dir: %q\nmanagement_base_url: %q\n", dataDir, server.URL)))
+	response := app.HandleManagement(context.Background(), cpaapi.ManagementRequest{
+		Method:  http.MethodPost,
+		Path:    "/v0/management/plugins/cpa-account-config-manager/accounts/quota-metadata/refresh",
+		Headers: http.Header{"Authorization": []string{"Bearer management-secret"}},
+		Body:    []byte(`{"account_id":"ag-1"}`),
+	})
+	if response.StatusCode != http.StatusOK {
+		app.Close()
+		t.Fatalf("refresh = %d %s", response.StatusCode, response.Body)
+	}
+	var refreshed QuotaMetadataResponse
+	if errDecode := json.Unmarshal(response.Body, &refreshed); errDecode != nil {
+		app.Close()
+		t.Fatalf("decode response: %v", errDecode)
+	}
+	if refreshed.PlanType != "ultra-lite" || refreshed.ActiveResetCount != nil {
+		app.Close()
+		t.Fatalf("refresh result = %#v", refreshed)
+	}
+	listed, errList := app.accounts.List(context.Background(), ListQuery{Page: 1, PageSize: 50})
+	if errList != nil || len(listed.Accounts) != 1 || listed.Accounts[0].PlanType != "ultra-lite" ||
+		listed.Accounts[0].Usage == nil || listed.Accounts[0].Usage.Quota == nil ||
+		listed.Accounts[0].Usage.Quota.FiveHour == nil || listed.Accounts[0].Usage.Quota.FiveHour.UsedPercent != 75 ||
+		listed.Accounts[0].Usage.Codex != nil {
+		app.Close()
+		t.Fatalf("listed account = %#v err=%v", listed.Accounts, errList)
+	}
+	app.Close()
+
+	mu.Lock()
+	captured := append([]managementAPICallRequest(nil), requests...)
+	mu.Unlock()
+	if len(captured) != 2 || captured[0].URL != antigravityQuotaURLs[0] || captured[1].URL != antigravityLoadCodeAssistURL {
+		t.Fatalf("API calls = %#v", captured)
+	}
+	if captured[0].Header["User-Agent"] != antigravityQuotaUserAgent || captured[0].Data != `{"project":"gcp-project"}` {
+		t.Fatalf("quota call = %#v", captured[0])
+	}
+
+	restarted := NewApp(host, []byte("index"))
+	restarted.Configure([]byte(fmt.Sprintf("data_dir: %q\nmanagement_base_url: %q\n", dataDir, server.URL)))
+	reloaded, errReload := restarted.accounts.List(context.Background(), ListQuery{Page: 1, PageSize: 50})
+	if errReload != nil || len(reloaded.Accounts) != 1 || reloaded.Accounts[0].PlanType != "ultra-lite" ||
+		reloaded.Accounts[0].Usage == nil || reloaded.Accounts[0].Usage.Quota == nil ||
+		reloaded.Accounts[0].Usage.Quota.SevenDay == nil || reloaded.Accounts[0].Usage.Quota.SevenDay.UsedPercent != 50 {
+		restarted.Close()
+		t.Fatalf("reloaded account = %#v err=%v", reloaded.Accounts, errReload)
+	}
+	restarted.Close()
+}
+
+func TestAntigravityQuotaMetadataResetRemainsUnsupported(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		called = true
+		_ = json.NewEncoder(writer).Encode(map[string]any{"status_code": 200, "body": `{}`})
+	}))
+	defer server.Close()
+	app := NewApp(antigravityQuotaMetadataHost(), []byte("index"))
+	defer app.Close()
+	app.Configure([]byte(fmt.Sprintf("data_dir: %q\nmanagement_base_url: %q\n", t.TempDir(), server.URL)))
+	response := app.HandleManagement(context.Background(), cpaapi.ManagementRequest{
+		Method: http.MethodPost, Path: "/v0/management/plugins/cpa-account-config-manager/accounts/quota-metadata/reset",
+		Headers: http.Header{"Authorization": []string{"Bearer management-secret"}},
+		Body:    []byte(`{"account_id":"ag-1","confirm":true}`),
+	})
+	if response.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("reset = %d %s", response.StatusCode, response.Body)
+	}
+	if !bytes.Contains(response.Body, []byte(ErrQuotaMetadataUnsupported.Error())) {
+		t.Fatalf("reset body = %s", response.Body)
+	}
+	if called {
+		t.Fatal("antigravity reset called upstream")
+	}
+}
+
+func antigravityQuotaMetadataHost() *fakeAuthHost {
+	path := filepath.Join(os.TempDir(), "ag-1.json")
+	return &fakeAuthHost{
+		entries: []cpaapi.HostAuthFileEntry{{
+			AuthIndex: "ag-1", Name: "ag-1.json", Provider: "antigravity", Type: "antigravity", AccountType: "oauth",
+			ProjectID: "gcp-project", Email: "ag@example.com", Source: "file", Path: path,
+		}},
+		details: map[string]cpaapi.HostAuthGetResponse{
+			"ag-1": {AuthIndex: "ag-1", Name: "ag-1.json", Path: path, JSON: json.RawMessage(`{"email":"ag@example.com","project_id":"gcp-project","type":"antigravity"}`)},
+		},
+	}
+}
+
 func TestQuotaMetadataPersistenceKeepsAccountsSeparatedByIdentity(t *testing.T) {
 	tracker := NewUsageTracker()
 	tracker.persistDelay = time.Hour

@@ -43,6 +43,7 @@ type AccountUsageSnapshot struct {
 	LastRequestAt       *time.Time           `json:"last_request_at,omitempty"`
 	UpdatedAt           *time.Time           `json:"updated_at,omitempty"`
 	Codex               *CodexUsageSnapshot  `json:"codex,omitempty"`
+	Quota               *QuotaUsageSnapshot  `json:"quota,omitempty"`
 	Credit              *CreditUsageSnapshot `json:"credit,omitempty"`
 }
 
@@ -58,6 +59,16 @@ type CodexUsageSnapshot struct {
 	ActiveResetCount   *int                 `json:"active_reset_count,omitempty"`
 	MetadataObservedAt time.Time            `json:"metadata_observed_at,omitempty"`
 	ObservedAt         time.Time            `json:"observed_at"`
+}
+
+type QuotaUsageSnapshot struct {
+	Provider           string               `json:"provider,omitempty"`
+	PlanType           string               `json:"plan_type,omitempty"`
+	FiveHour           *UsageWindowSnapshot `json:"five_hour,omitempty"`
+	SevenDay           *UsageWindowSnapshot `json:"seven_day,omitempty"`
+	MetadataObservedAt time.Time            `json:"metadata_observed_at,omitempty"`
+	ObservedAt         time.Time            `json:"observed_at"`
+	Warning            string               `json:"warning,omitempty"`
 }
 
 type UsageWindowSnapshot struct {
@@ -97,6 +108,7 @@ type usageAggregate struct {
 	LastRequestAt          time.Time                `json:"last_request_at,omitempty"`
 	UpdatedAt              time.Time                `json:"updated_at,omitempty"`
 	Codex                  *CodexUsageSnapshot      `json:"codex,omitempty"`
+	Quota                  *QuotaUsageSnapshot      `json:"quota,omitempty"`
 }
 
 type accountLifecycleState struct {
@@ -495,6 +507,52 @@ func (t *UsageTracker) ObserveCredentialUsage(authIndex string, snapshot *CodexU
 	t.requestPersist()
 }
 
+func (t *UsageTracker) ObserveQuotaUsage(authIndex string, snapshot *QuotaUsageSnapshot) {
+	if t == nil || snapshot == nil {
+		return
+	}
+	authIndex = safeOperationIdentifier(authIndex, 256)
+	if authIndex == "" {
+		return
+	}
+	now := t.currentTime()
+	cloned := cloneQuotaUsage(snapshot)
+	if cloned == nil || !hasQuotaUsageData(cloned) {
+		return
+	}
+	t.mu.Lock()
+	storageKey, identity := t.usageStorageKeyLocked(authIndex)
+	if _, exists := t.accounts[storageKey]; !exists && len(t.accounts) >= maxUsageAccounts {
+		t.evictOldestLocked()
+	}
+	aggregate := t.accounts[storageKey]
+	aggregate.Identity = mergeUsageIdentity(aggregate.Identity, identity)
+	if aggregate.Quota == nil {
+		aggregate.Quota = &QuotaUsageSnapshot{}
+	}
+	if cloned.FiveHour != nil {
+		aggregate.Quota.FiveHour = mergeObservedUsageWindow(aggregate.Quota.FiveHour, cloned.FiveHour)
+	}
+	if cloned.SevenDay != nil {
+		aggregate.Quota.SevenDay = mergeObservedUsageWindow(aggregate.Quota.SevenDay, cloned.SevenDay)
+	}
+	if cloned.FiveHour != nil || cloned.SevenDay != nil {
+		aggregate.Quota.ObservedAt = now
+	}
+	if !cloned.MetadataObservedAt.IsZero() || cloned.PlanType != "" || cloned.Provider != "" || cloned.Warning != "" {
+		aggregate.Quota.Provider = firstNonEmpty(cloned.Provider, aggregate.Quota.Provider)
+		aggregate.Quota.PlanType = cloned.PlanType
+		aggregate.Quota.Warning = cloned.Warning
+		aggregate.Quota.MetadataObservedAt = now
+	}
+	aggregate.UpdatedAt = now
+	t.accounts[storageKey] = aggregate
+	t.dirty = true
+	t.generation++
+	t.mu.Unlock()
+	t.requestPersist()
+}
+
 func (t *UsageTracker) BeginOverdraftCycle(authIndex, quotaWindow string, exhaustedAt time.Time) {
 	if t == nil {
 		return
@@ -749,10 +807,11 @@ func publicUsageSnapshot(aggregate usageAggregate, now time.Time) *AccountUsageS
 			codex = nil
 		}
 	}
+	quota := publicQuotaUsageSnapshot(aggregate.Quota, now)
 	credit := publicCreditUsageSnapshot(aggregate)
 	if aggregate.InputTokens == 0 && aggregate.OutputTokens == 0 && aggregate.ReasoningTokens == 0 &&
 		aggregate.CachedTokens == 0 && aggregate.CacheReadTokens == 0 && aggregate.CacheCreationTokens == 0 &&
-		aggregate.TotalTokens == 0 && aggregate.LastRequestAt.IsZero() && codex == nil && credit == nil {
+		aggregate.TotalTokens == 0 && aggregate.LastRequestAt.IsZero() && codex == nil && quota == nil && credit == nil {
 		return nil
 	}
 	snapshot := &AccountUsageSnapshot{
@@ -764,6 +823,7 @@ func publicUsageSnapshot(aggregate usageAggregate, now time.Time) *AccountUsageS
 		CacheCreationTokens: aggregate.CacheCreationTokens,
 		TotalTokens:         aggregate.TotalTokens,
 		Codex:               codex,
+		Quota:               quota,
 		Credit:              credit,
 	}
 	if !aggregate.LastRequestAt.IsZero() {
@@ -1004,6 +1064,7 @@ func cloneUsageAggregates(accounts map[string]usageAggregate) map[string]usageAg
 	cloned := make(map[string]usageAggregate, len(accounts))
 	for storageKey, aggregate := range accounts {
 		aggregate.Codex = cloneCodexUsage(aggregate.Codex)
+		aggregate.Quota = cloneQuotaUsage(aggregate.Quota)
 		aggregate.FiveHourOverdraft = cloneOverdraftCycle(aggregate.FiveHourOverdraft)
 		aggregate.SevenDayOverdraft = cloneOverdraftCycle(aggregate.SevenDayOverdraft)
 		aggregate.Lifecycle = cloneAccountLifecycle(aggregate.Lifecycle)
@@ -1044,6 +1105,33 @@ func cloneCodexUsage(snapshot *CodexUsageSnapshot) *CodexUsageSnapshot {
 
 func hasCodexUsageData(snapshot *CodexUsageSnapshot) bool {
 	return snapshot != nil && (snapshot.FiveHour != nil || snapshot.SevenDay != nil || snapshot.PlanType != "" || snapshot.ActiveResetCount != nil || !snapshot.MetadataObservedAt.IsZero())
+}
+
+func cloneQuotaUsage(snapshot *QuotaUsageSnapshot) *QuotaUsageSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	cloned := *snapshot
+	cloned.FiveHour = cloneUsageWindow(snapshot.FiveHour)
+	cloned.SevenDay = cloneUsageWindow(snapshot.SevenDay)
+	return &cloned
+}
+
+func hasQuotaUsageData(snapshot *QuotaUsageSnapshot) bool {
+	return snapshot != nil && (snapshot.FiveHour != nil || snapshot.SevenDay != nil || snapshot.PlanType != "" || snapshot.Provider != "" || snapshot.Warning != "" || !snapshot.MetadataObservedAt.IsZero())
+}
+
+func publicQuotaUsageSnapshot(snapshot *QuotaUsageSnapshot, now time.Time) *QuotaUsageSnapshot {
+	cloned := cloneQuotaUsage(snapshot)
+	if cloned == nil {
+		return nil
+	}
+	cloned.FiveHour = currentUsageWindow(cloned.FiveHour, cloned.ObservedAt, now)
+	cloned.SevenDay = currentUsageWindow(cloned.SevenDay, cloned.ObservedAt, now)
+	if !hasQuotaUsageData(cloned) {
+		return nil
+	}
+	return cloned
 }
 
 func cloneUsageWindow(window *UsageWindowSnapshot) *UsageWindowSnapshot {

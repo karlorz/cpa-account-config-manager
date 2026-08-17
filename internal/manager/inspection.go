@@ -743,7 +743,21 @@ func (e *InspectionEngine) Observe(record cpaapi.UsageRecord) {
 }
 
 func (e *InspectionEngine) ObserveCodexQuotaSnapshot(authIndex string, snapshot *CodexUsageSnapshot) {
-	if e == nil || snapshot == nil {
+	if snapshot == nil {
+		return
+	}
+	e.observeQuotaWindows(authIndex, snapshot.ObservedAt, snapshot.FiveHour, snapshot.SevenDay)
+}
+
+func (e *InspectionEngine) ObserveQuotaSnapshot(authIndex string, snapshot *QuotaUsageSnapshot) {
+	if snapshot == nil {
+		return
+	}
+	e.observeQuotaWindows(authIndex, snapshot.ObservedAt, snapshot.FiveHour, snapshot.SevenDay)
+}
+
+func (e *InspectionEngine) observeQuotaWindows(authIndex string, observedAt time.Time, fiveHour, sevenDay *UsageWindowSnapshot) {
+	if e == nil {
 		return
 	}
 	authIndex = strings.TrimSpace(authIndex)
@@ -758,7 +772,7 @@ func (e *InspectionEngine) ObserveCodexQuotaSnapshot(authIndex string, snapshot 
 	}
 	record, exists := e.records[authIndex]
 	wake := exists && e.started && backgroundWorkAllowed(e.backgroundOwner) &&
-		quotaSnapshotRequiresImmediateScan(e.policy, snapshot, record, now)
+		quotaWindowsRequireImmediateScan(e.policy, observedAt, fiveHour, sevenDay, record, now)
 	if wake {
 		e.pending = true
 	}
@@ -772,10 +786,17 @@ func (e *InspectionEngine) ObserveCodexQuotaSnapshot(authIndex string, snapshot 
 }
 
 func quotaSnapshotRequiresImmediateScan(policy InspectionPolicy, snapshot *CodexUsageSnapshot, record inspectionRecord, now time.Time) bool {
+	if snapshot == nil {
+		return false
+	}
+	return quotaWindowsRequireImmediateScan(policy, snapshot.ObservedAt, snapshot.FiveHour, snapshot.SevenDay, record, now)
+}
+
+func quotaWindowsRequireImmediateScan(policy InspectionPolicy, observedAt time.Time, fiveHour, sevenDay *UsageWindowSnapshot, record inspectionRecord, now time.Time) bool {
 	policy = normalizeInspectionPolicy(policy)
 	return policy.Enabled && policy.AutoEnable && record.Result.OwnedDisable && record.Result.Disabled &&
-		record.DisableReason == "quota_exhausted" && freshQuotaRecoverySnapshot(snapshot, record.DisabledAt, now) &&
-		codexQuotaWindowRecovered(snapshot, quotaRecoveryWindow(record)) && !quotaRecoveryBlockedByRecord(record, now)
+		record.DisableReason == "quota_exhausted" && freshQuotaRecoveryObservedAt(observedAt, record.DisabledAt, now) &&
+		usageWindowsRecovered(fiveHour, sevenDay, quotaRecoveryWindow(record)) && !quotaRecoveryBlockedByRecord(record, now)
 }
 
 func quotaRecoveryBlockedByRecord(record inspectionRecord, now time.Time) bool {
@@ -2090,10 +2111,12 @@ func updateInspectionRecord(record *inspectionRecord, account Account, decision 
 	result.UsageTotalTokens = 0
 	result.UsageLastRequestAt = nil
 	result.CodexUsage = nil
+	result.QuotaUsage = nil
 	if account.Usage != nil {
 		result.UsageTotalTokens = nonNegative(account.Usage.TotalTokens)
 		result.UsageLastRequestAt = cloneTimePointer(account.Usage.LastRequestAt)
 		result.CodexUsage = cloneCodexUsage(account.Usage.Codex)
+		result.QuotaUsage = cloneQuotaUsage(account.Usage.Quota)
 	}
 	if decision.Health == InspectionHealthReview {
 		if previousHealth != decision.Health || previousReason != decision.ReasonCode ||

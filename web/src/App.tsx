@@ -1132,7 +1132,7 @@ function AccountManagerApp() {
                 <IconButton className="export-action" label={tx("ui.download_filtered_credentials")} onClick={() => openExport("accounts")}><Download size={17} /></IconButton>
                 <IconButton label={tx("ui.refresh_accounts")} onClick={() => void refreshAccounts()} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={17} /></IconButton>
               </> : null}
-              <a className="icon-button" href="https://github.com/Mxucc/cpa-account-config-manager/" target="_blank" rel="noopener noreferrer" aria-label={tx("ui.open_project_on_github")} title={tx("ui.open_project_on_github")}><Github size={17} /></a>
+              <a className="icon-button" href="https://github.com/karlorz/cpa-account-config-manager/" target="_blank" rel="noopener noreferrer" aria-label={tx("ui.open_project_on_github")} title={tx("ui.open_project_on_github")}><Github size={17} /></a>
             </div>
           </div>
         </div>
@@ -1440,15 +1440,18 @@ function AccountLifecycleTime({ value }: { value?: string }) {
 function AccountQuotaMetadataCell({ account, busy, onRefresh, onReset }: { account: Account; busy?: "refresh" | "reset"; onRefresh: () => void; onReset: () => void }) {
 	const { tx, formatNumber, formatDateTime } = useI18n();
 	const provider = String(account.provider || account.type).trim().toLowerCase();
-	const supported = provider === "codex" || provider === "codex-agent-identity";
+	const antigravity = provider === "antigravity";
+	const supported = provider === "codex" || provider === "codex-agent-identity" || antigravity;
 	const count = account.usage?.codex?.active_reset_count;
-	const known = typeof count === "number" && Number.isFinite(count) && count >= 0;
-	const observedAt = account.usage?.codex?.metadata_observed_at;
+	const known = !antigravity && typeof count === "number" && Number.isFinite(count) && count >= 0;
+	const observedAt = antigravity ? account.usage?.quota?.metadata_observed_at : account.usage?.codex?.metadata_observed_at;
+	const planType = account.usage?.quota?.plan_type || account.plan_type;
+	const accountLabel = account.label || account.email || account.name || account.id;
 	if (!supported) return <span className="quota-metadata-unsupported">-</span>;
 	return (
 		<div className="quota-metadata-cell">
-			<div className="quota-metadata-value"><strong>{known ? formatNumber(count) : "-"}</strong><IconButton label={tx("ui.refresh_plan_and_active_reset", { account: account.label || account.email || account.name || account.id })} disabled={Boolean(busy)} onClick={onRefresh}>{busy === "refresh" ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}</IconButton></div>
-			{known && count > 0 ? <button className="quota-reset-button" type="button" disabled={Boolean(busy)} onClick={onReset}>{busy === "reset" ? <LoaderCircle className="spin" size={12} /> : <RotateCcw size={12} />}{tx("ui.use_active_reset")}</button> : null}
+			<div className="quota-metadata-value"><strong>{antigravity ? (planType || "-") : known ? formatNumber(count) : "-"}</strong><IconButton label={tx(antigravity ? "ui.refresh_quota_for_account" : "ui.refresh_plan_and_active_reset", { account: accountLabel })} disabled={Boolean(busy)} onClick={onRefresh}>{busy === "refresh" ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}</IconButton></div>
+			{!antigravity && known && count > 0 ? <button className="quota-reset-button" type="button" disabled={Boolean(busy)} onClick={onReset}>{busy === "reset" ? <LoaderCircle className="spin" size={12} /> : <RotateCcw size={12} />}{tx("ui.use_active_reset")}</button> : null}
 			<small>{observedAt ? tx("ui.quota_metadata_collected_at", { time: formatDateTime(observedAt) }) : tx("ui.not_collected")}</small>
 		</div>
 	);

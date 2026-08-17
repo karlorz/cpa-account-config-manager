@@ -166,6 +166,18 @@ func TestAccountQuotaRecoveryAfterDisableUsesFreshRelevantCodexWindow(t *testing
 			value.Usage = snapshot(now.Add(-time.Minute), nil, zero)
 			return value
 		}(), record: baseRecord},
+		{name: "antigravity quota recovered", account: Account{
+			ID: "ag-account", Provider: "antigravity", Disabled: true, Editable: true,
+			Usage: &AccountUsageSnapshot{Quota: &QuotaUsageSnapshot{
+				ObservedAt: now.Add(-time.Minute), SevenDay: &UsageWindowSnapshot{UsedPercent: 0, WindowMinutes: 10080},
+			}},
+		}, record: baseRecord, want: true},
+		{name: "antigravity quota still exhausted", account: Account{
+			ID: "ag-account", Provider: "antigravity", Disabled: true, Editable: true,
+			Usage: &AccountUsageSnapshot{Quota: &QuotaUsageSnapshot{
+				ObservedAt: now.Add(-time.Minute), SevenDay: &UsageWindowSnapshot{UsedPercent: 100, WindowMinutes: 10080},
+			}},
+		}, record: baseRecord},
 	}
 
 	for _, test := range tests {

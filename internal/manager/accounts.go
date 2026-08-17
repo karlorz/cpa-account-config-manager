@@ -677,7 +677,18 @@ func enrichAccount(account *Account, detail cpaapi.HostAuthGetResponse) error {
 }
 
 func applyQuotaPlanType(account *Account) {
-	if account == nil || account.Usage == nil || account.Usage.Codex == nil {
+	if account == nil || account.Usage == nil {
+		return
+	}
+	if isAntigravityAccount(*account) {
+		if account.Usage.Quota != nil {
+			if planType := safeAccountPlanType(account.Usage.Quota.PlanType); planType != "" {
+				account.PlanType = planType
+			}
+		}
+		return
+	}
+	if account.Usage.Codex == nil {
 		return
 	}
 	if planType := safeAccountPlanType(account.Usage.Codex.PlanType); planType != "" {

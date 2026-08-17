@@ -294,6 +294,7 @@ func sanitizeInspectionRecords(records map[string]inspectionRecord) map[string]i
 			clearAutomaticDisableProbeState(&record.Result)
 		}
 		record.Result.CodexUsage = cloneCodexUsage(record.Result.CodexUsage)
+		record.Result.QuotaUsage = cloneQuotaUsage(record.Result.QuotaUsage)
 		record.Result.RunID = safeOperationIdentifier(record.Result.RunID, 128)
 		record.Result.RunPhase = normalizeInspectionProbePhase(record.Result.RunPhase)
 		record.Signal.QuotaWindow = normalizeInspectionQuotaWindow(record.Signal.QuotaWindow)
@@ -361,6 +362,7 @@ func cloneInspectionResult(result InspectionResult) InspectionResult {
 	clone.ReviewedAt = cloneTimePointer(result.ReviewedAt)
 	clone.UsageLastRequestAt = cloneTimePointer(result.UsageLastRequestAt)
 	clone.CodexUsage = cloneCodexUsage(result.CodexUsage)
+	clone.QuotaUsage = cloneQuotaUsage(result.QuotaUsage)
 	clone.RunObservedAt = cloneTimePointer(result.RunObservedAt)
 	clone.AutoDisableProbeTestedAt = cloneTimePointer(result.AutoDisableProbeTestedAt)
 	return clone

@@ -428,8 +428,18 @@ func decideInspection(account Account, record inspectionRecord, now time.Time) i
 }
 
 func accountQuotaRecoveredAfterDisable(account Account, record inspectionRecord, now time.Time) (string, bool) {
-	if !account.Disabled || !account.Editable || !record.Result.OwnedDisable || record.DisableReason != "quota_exhausted" ||
-		account.Usage == nil || account.Usage.Codex == nil || !isCodexInspectionProvider(account.Provider) {
+	if !account.Disabled || !account.Editable || !record.Result.OwnedDisable || record.DisableReason != "quota_exhausted" || account.Usage == nil {
+		return "", false
+	}
+	if isAntigravityAccount(account) {
+		snapshot := account.Usage.Quota
+		if snapshot == nil || !freshQuotaRecoveryObservedAt(snapshot.ObservedAt, record.DisabledAt, now) || quotaRecoveryBlockedByFailure(account, record, now) {
+			return "", false
+		}
+		quotaWindow := quotaRecoveryWindow(record)
+		return quotaWindow, usageWindowsRecovered(snapshot.FiveHour, snapshot.SevenDay, quotaWindow)
+	}
+	if account.Usage.Codex == nil || !isCodexInspectionProvider(account.Provider) {
 		return "", false
 	}
 	snapshot := account.Usage.Codex
@@ -441,10 +451,17 @@ func accountQuotaRecoveredAfterDisable(account Account, record inspectionRecord,
 }
 
 func freshQuotaRecoverySnapshot(snapshot *CodexUsageSnapshot, disabledAt, now time.Time) bool {
-	if snapshot == nil || snapshot.ObservedAt.IsZero() || disabledAt.IsZero() {
+	if snapshot == nil {
 		return false
 	}
-	observedAt := snapshot.ObservedAt.UTC()
+	return freshQuotaRecoveryObservedAt(snapshot.ObservedAt, disabledAt, now)
+}
+
+func freshQuotaRecoveryObservedAt(observedAt, disabledAt, now time.Time) bool {
+	if observedAt.IsZero() || disabledAt.IsZero() {
+		return false
+	}
+	observedAt = observedAt.UTC()
 	now = now.UTC()
 	return observedAt.After(disabledAt.UTC()) && !observedAt.After(now) && now.Sub(observedAt) <= quotaRecoveryEvidenceTTL
 }
@@ -460,21 +477,25 @@ func codexQuotaWindowRecovered(snapshot *CodexUsageSnapshot, quotaWindow string)
 	if snapshot == nil {
 		return false
 	}
+	return usageWindowsRecovered(snapshot.FiveHour, snapshot.SevenDay, quotaWindow)
+}
+
+func usageWindowsRecovered(fiveHour, sevenDay *UsageWindowSnapshot, quotaWindow string) bool {
 	recovered := func(window *UsageWindowSnapshot) bool {
 		return window != nil && window.UsedPercent >= 0 && window.UsedPercent < 100
 	}
 	switch normalizeInspectionQuotaWindow(quotaWindow) {
 	case InspectionQuotaWindowFiveHour, InspectionQuotaWindowFiveHourFallback:
-		return recovered(snapshot.FiveHour)
+		return recovered(fiveHour)
 	case InspectionQuotaWindowSevenDay:
-		return recovered(snapshot.SevenDay)
+		return recovered(sevenDay)
 	case InspectionQuotaWindowMultiple:
-		return recovered(snapshot.FiveHour) && recovered(snapshot.SevenDay)
+		return recovered(fiveHour) && recovered(sevenDay)
 	default:
-		if snapshot.FiveHour != nil {
-			return recovered(snapshot.FiveHour)
+		if fiveHour != nil {
+			return recovered(fiveHour)
 		}
-		return recovered(snapshot.SevenDay)
+		return recovered(sevenDay)
 	}
 }
 
@@ -636,18 +657,14 @@ func accountQuotaLimited(account Account, now time.Time) (bool, time.Time, strin
 		limited = true
 		recoverAfter = account.NextRetryAfter.UTC()
 	}
-	if account.Usage == nil || account.Usage.Codex == nil {
+	if account.Usage == nil {
 		return limited, recoverAfter, quotaWindow
 	}
-	for index, window := range []*UsageWindowSnapshot{account.Usage.Codex.FiveHour, account.Usage.Codex.SevenDay} {
+	consider := func(window *UsageWindowSnapshot, windowKind string) {
 		if window == nil || window.UsedPercent < 100 {
-			continue
+			return
 		}
 		limited = true
-		windowKind := InspectionQuotaWindowFiveHour
-		if index == 1 {
-			windowKind = InspectionQuotaWindowSevenDay
-		}
 		if quotaWindow != "" && quotaWindow != windowKind {
 			quotaWindow = InspectionQuotaWindowMultiple
 		} else {
@@ -660,6 +677,14 @@ func accountQuotaLimited(account Account, now time.Time) (bool, time.Time, strin
 		if windowRecoverAt != nil && windowRecoverAt.After(recoverAfter) {
 			recoverAfter = windowRecoverAt.UTC()
 		}
+	}
+	if account.Usage.Quota != nil {
+		consider(account.Usage.Quota.FiveHour, InspectionQuotaWindowFiveHour)
+		consider(account.Usage.Quota.SevenDay, InspectionQuotaWindowSevenDay)
+	}
+	if account.Usage.Codex != nil {
+		consider(account.Usage.Codex.FiveHour, InspectionQuotaWindowFiveHour)
+		consider(account.Usage.Codex.SevenDay, InspectionQuotaWindowSevenDay)
 	}
 	return limited, recoverAfter, quotaWindow
 }

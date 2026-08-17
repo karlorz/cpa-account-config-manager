@@ -309,6 +309,7 @@ func mergeUsageAggregate(current, stored usageAggregate) usageAggregate {
 		current.UpdatedAt = stored.UpdatedAt
 	}
 	current.Codex = mergeCodexUsage(current.Codex, stored.Codex)
+	current.Quota = mergeQuotaUsage(current.Quota, stored.Quota)
 	return sanitizeUsageAggregate(current)
 }
 
@@ -341,6 +342,43 @@ func mergeCodexUsage(current, stored *CodexUsageSnapshot) *CodexUsageSnapshot {
 		if merged.ActiveResetCount == nil && stored.ActiveResetCount != nil {
 			count := *stored.ActiveResetCount
 			merged.ActiveResetCount = &count
+		}
+	}
+	return merged
+}
+
+func mergeQuotaUsage(current, stored *QuotaUsageSnapshot) *QuotaUsageSnapshot {
+	if current == nil {
+		return cloneQuotaUsage(stored)
+	}
+	if stored == nil {
+		return cloneQuotaUsage(current)
+	}
+	merged := cloneQuotaUsage(current)
+	if stored.ObservedAt.After(merged.ObservedAt) {
+		merged.FiveHour = cloneUsageWindow(stored.FiveHour)
+		merged.SevenDay = cloneUsageWindow(stored.SevenDay)
+		merged.ObservedAt = stored.ObservedAt
+	} else if merged.FiveHour == nil {
+		merged.FiveHour = cloneUsageWindow(stored.FiveHour)
+	}
+	if merged.SevenDay == nil {
+		merged.SevenDay = cloneUsageWindow(stored.SevenDay)
+	}
+	if stored.MetadataObservedAt.After(merged.MetadataObservedAt) {
+		merged.Provider = stored.Provider
+		merged.PlanType = stored.PlanType
+		merged.Warning = stored.Warning
+		merged.MetadataObservedAt = stored.MetadataObservedAt
+	} else if merged.MetadataObservedAt.IsZero() {
+		if merged.Provider == "" {
+			merged.Provider = stored.Provider
+		}
+		if merged.PlanType == "" {
+			merged.PlanType = stored.PlanType
+		}
+		if merged.Warning == "" {
+			merged.Warning = stored.Warning
 		}
 	}
 	return merged
@@ -404,6 +442,7 @@ func sanitizeUsageAggregate(aggregate usageAggregate) usageAggregate {
 	aggregate.LastRequestAt = aggregate.LastRequestAt.UTC()
 	aggregate.UpdatedAt = aggregate.UpdatedAt.UTC()
 	aggregate.Codex = sanitizeCodexUsage(aggregate.Codex)
+	aggregate.Quota = sanitizeQuotaUsage(aggregate.Quota)
 	return aggregate
 }
 
@@ -421,6 +460,28 @@ func sanitizeCodexUsage(snapshot *CodexUsageSnapshot) *CodexUsageSnapshot {
 	snapshot.FiveHour = sanitizeUsageWindow(snapshot.FiveHour)
 	snapshot.SevenDay = sanitizeUsageWindow(snapshot.SevenDay)
 	if !hasCodexUsageData(snapshot) {
+		return nil
+	}
+	return snapshot
+}
+
+func sanitizeQuotaUsage(snapshot *QuotaUsageSnapshot) *QuotaUsageSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	snapshot = cloneQuotaUsage(snapshot)
+	snapshot.ObservedAt = snapshot.ObservedAt.UTC()
+	snapshot.MetadataObservedAt = snapshot.MetadataObservedAt.UTC()
+	snapshot.PlanType = safeAccountPlanType(snapshot.PlanType)
+	snapshot.Warning = safeOperationIdentifier(snapshot.Warning, 64)
+	if provider := strings.ToLower(strings.TrimSpace(snapshot.Provider)); provider == "antigravity" {
+		snapshot.Provider = provider
+	} else {
+		snapshot.Provider = ""
+	}
+	snapshot.FiveHour = sanitizeUsageWindow(snapshot.FiveHour)
+	snapshot.SevenDay = sanitizeUsageWindow(snapshot.SevenDay)
+	if !hasQuotaUsageData(snapshot) {
 		return nil
 	}
 	return snapshot

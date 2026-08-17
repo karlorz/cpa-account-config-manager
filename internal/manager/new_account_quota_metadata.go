@@ -327,17 +327,24 @@ func (e *accountQuotaMetadataBootstrap) currentTime() time.Time {
 func quotaMetadataBootstrapEligible(account Account) bool {
 	provider := strings.ToLower(strings.TrimSpace(firstNonEmpty(account.Provider, account.Type)))
 	return strings.TrimSpace(account.ID) != "" && !account.RuntimeOnly &&
-		(provider == "codex" || provider == agentIdentityProvider)
+		(provider == "codex" || provider == agentIdentityProvider || provider == "antigravity")
 }
 
 func quotaMetadataAlreadyObserved(account Account) bool {
-	return account.Usage != nil && account.Usage.Codex != nil && !account.Usage.Codex.MetadataObservedAt.IsZero()
+	if account.Usage == nil {
+		return false
+	}
+	if account.Usage.Codex != nil && !account.Usage.Codex.MetadataObservedAt.IsZero() {
+		return true
+	}
+	return account.Usage.Quota != nil && !account.Usage.Quota.MetadataObservedAt.IsZero()
 }
 
 func quotaMetadataBootstrapAccount(account Account) Account {
 	return Account{
 		ID: account.ID, AuthID: account.AuthID, Name: account.Name, Provider: account.Provider,
-		Type: account.Type, Email: account.Email, RuntimeOnly: account.RuntimeOnly, Usage: account.Usage,
+		Type: account.Type, Email: account.Email, ProjectID: account.ProjectID,
+		RuntimeOnly: account.RuntimeOnly, Usage: account.Usage,
 	}
 }
 

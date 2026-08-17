@@ -27,7 +27,7 @@ const (
 
 var (
 	ErrQuotaMetadataAccountNotFound = errors.New("quota metadata account was not found")
-	ErrQuotaMetadataUnsupported     = errors.New("quota metadata is only available for Codex accounts")
+	ErrQuotaMetadataUnsupported     = errors.New("quota metadata is not available for this account provider")
 	ErrQuotaMetadataUnavailable     = errors.New("CPA quota metadata is unavailable")
 	ErrActiveResetUnavailable       = errors.New("no active reset credit is available")
 )
@@ -62,6 +62,7 @@ type quotaMetadata struct {
 	planType         string
 	activeResetCount *int
 	usage            *CodexUsageSnapshot
+	quota            *QuotaUsageSnapshot
 	warning          string
 }
 
@@ -90,8 +91,8 @@ func (a *App) handleAccountQuotaMetadata(ctx context.Context, req cpaapi.Managem
 	switch {
 	case errors.Is(errOperation, ErrQuotaMetadataAccountNotFound):
 		return jsonResponse(http.StatusNotFound, map[string]any{"error": ErrQuotaMetadataAccountNotFound.Error()})
-	case errors.Is(errOperation, ErrQuotaMetadataUnsupported):
-		return jsonResponse(http.StatusUnprocessableEntity, map[string]any{"error": ErrQuotaMetadataUnsupported.Error()})
+	case errors.Is(errOperation, ErrQuotaMetadataUnsupported), errors.Is(errOperation, errAntigravityProjectIDRequired):
+		return jsonResponse(http.StatusUnprocessableEntity, map[string]any{"error": errOperation.Error()})
 	case errors.Is(errOperation, ErrActiveResetUnavailable):
 		return jsonResponse(http.StatusConflict, map[string]any{"error": ErrActiveResetUnavailable.Error()})
 	case errors.Is(errOperation, ErrQuotaMetadataUnavailable):
@@ -133,7 +134,7 @@ func (a *App) handleQuotaMetadataRefresh(ctx context.Context, request QuotaMetad
 	}
 	defer client.clearSecrets()
 
-	metadata, errFetch := fetchQuotaMetadata(ctx, client, account, a.quotaAccountID(ctx, account))
+	metadata, errFetch := a.fetchProviderQuotaMetadata(ctx, client, account)
 	if errFetch != nil {
 		return QuotaMetadataResponse{}, errFetch
 	}
@@ -152,6 +153,9 @@ func (a *App) handleQuotaMetadataReset(ctx context.Context, request QuotaMetadat
 		return QuotaMetadataResponse{}, errResolve
 	}
 	defer client.clearSecrets()
+	if isAntigravityAccount(account) {
+		return QuotaMetadataResponse{}, ErrQuotaMetadataUnsupported
+	}
 	chatGPTAccountID := a.quotaAccountID(ctx, account)
 
 	before, errFetch := fetchQuotaMetadata(ctx, client, account, chatGPTAccountID)
@@ -202,7 +206,7 @@ func (a *App) resolveQuotaMetadataTarget(ctx context.Context, accountID, managem
 	}
 	account := resolved.Accounts[0]
 	provider := strings.ToLower(strings.TrimSpace(firstNonEmpty(account.Provider, account.Type)))
-	if provider != "codex" && provider != agentIdentityProvider {
+	if provider != "codex" && provider != agentIdentityProvider && provider != "antigravity" {
 		return Account{}, nil, ErrQuotaMetadataUnsupported
 	}
 	client, errClient := newManagementClient(resolveManagementBaseURL(a.configSnapshot().ManagementBaseURL), managementKey, a.managementDoer)
@@ -214,6 +218,27 @@ func (a *App) resolveQuotaMetadataTarget(ctx context.Context, accountID, managem
 
 func (a *App) persistQuotaMetadata(account Account, metadata quotaMetadata, consumed bool) QuotaMetadataResponse {
 	observedAt := time.Now().UTC()
+	if metadata.quota != nil || isAntigravityAccount(account) {
+		snapshot := cloneQuotaUsage(metadata.quota)
+		if snapshot == nil {
+			snapshot = &QuotaUsageSnapshot{}
+		}
+		snapshot.Provider = "antigravity"
+		snapshot.PlanType = metadata.planType
+		snapshot.Warning = metadata.warning
+		snapshot.MetadataObservedAt = observedAt
+		if snapshot.FiveHour != nil || snapshot.SevenDay != nil {
+			snapshot.ObservedAt = observedAt
+		}
+		a.usage.ObserveQuotaUsage(account.ID, snapshot)
+		a.inspection.ObserveQuotaSnapshot(account.ID, snapshot)
+		return QuotaMetadataResponse{
+			AccountID:  account.ID,
+			PlanType:   firstNonEmpty(metadata.planType, account.PlanType),
+			ObservedAt: observedAt,
+			Warning:    metadata.warning,
+		}
+	}
 	snapshot := cloneCodexUsage(metadata.usage)
 	if snapshot == nil {
 		snapshot = &CodexUsageSnapshot{}
@@ -247,7 +272,7 @@ func (a *App) refreshAccountQuotaMetadata(ctx context.Context, account Account, 
 		return quotaMetadata{}, ErrQuotaMetadataUnavailable
 	}
 	defer client.clearSecrets()
-	metadata, errFetch := fetchQuotaMetadata(ctx, client, account, a.quotaAccountID(ctx, account))
+	metadata, errFetch := a.fetchProviderQuotaMetadata(ctx, client, account)
 	if errFetch != nil {
 		a.observeQuotaMetadataFailure(account, errFetch)
 		return quotaMetadata{}, errFetch
@@ -294,6 +319,13 @@ func (group accountObserverGroup) ObserveAccounts(accounts []Account) {
 			observer.ObserveAccounts(accounts)
 		}
 	}
+}
+
+func (a *App) fetchProviderQuotaMetadata(ctx context.Context, client *managementClient, account Account) (quotaMetadata, error) {
+	if isAntigravityAccount(account) {
+		return a.fetchAntigravityQuotaMetadata(ctx, client, account)
+	}
+	return fetchQuotaMetadata(ctx, client, account, a.quotaAccountID(ctx, account))
 }
 
 func fetchQuotaMetadata(ctx context.Context, client *managementClient, account Account, chatGPTAccountID string) (quotaMetadata, error) {

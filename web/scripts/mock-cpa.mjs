@@ -1031,8 +1031,22 @@ const server = http.createServer(async (request, response) => {
 		const body = await readJSON(request);
 		const account = accounts.find((candidate) => candidate.id === body.account_id);
 		if (!account) return json(response, 404, { error: "quota metadata account was not found" });
-		if (!String(account.provider).startsWith("codex")) return json(response, 422, { error: "quota metadata is only available for Codex accounts" });
+		const provider = String(account.provider);
+		if (!provider.startsWith("codex") && provider !== "antigravity") return json(response, 422, { error: "quota metadata is not available for this account provider" });
 		account.usage ||= { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, cached_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_tokens: 0 };
+		if (provider === "antigravity") {
+			const observedAt = new Date().toISOString();
+			account.plan_type = account.plan_type || "pro";
+			account.usage.quota = {
+				provider: "antigravity",
+				plan_type: account.plan_type,
+				five_hour: { used_percent: 0, window_minutes: 300 },
+				seven_day: { used_percent: 0, window_minutes: 10080 },
+				metadata_observed_at: observedAt,
+				observed_at: observedAt,
+			};
+			return json(response, 200, { account_id: account.id, plan_type: account.plan_type, observed_at: observedAt });
+		}
 		account.usage.codex ||= { observed_at: new Date().toISOString() };
 		account.usage.codex.plan_type = account.plan_type || "free";
 		account.usage.codex.active_reset_count ??= 0;
@@ -1043,6 +1057,9 @@ const server = http.createServer(async (request, response) => {
 		const body = await readJSON(request);
 		const account = accounts.find((candidate) => candidate.id === body.account_id);
 		if (!account) return json(response, 404, { error: "quota metadata account was not found" });
+		if (String(account.provider) === "antigravity" || !String(account.provider).startsWith("codex")) {
+			return json(response, 422, { error: "quota metadata is not available for this account provider" });
+		}
 		if (body.confirm !== true) return json(response, 400, { error: "active reset confirmation is required" });
 		const count = account.usage?.codex?.active_reset_count;
 		if (!Number.isInteger(count) || count <= 0) return json(response, 409, { error: "no active reset credit is available" });

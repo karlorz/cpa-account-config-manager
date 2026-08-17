@@ -16,8 +16,8 @@ journal without exposing raw credentials to the browser.
 - Run selected or filtered batch edits with a server-side preview, revision
   checks, bounded workers, per-account results, and failed-only retry.
 - Display CPA request counters, token totals, Codex 5-hour and 7-day quota
-  windows, plan type, and active reset count when CPA or the upstream account
-  provides that data.
+  windows, Antigravity Cloud Code quota windows, plan type, and active reset
+  count when CPA or the upstream account provides that data.
 - Test provider models through CPA for Codex/OpenAI, Claude, Gemini/AI Studio,
   and xAI. Account allow-lists and deny-lists are respected by manual tests,
   automatic probes, and inspection.

@@ -13,7 +13,7 @@
 | 全格式兼容导入 | 支持粘贴 JSON 文本，以及混合上传 JSON、JSON Lines、TXT 和 ZIP；ZIP 可包含多个文件，单次最多处理 10,000 个账号。可识别 CPA、sub2api、Codex Auth、Agent Identity、PAT、Claude、Gemini，以及 Cockpit、9router、AxonHub、Codex Manager 等常见账号 JSON 结构。 |
 | 全格式输出 | 可导出 CPA、sub2api、Cockpit、9router、Codex、AxonHub 和 Codex Manager；无法用单文件容纳多账号的目标格式会自动打包为 ZIP。批量结果和操作报告可另行导出为 JSON、CSV 或 JSON Lines。 |
 | 配置预设 | 基础策略可为以后导入或新发现的账号设置默认 Priority、WebSockets、模型探测和模型策略；条件策略可按提供方、套餐、账号类型和邮箱后缀进一步覆盖。 |
-| 账号池用量 | 提供接近 sub2api 的账号利用率视图，集中展示请求成功/失败次数、Token 总量、Codex 5 小时和 7 天额度、恢复时间、套餐及主动重置次数，便于判断号池容量。 |
+| 账号池用量 | 提供接近 sub2api 的账号利用率视图，集中展示请求成功/失败次数、Token 总量、Codex 5 小时和 7 天额度、Antigravity Cloud Code 额度、恢复时间、套餐及主动重置次数，便于判断号池容量。 |
 | 模型测试 | 通过 CPA 对指定账号执行真实模型测试，展示 HTTP 状态、延迟、回退模型和脱敏后的上游响应；账号白名单与黑名单会自动约束手动测试、自动探测和巡检模型。 |
 | 账号巡检 | 结合 CPA 原生状态、Usage 记录、主动模型测试和被动失败进行全量巡检，实时展示进度、健康证据、恢复时间和建议操作，并支持批量执行建议。 |
 | 自动处置 | 可选自动禁用失败或额度耗尽账号、在恢复后启用由巡检自身禁用的账号，并对严格符合条件且经过风险确认和宽限期的账号执行自动删除。 |

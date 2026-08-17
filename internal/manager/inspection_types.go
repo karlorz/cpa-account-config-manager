@@ -324,6 +324,7 @@ type InspectionResult struct {
 	UsageTotalTokens           int64               `json:"usage_total_tokens,omitempty"`
 	UsageLastRequestAt         *time.Time          `json:"usage_last_request_at,omitempty"`
 	CodexUsage                 *CodexUsageSnapshot `json:"codex_usage,omitempty"`
+	QuotaUsage                 *QuotaUsageSnapshot `json:"quota_usage,omitempty"`
 	RunID                      string              `json:"run_id,omitempty"`
 	RunPhase                   string              `json:"run_phase,omitempty"`
 	RunObservedAt              *time.Time          `json:"run_observed_at,omitempty"`

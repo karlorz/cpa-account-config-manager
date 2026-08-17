@@ -850,7 +850,7 @@ describe("management API client", () => {
     }, { plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.2.4", installed: true, installed_version: "0.2.3", update_available: true }] });
 
     expect(result).toMatchObject({ latest_version: "0.2.4", update_available: true, release_source: "plugin_store" });
-    expect(result.release_url).toBe("https://github.com/Mxucc/cpa-account-config-manager/releases/tag/v0.2.4");
+    expect(result.release_url).toBe("https://github.com/karlorz/cpa-account-config-manager/releases/tag/v0.2.4");
   });
 });
 

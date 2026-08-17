@@ -164,6 +164,16 @@ export interface CodexUsageSnapshot {
   observed_at: string;
 }
 
+export interface QuotaUsageSnapshot {
+  provider?: string;
+  plan_type?: string;
+  five_hour?: UsageWindowSnapshot;
+  seven_day?: UsageWindowSnapshot;
+  metadata_observed_at?: string;
+  observed_at: string;
+  warning?: string;
+}
+
 export interface QuotaMetadataResponse {
 	account_id: string;
 	plan_type?: string;
@@ -193,6 +203,7 @@ export interface AccountUsageSnapshot {
   last_request_at?: string;
   updated_at?: string;
   codex?: CodexUsageSnapshot;
+  quota?: QuotaUsageSnapshot;
   credit?: CreditUsageSnapshot;
 }
 
@@ -915,6 +926,7 @@ export interface InspectionResult {
   usage_total_tokens?: number;
   usage_last_request_at?: string;
   codex_usage?: CodexUsageSnapshot;
+  quota_usage?: QuotaUsageSnapshot;
   run_id?: string;
   run_phase?: "listing" | "primary" | "retry" | "stopped" | "completed";
   run_observed_at?: string;

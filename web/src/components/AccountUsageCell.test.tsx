@@ -293,6 +293,40 @@ describe("AccountUsageCell", () => {
     expect(screen.getByText("等待用量采集")).toBeInTheDocument();
   });
 
+  it("renders Antigravity Cloud Code quota bars instead of awaiting collection", () => {
+    render(<AccountUsageCell account={{
+      ...baseAccount,
+      provider: "antigravity",
+      type: "antigravity",
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        reasoning_tokens: 0,
+        cached_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        total_tokens: 0,
+        quota: {
+          provider: "antigravity",
+          plan_type: "pro",
+          observed_at: "2026-08-17T12:00:00Z",
+          five_hour: { used_percent: 25, window_minutes: 300 },
+          seven_day: { used_percent: 80, window_minutes: 43_200 },
+        },
+      },
+    }} />);
+
+    expect(screen.getByRole("meter", { name: "5h 用量 25%" })).toBeInTheDocument();
+    expect(screen.getByRole("meter", { name: "30d 用量 80%" })).toBeInTheDocument();
+    expect(screen.queryByText("等待用量采集")).not.toBeInTheDocument();
+  });
+
+  it("explains that Antigravity quota comes from Cloud Code retrieveUserQuotaSummary", () => {
+    const { container } = render(<AccountUsageCell account={{ ...baseAccount, provider: "antigravity", type: "antigravity" }} />);
+    expect(container.querySelector(".usage-quota-empty")).toHaveAttribute("title", "Antigravity 额度会在 Cloud Code retrieveUserQuotaSummary 返回后显示");
+    expect(screen.getByText("等待用量采集")).toBeInTheDocument();
+  });
+
   it("distinguishes unsupported Agent Identity quota from zero usage", () => {
     render(<AccountUsageCell account={{
       ...baseAccount,

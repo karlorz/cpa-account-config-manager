@@ -600,7 +600,7 @@ export async function getPluginStore(): Promise<PluginStoreResponse> {
 }
 
 const pluginID = "cpa-account-config-manager";
-const pluginReleaseBaseURL = "https://github.com/Mxucc/cpa-account-config-manager/releases/tag/v";
+const pluginReleaseBaseURL = "https://github.com/karlorz/cpa-account-config-manager/releases/tag/v";
 
 function normalizedStableVersion(value: string | undefined): { value: string; parts: [number, number, number] } | null {
   const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec((value ?? "").trim());

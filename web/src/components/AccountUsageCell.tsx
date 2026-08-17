@@ -42,24 +42,27 @@ export function AccountUsageCell({ account, weeklyOverdraftEnabled = false, cred
     : usage?.last_request_at
       ? tx("ui.last_request_time", { time: formatDateTime(usage.last_request_at) })
       : tx("ui.no_recent_cpa_request_windows");
-  const codex = usage?.codex;
-  const hasQuota = Boolean(codex?.five_hour || codex?.seven_day);
-  const fiveHourExhausted = safePercent(codex?.five_hour?.used_percent ?? 0) >= 100;
-  const longWindowExhausted = safePercent(codex?.seven_day?.used_percent ?? 0) >= 100;
+  const providerName = String(account.provider || account.type).trim().toLowerCase();
+  const quota = usage?.quota ?? usage?.codex;
+  const hasQuota = Boolean(quota?.five_hour || quota?.seven_day);
+  const fiveHourExhausted = safePercent(quota?.five_hour?.used_percent ?? 0) >= 100;
+  const longWindowExhausted = safePercent(quota?.seven_day?.used_percent ?? 0) >= 100;
   const quotaExhausted = fiveHourExhausted || longWindowExhausted;
   const overdraftWindows = weeklyOverdraftEnabled ? [
-    codex?.five_hour?.overdraft_active
-      ? { label: "5h" as const, window: codex.five_hour }
+    usage?.codex?.five_hour?.overdraft_active
+      ? { label: "5h" as const, window: usage.codex.five_hour }
       : null,
-    codex?.seven_day?.overdraft_active
-      ? { label: "7d" as const, window: codex.seven_day }
+    usage?.codex?.seven_day?.overdraft_active
+      ? { label: "7d" as const, window: usage.codex.seven_day }
       : null,
   ].filter((window): window is { label: "5h" | "7d"; window: UsageWindowSnapshot } => window !== null) : [];
   const quotaPlaceholderTitle = agentIdentity
     ? tx("ui.cpa_does_not_currently_provide_agent_identity_quota")
-    : String(account.provider || account.type).toLowerCase() === "codex"
+    : providerName === "codex"
       ? tx("ui.codex_quota_appears_after_cpa_captures_the_relevant_upstream_response_headers")
-      : tx("ui.no_cpa_usage_data_received");
+      : providerName === "antigravity"
+        ? tx("ui.antigravity_quota_appears_after_cloud_code_retrieve_user_quota_summary")
+        : tx("ui.no_cpa_usage_data_received");
   let exhaustedAction = tx("ui.suggested_disable");
   const gateStatus = account.automation?.auto_disable_probe_status;
   if (account.disabled) {
@@ -106,8 +109,8 @@ export function AccountUsageCell({ account, weeklyOverdraftEnabled = false, cred
       ) : null}
       {hasQuota ? (
         <div className="usage-quota-list">
-          {codex?.five_hour ? <UsageQuota label="5h" window={codex.five_hour} /> : null}
-          {codex?.seven_day ? <UsageQuota label="7d" window={codex.seven_day} /> : null}
+          {quota?.five_hour ? <UsageQuota label={compactQuotaLabel(quota.five_hour)} window={quota.five_hour} /> : null}
+          {quota?.seven_day ? <UsageQuota label={compactQuotaLabel(quota.seven_day)} window={quota.seven_day} /> : null}
           {overdraftWindows.length > 0 ? (
             <div
               className="usage-overdraft-panel"
@@ -185,7 +188,15 @@ function probeReasonLabel(reasonCode: string | undefined, tx: (key: UIMessageKey
   }
 }
 
-function UsageQuota({ label, window }: { label: "5h" | "7d"; window: UsageWindowSnapshot }) {
+function compactQuotaLabel(window?: UsageWindowSnapshot): "5h" | "1d" | "7d" | "30d" {
+  const minutes = window?.window_minutes ?? 0;
+  if (minutes <= 360) return "5h";
+  if (minutes <= 24 * 60 + 60) return "1d";
+  if (minutes <= 8 * 24 * 60) return "7d";
+  return "30d";
+}
+
+function UsageQuota({ label, window }: { label: "5h" | "1d" | "7d" | "30d"; window: UsageWindowSnapshot }) {
   const { tx, formatDateTime } = useI18n();
   const percent = safePercent(window.used_percent);
   const percentLabel = formatPercent(percent);

@@ -360,7 +360,7 @@ describe("primary account batch flow", () => {
     expect(screen.getByRole("heading", { name: "账号管理" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "其他配置" })).toBeInTheDocument();
     const githubLink = screen.getByRole("link", { name: "打开项目 GitHub" });
-    expect(githubLink).toHaveAttribute("href", "https://github.com/Mxucc/cpa-account-config-manager/");
+    expect(githubLink).toHaveAttribute("href", "https://github.com/karlorz/cpa-account-config-manager/");
     expect(githubLink).toHaveAttribute("rel", "noopener noreferrer");
     expect(screen.queryByRole("button", { name: "退出管理认证" })).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "账号筛选" })).toBeInTheDocument();
@@ -1051,6 +1051,59 @@ describe("primary account batch flow", () => {
 		expect(within(updatedRow).queryByRole("button", { name: "主动重置" })).not.toBeInTheDocument();
 		expect(within(updatedRow).getByText(/获取于/)).toBeInTheDocument();
 		expect(JSON.parse(String(requests.find(({ url }) => url.includes("/quota-metadata/reset"))?.init.body))).toEqual({ account_id: "auth-1", confirm: true });
+	});
+
+	it("refreshes Antigravity quota without offering an active reset", async () => {
+		const user = userEvent.setup();
+		let planType = "";
+		let observedAt = "";
+		const antigravityAccount = {
+			...account,
+			id: "ag-1",
+			auth_id: "ag-auth",
+			label: "ag@example.com",
+			email: "ag@example.com",
+			name: "ag.json",
+			provider: "antigravity",
+			type: "antigravity",
+			plan_type: planType,
+		};
+		const requests: Array<{ url: string; init: RequestInit }> = [];
+		vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+			const url = String(input);
+			requests.push({ url, init });
+			if (url.includes("/batch/status")) {
+				return jsonResponse({ state: "idle", running: false, total: 0, eligible: 0, done: 0, succeeded: 0, failed: 0, conflicts: 0, skipped: 0, workers: 0, patch: { fields: [], proxy_mutation: false }, retry_available: false, persisted: false });
+			}
+			if (url.includes("/accounts/quota-metadata/refresh")) {
+				planType = "pro";
+				observedAt = "2026-08-17T12:00:00Z";
+				return jsonResponse({ account_id: "ag-1", plan_type: planType, observed_at: observedAt });
+			}
+			return jsonResponse({
+				accounts: [{
+					...antigravityAccount,
+					plan_type: planType,
+					usage: observedAt ? {
+						input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, cached_tokens: 0,
+						cache_read_tokens: 0, cache_creation_tokens: 0, total_tokens: 0,
+						quota: { provider: "antigravity", plan_type: planType, metadata_observed_at: observedAt, observed_at: observedAt },
+					} : undefined,
+				}],
+				total: 1, page: 1, page_size: 50, pages: 1,
+			});
+		}));
+
+		render(<App />);
+		await user.type(await screen.findByLabelText("Management Key"), "management-secret");
+		await user.click(screen.getByRole("button", { name: "验证并进入" }));
+		const row = (await screen.findByText("ag@example.com")).closest("tr") as HTMLTableRowElement;
+		expect(within(row).queryByRole("button", { name: "主动重置" })).not.toBeInTheDocument();
+		await user.click(within(row).getByRole("button", { name: "刷新 ag@example.com 的额度" }));
+		await waitFor(() => expect(within(row).getByText("pro", { selector: ".account-plan-type" })).toBeInTheDocument());
+		expect(within(row).getByText(/获取于/)).toBeInTheDocument();
+		expect(within(row).queryByRole("button", { name: "主动重置" })).not.toBeInTheDocument();
+		expect(JSON.parse(String(requests.find(({ url }) => url.includes("/quota-metadata/refresh"))?.init.body))).toEqual({ account_id: "ag-1" });
 	});
 
   it("keeps the newest account result when an older filter request finishes later", async () => {

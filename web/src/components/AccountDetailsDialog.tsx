@@ -19,6 +19,7 @@ interface AccountDetailsDialogProps {
 export function AccountDetailsDialog({ account, creditUsageEnabled = false, weeklyOverdraftEnabled = false, onClose, onEdit }: AccountDetailsDialogProps) {
   const { locale, formatDateTime, tx } = useI18n();
   const usage = account.usage;
+  const quotaWindows = usage?.quota ?? usage?.codex;
   const identity = account.label || account.email || account.name || account.id;
   const automation = accountAutomationPresentation(account, locale);
 	const modelPolicy = account.model_policy;
@@ -122,8 +123,8 @@ export function AccountDetailsDialog({ account, creditUsageEnabled = false, week
           <DetailItem label="Reasoning" value={usage ? formatNumber(usage.reasoning_tokens, locale) : tx("ui.no_data")} mono />
           <DetailItem label="Cached" value={usage ? formatNumber(usage.cached_tokens + usage.cache_read_tokens, locale) : tx("ui.no_data")} mono />
           <DetailItem label={tx("ui.last_request")} value={formatDateTime(usage?.last_request_at)} />
-          <DetailItem label={tx("ui.5_hour_usage")} value={usage?.codex?.five_hour ? `${formatPercent(usage.codex.five_hour.used_percent)} · ${formatDateTime(usage.codex.five_hour.reset_at)}` : tx("ui.no_data")} />
-          <DetailItem label={tx("ui.7_day_usage")} value={usage?.codex?.seven_day ? `${formatPercent(usage.codex.seven_day.used_percent)} · ${formatDateTime(usage.codex.seven_day.reset_at)}` : tx("ui.no_data")} />
+          <DetailItem label={quotaWindowLabel(quotaWindows?.five_hour, tx("ui.5_hour_usage"), tx)} value={quotaWindows?.five_hour ? `${formatPercent(quotaWindows.five_hour.used_percent)} · ${formatDateTime(quotaWindows.five_hour.reset_at)}` : tx("ui.no_data")} />
+          <DetailItem label={quotaWindowLabel(quotaWindows?.seven_day, tx("ui.7_day_usage"), tx)} value={quotaWindows?.seven_day ? `${formatPercent(quotaWindows.seven_day.used_percent)} · ${formatDateTime(quotaWindows.seven_day.reset_at)}` : tx("ui.no_data")} />
 						<DetailItem label={tx("ui.active_reset_count")} value={usage?.codex?.active_reset_count !== undefined ? formatNumber(usage.codex.active_reset_count, locale) : tx("ui.no_data")} mono />
         </DetailSection>
 
@@ -154,6 +155,15 @@ function DetailItem({ label, value, mono = false, wide = false }: { label: strin
       {mono ? <code title={shown}>{shown}</code> : <strong title={shown}>{shown}</strong>}
     </div>
   );
+}
+
+function quotaWindowLabel(window: UsageWindowSnapshot | undefined, fallback: string, tx: ReturnType<typeof useI18n>["tx"]): string {
+  const minutes = window?.window_minutes ?? 0;
+  if (minutes <= 360) return tx("ui.5_hour_usage");
+  if (minutes <= 24 * 60 + 60) return tx("ui.1_day_usage");
+  if (minutes <= 8 * 24 * 60) return tx("ui.7_day_usage");
+  if (minutes > 8 * 24 * 60) return tx("ui.30_day_usage");
+  return fallback;
 }
 
 function formatOverdraftCredit(window: UsageWindowSnapshot, locale: Locale, tx: ReturnType<typeof useI18n>["tx"]): string {

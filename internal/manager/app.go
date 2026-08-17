@@ -20,7 +20,7 @@ import (
 const (
 	PluginID                = "cpa-account-config-manager"
 	PluginName              = "CPA Account Config Manager"
-	DefaultPluginRepository = "https://github.com/Mxucc/cpa-account-config-manager"
+	DefaultPluginRepository = "https://github.com/karlorz/cpa-account-config-manager"
 
 	managementRoutePrefix = "/plugins/" + PluginID
 	resourceRoutePrefix   = "/v0/resource/plugins/" + PluginID
@@ -388,7 +388,7 @@ func (a *App) ManagementRegistration() cpaapi.ManagementRegistrationResponse {
 		Routes: []cpaapi.ManagementRoute{
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/accounts", Description: "List redacted CLIProxyAPI accounts."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/accounts/config", Description: "Read one editable account's current allow-listed configuration."},
-			{Method: http.MethodPost, Path: managementRoutePrefix + "/accounts/quota-metadata/refresh", Description: "Refresh one Codex account's CPA-native plan and active reset metadata."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/accounts/quota-metadata/refresh", Description: "Refresh one Codex or Antigravity account's quota metadata."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/accounts/quota-metadata/reset", Description: "Consume one explicitly confirmed Codex active reset credit and refresh quota metadata."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/accounts/models", Description: "Load the common effective model catalog for an editable account scope."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/accounts/deduplicate/preview", Description: "Find duplicate upstream accounts and return a redacted review plan."},

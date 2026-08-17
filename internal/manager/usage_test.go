@@ -252,6 +252,51 @@ func TestStoppedOverdraftCycleWinsPersistenceMerge(t *testing.T) {
 	}
 }
 
+func TestAccountQuotaLimitedUsesAntigravityQuotaWindows(t *testing.T) {
+	now := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	limited, _, quotaWindow := accountQuotaLimited(Account{
+		Provider: "antigravity",
+		Usage: &AccountUsageSnapshot{Quota: &QuotaUsageSnapshot{
+			FiveHour: &UsageWindowSnapshot{UsedPercent: 100, WindowMinutes: 300},
+			SevenDay: &UsageWindowSnapshot{UsedPercent: 40, WindowMinutes: 10080},
+		}},
+	}, now)
+	if !limited || quotaWindow != InspectionQuotaWindowFiveHour {
+		t.Fatalf("antigravity quota = limited:%t window:%q", limited, quotaWindow)
+	}
+	healthy, _, _ := accountQuotaLimited(Account{
+		Provider: "antigravity",
+		Usage:    &AccountUsageSnapshot{Quota: &QuotaUsageSnapshot{FiveHour: &UsageWindowSnapshot{UsedPercent: 80, WindowMinutes: 300}}},
+	}, now)
+	if healthy {
+		t.Fatal("healthy antigravity quota was treated as limited")
+	}
+}
+
+func TestUsageTrackerObserveQuotaUsageDoesNotWriteCodexOrOverdraft(t *testing.T) {
+	tracker := NewUsageTracker()
+	tracker.persistDelay = time.Hour
+	defer tracker.Close()
+	now := time.Date(2026, time.August, 17, 10, 0, 0, 0, time.UTC)
+	tracker.now = func() time.Time { return now }
+	tracker.ObserveQuotaUsage("ag-1", &QuotaUsageSnapshot{
+		Provider: "antigravity", PlanType: "pro",
+		FiveHour:           &UsageWindowSnapshot{UsedPercent: 12, WindowMinutes: 300},
+		SevenDay:           &UsageWindowSnapshot{UsedPercent: 40, WindowMinutes: 10080},
+		MetadataObservedAt: now,
+	})
+	snapshot := tracker.Snapshot("ag-1")
+	if snapshot == nil || snapshot.Quota == nil || snapshot.Codex != nil ||
+		snapshot.Quota.PlanType != "pro" || snapshot.Quota.FiveHour == nil || snapshot.Quota.FiveHour.UsedPercent != 12 ||
+		snapshot.Quota.FiveHour.OverdraftActive {
+		t.Fatalf("quota snapshot = %#v", snapshot)
+	}
+	empty := tracker.Snapshot("other")
+	if empty != nil {
+		t.Fatalf("unrelated account received quota: %#v", empty)
+	}
+}
+
 func TestAccountQuotaLimitedUsesFrozenOverdraftRecoveryTime(t *testing.T) {
 	now := time.Date(2026, time.July, 30, 4, 0, 0, 0, time.UTC)
 	mutableResetAt := now.Add(6 * time.Hour)
