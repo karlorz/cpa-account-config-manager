@@ -28,7 +28,10 @@ export function AutomationSettingsDialog({
   const [scanManuallyDisabled, setScanManuallyDisabled] = useState(inspection.scan_manually_disabled);
   const [probeInterval, setProbeInterval] = useState(String(inspection.model_probe_interval_minutes));
   const [probeBatchSize, setProbeBatchSize] = useState(String(inspection.model_probe_batch_size));
-  const [probeModels, setProbeModels] = useState({ antigravity: "gemini-3.7-flash-high", ...inspection.model_probe_models });
+  const [probeModels, setProbeModels] = useState({
+    ...inspection.model_probe_models,
+    antigravity: inspection.model_probe_models.antigravity || "gemini-3.7-flash-high",
+  });
   const [failureThreshold, setFailureThreshold] = useState(String(inspection.failure_threshold));
   const [recoveryThreshold, setRecoveryThreshold] = useState(String(inspection.recovery_threshold));
   const [passiveCircuit, setPassiveCircuit] = useState(inspection.passive_circuit_enabled ?? false);
