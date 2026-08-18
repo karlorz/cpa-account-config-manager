@@ -223,12 +223,7 @@ func (a *App) persistQuotaMetadata(account Account, metadata quotaMetadata, cons
 		if snapshot == nil {
 			snapshot = &QuotaUsageSnapshot{}
 		}
-		snapshot.Provider = firstNonEmpty(func() string {
-			if metadata.quota != nil {
-				return metadata.quota.Provider
-			}
-			return ""
-		}(), account.Provider, account.Type, "antigravity")
+		snapshot.Provider = firstNonEmpty(snapshot.Provider, account.Provider, account.Type, "antigravity")
 		snapshot.PlanType = metadata.planType
 		snapshot.Warning = metadata.warning
 		snapshot.MetadataObservedAt = observedAt

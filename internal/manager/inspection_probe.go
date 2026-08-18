@@ -14,14 +14,14 @@ func skipsInspectionModelProbe(account Account) bool {
 	return isAntigravityAccount(account) || isKimiAccount(account)
 }
 
-func refreshInspectionAntigravityQuota(ctx context.Context, service *ModelTestService, accounts []Account, managementBaseURL, managementKey string) {
+func refreshInspectionQuota(ctx context.Context, service *ModelTestService, accounts []Account, managementBaseURL, managementKey string) {
 	if service == nil || strings.TrimSpace(managementKey) == "" || len(accounts) == 0 {
 		return
 	}
 	var wait sync.WaitGroup
 	workers := make(chan struct{}, inspectionProbeWorkers)
 	for _, account := range accounts {
-		if (!isAntigravityAccount(account) && !isKimiAccount(account)) || ctx.Err() != nil {
+		if !skipsInspectionModelProbe(account) || ctx.Err() != nil {
 			continue
 		}
 		account := account
@@ -33,11 +33,7 @@ func refreshInspectionAntigravityQuota(ctx context.Context, service *ModelTestSe
 			if ctx.Err() != nil {
 				return
 			}
-			if isAntigravityAccount(account) {
-				service.RefreshAntigravityInspectionQuota(ctx, managementBaseURL, managementKey, account)
-			} else if isKimiAccount(account) {
-				service.RefreshKimiInspectionQuota(ctx, managementBaseURL, managementKey, account)
-			}
+			service.RefreshInspectionQuota(ctx, managementBaseURL, managementKey, account)
 		}()
 	}
 	wait.Wait()

@@ -680,13 +680,11 @@ func applyQuotaPlanType(account *Account) {
 	if account == nil || account.Usage == nil {
 		return
 	}
-	if isAntigravityAccount(*account) || isKimiAccount(*account) {
-		if account.Usage.Quota != nil {
-			if planType := safeAccountPlanType(account.Usage.Quota.PlanType); planType != "" {
-				account.PlanType = planType
-			}
+	if account.Usage.Quota != nil {
+		if planType := safeAccountPlanType(account.Usage.Quota.PlanType); planType != "" {
+			account.PlanType = planType
+			return
 		}
-		return
 	}
 	if account.Usage.Codex == nil {
 		return

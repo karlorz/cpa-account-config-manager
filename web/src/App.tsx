@@ -1440,9 +1440,7 @@ function AccountLifecycleTime({ value }: { value?: string }) {
 function AccountQuotaMetadataCell({ account, busy, onRefresh, onReset }: { account: Account; busy?: "refresh" | "reset"; onRefresh: () => void; onReset: () => void }) {
 	const { tx, formatNumber, formatDateTime } = useI18n();
 	const provider = String(account.provider || account.type).trim().toLowerCase();
-	const antigravity = provider === "antigravity";
-	const kimi = provider === "kimi";
-	const quotaProvider = antigravity || kimi;
+	const quotaProvider = provider === "antigravity" || provider === "kimi";
 	const supported = provider === "codex" || provider === "codex-agent-identity" || quotaProvider;
 	const count = account.usage?.codex?.active_reset_count;
 	const known = !quotaProvider && typeof count === "number" && Number.isFinite(count) && count >= 0;

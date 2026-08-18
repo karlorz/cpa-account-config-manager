@@ -297,8 +297,8 @@ func (s *ModelTestService) SetExperimentalTransformer(transformer RequestTransfo
 	s.experimentalTransformer = transformer
 }
 
-func (s *ModelTestService) RefreshAntigravityInspectionQuota(ctx context.Context, managementBaseURL, managementKey string, account Account) {
-	if s == nil || s.usage == nil || !isAntigravityAccount(account) || strings.TrimSpace(managementKey) == "" {
+func (s *ModelTestService) RefreshInspectionQuota(ctx context.Context, managementBaseURL, managementKey string, account Account) {
+	if s == nil || s.usage == nil || !skipsInspectionModelProbe(account) || strings.TrimSpace(managementKey) == "" {
 		return
 	}
 	client, errClient := newManagementClient(managementBaseURL, managementKey, s.doer)
@@ -306,36 +306,31 @@ func (s *ModelTestService) RefreshAntigravityInspectionQuota(ctx context.Context
 		return
 	}
 	defer client.clearSecrets()
-	documentMetadata := map[string]any{}
-	if projectID := s.authMetadata(ctx, account.ID).projectID; projectID != "" {
-		documentMetadata["project_id"] = projectID
-	}
-	metadata, errFetch := fetchAntigravityQuotaMetadata(ctx, client, account, documentMetadata)
-	if errFetch != nil || metadata.quota == nil {
-		return
-	}
-	snapshot := metadata.quota
-	snapshot.Provider = "antigravity"
-	snapshot.PlanType = metadata.planType
-	snapshot.MetadataObservedAt = s.currentTime()
-	s.usage.ObserveQuotaUsage(account.ID, snapshot)
-}
 
-func (s *ModelTestService) RefreshKimiInspectionQuota(ctx context.Context, managementBaseURL, managementKey string, account Account) {
-	if s == nil || s.usage == nil || !isKimiAccount(account) || strings.TrimSpace(managementKey) == "" {
+	var (
+		metadata quotaMetadata
+		errFetch error
+		provider string
+	)
+	if isAntigravityAccount(account) {
+		documentMetadata := map[string]any{}
+		if projectID := s.authMetadata(ctx, account.ID).projectID; projectID != "" {
+			documentMetadata["project_id"] = projectID
+		}
+		metadata, errFetch = fetchAntigravityQuotaMetadata(ctx, client, account, documentMetadata)
+		provider = "antigravity"
+	} else if isKimiAccount(account) {
+		metadata, errFetch = fetchKimiQuotaMetadata(ctx, client, account)
+		provider = "kimi"
+	} else {
 		return
 	}
-	client, errClient := newManagementClient(managementBaseURL, managementKey, s.doer)
-	if errClient != nil {
-		return
-	}
-	defer client.clearSecrets()
-	metadata, errFetch := fetchKimiQuotaMetadata(ctx, client, account)
+
 	if errFetch != nil || metadata.quota == nil {
 		return
 	}
 	snapshot := metadata.quota
-	snapshot.Provider = "kimi"
+	snapshot.Provider = provider
 	snapshot.PlanType = metadata.planType
 	snapshot.MetadataObservedAt = s.currentTime()
 	s.usage.ObserveQuotaUsage(account.ID, snapshot)

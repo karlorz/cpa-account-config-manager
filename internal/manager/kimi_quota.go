@@ -135,7 +135,7 @@ func parseKimiUsagePayload(raw []byte) (*QuotaUsageSnapshot, bool) {
 }
 
 func parseKimiRow(data map[string]any, defaultKind kimiWindowKind) (*UsageWindowSnapshot, bool) {
-	return parseKimiRowWithWindow(data, data, defaultKind, 0)
+	return parseKimiRowWithWindow(data, nil, defaultKind, 0)
 }
 
 func parseKimiRowWithWindow(data map[string]any, fallback map[string]any, kind kimiWindowKind, explicitMinutes int) (*UsageWindowSnapshot, bool) {
