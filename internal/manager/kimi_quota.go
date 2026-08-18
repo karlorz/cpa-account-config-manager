@@ -221,7 +221,7 @@ func classifyKimiWindow(limitMap, windowMap map[string]any) (kimiWindowKind, int
 	var explicitMinutes int
 	if windowMap != nil {
 		durationVal, hasDur := getFloat64(firstMapValue(windowMap, "duration", "length", "value"))
-		unitStr := strings.ToUpper(quotaString(firstMapValue(windowMap, "timeUnit", "time_unit", "unit")))
+		unitStr := strings.TrimPrefix(strings.ToUpper(quotaString(firstMapValue(windowMap, "timeUnit", "time_unit", "unit"))), "TIME_UNIT_")
 		if hasDur && durationVal > 0 {
 			switch unitStr {
 			case "MINUTES", "MINUTE", "MIN", "MINS":

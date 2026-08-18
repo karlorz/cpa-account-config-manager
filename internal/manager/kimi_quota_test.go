@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -81,6 +82,57 @@ func TestParseKimiUsagePayloadFiveHourAndWeekly(t *testing.T) {
 		t.Errorf("SevenDay.WindowMinutes = %v, want 10080", snapshot.SevenDay.WindowMinutes)
 	}
 	expectedWeeklyReset := time.Date(2026, time.August, 22, 21, 26, 0, 0, time.UTC)
+	if snapshot.SevenDay.ResetAt == nil || !snapshot.SevenDay.ResetAt.Equal(expectedWeeklyReset) {
+		t.Errorf("SevenDay.ResetAt = %v, want %v", snapshot.SevenDay.ResetAt, expectedWeeklyReset)
+	}
+}
+
+func TestParseKimiUsagePayloadProtoTimeUnitMinuteFiveHour(t *testing.T) {
+	raw := []byte(`{
+		"usage": { "limit": "100", "used": "56", "remaining": "44", "resetTime": "2026-08-22T12:26:13.608898Z" },
+		"limits": [
+			{
+				"window": { "duration": 300, "timeUnit": "TIME_UNIT_MINUTE" },
+				"detail": { "limit": "100", "used": "73", "remaining": "27", "resetTime": "2026-08-18T10:26:13.608898Z" }
+			}
+		]
+	}`)
+
+	snapshot, ok := parseKimiUsagePayload(raw)
+	if !ok || snapshot == nil {
+		t.Fatalf("parseKimiUsagePayload returned ok=%v, snapshot=%#v", ok, snapshot)
+	}
+
+	if snapshot.FiveHour == nil {
+		t.Fatal("FiveHour window is nil")
+	}
+	if snapshot.FiveHour.UsedPercent != 73 {
+		t.Errorf("FiveHour.UsedPercent = %v, want 73", snapshot.FiveHour.UsedPercent)
+	}
+	if snapshot.FiveHour.WindowMinutes != 300 {
+		t.Errorf("FiveHour.WindowMinutes = %v, want 300", snapshot.FiveHour.WindowMinutes)
+	}
+	expectedFiveHourReset, err := time.Parse(time.RFC3339Nano, "2026-08-18T10:26:13.608898Z")
+	if err != nil {
+		t.Fatalf("parse expectedFiveHourReset: %v", err)
+	}
+	if snapshot.FiveHour.ResetAt == nil || !snapshot.FiveHour.ResetAt.Equal(expectedFiveHourReset) {
+		t.Errorf("FiveHour.ResetAt = %v, want %v", snapshot.FiveHour.ResetAt, expectedFiveHourReset)
+	}
+
+	if snapshot.SevenDay == nil {
+		t.Fatal("SevenDay window is nil")
+	}
+	if math.Abs(snapshot.SevenDay.UsedPercent-56) > 0.0001 {
+		t.Errorf("SevenDay.UsedPercent = %v, want 56", snapshot.SevenDay.UsedPercent)
+	}
+	if snapshot.SevenDay.WindowMinutes != 10080 {
+		t.Errorf("SevenDay.WindowMinutes = %v, want 10080", snapshot.SevenDay.WindowMinutes)
+	}
+	expectedWeeklyReset, err := time.Parse(time.RFC3339Nano, "2026-08-22T12:26:13.608898Z")
+	if err != nil {
+		t.Fatalf("parse expectedWeeklyReset: %v", err)
+	}
 	if snapshot.SevenDay.ResetAt == nil || !snapshot.SevenDay.ResetAt.Equal(expectedWeeklyReset) {
 		t.Errorf("SevenDay.ResetAt = %v, want %v", snapshot.SevenDay.ResetAt, expectedWeeklyReset)
 	}
@@ -237,6 +289,59 @@ func TestParseKimiUsagePayloadUnknownAndEmptyDropped(t *testing.T) {
 			snapshot, ok := parseKimiUsagePayload([]byte(tc.raw))
 			if ok || snapshot != nil {
 				t.Errorf("expected ok=false and nil snapshot for %s, got ok=%v, snapshot=%#v", tc.name, ok, snapshot)
+			}
+		})
+	}
+}
+
+func TestClassifyKimiWindowProtoTimeUnits(t *testing.T) {
+	tests := []struct {
+		name        string
+		duration    float64
+		timeUnit    string
+		wantKind    kimiWindowKind
+		wantMinutes int
+	}{
+		{
+			name:        "proto minutes five hour",
+			duration:    300,
+			timeUnit:    "TIME_UNIT_MINUTE",
+			wantKind:    kimiWindowFiveHour,
+			wantMinutes: 300,
+		},
+		{
+			name:        "proto hour five hour",
+			duration:    5,
+			timeUnit:    "TIME_UNIT_HOUR",
+			wantKind:    kimiWindowFiveHour,
+			wantMinutes: 300,
+		},
+		{
+			name:        "proto day weekly",
+			duration:    7,
+			timeUnit:    "TIME_UNIT_DAY",
+			wantKind:    kimiWindowWeekly,
+			wantMinutes: 10080,
+		},
+		{
+			name:        "proto day daily",
+			duration:    1,
+			timeUnit:    "TIME_UNIT_DAY",
+			wantKind:    kimiWindowDaily,
+			wantMinutes: 1440,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			windowMap := map[string]any{
+				"duration": tc.duration,
+				"timeUnit": tc.timeUnit,
+			}
+			kind, minutes := classifyKimiWindow(nil, windowMap)
+			if kind != tc.wantKind || minutes != tc.wantMinutes {
+				t.Errorf("classifyKimiWindow(nil, %+v) = (%v, %v), want (%v, %v)",
+					windowMap, kind, minutes, tc.wantKind, tc.wantMinutes)
 			}
 		})
 	}
