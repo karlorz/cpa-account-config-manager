@@ -153,7 +153,7 @@ func (a *App) handleQuotaMetadataReset(ctx context.Context, request QuotaMetadat
 		return QuotaMetadataResponse{}, errResolve
 	}
 	defer client.clearSecrets()
-	if isAntigravityAccount(account) {
+	if isAntigravityAccount(account) || isKimiAccount(account) {
 		return QuotaMetadataResponse{}, ErrQuotaMetadataUnsupported
 	}
 	chatGPTAccountID := a.quotaAccountID(ctx, account)
@@ -206,7 +206,7 @@ func (a *App) resolveQuotaMetadataTarget(ctx context.Context, accountID, managem
 	}
 	account := resolved.Accounts[0]
 	provider := strings.ToLower(strings.TrimSpace(firstNonEmpty(account.Provider, account.Type)))
-	if provider != "codex" && provider != agentIdentityProvider && provider != "antigravity" {
+	if provider != "codex" && provider != agentIdentityProvider && provider != "antigravity" && provider != "kimi" {
 		return Account{}, nil, ErrQuotaMetadataUnsupported
 	}
 	client, errClient := newManagementClient(resolveManagementBaseURL(a.configSnapshot().ManagementBaseURL), managementKey, a.managementDoer)
@@ -218,12 +218,17 @@ func (a *App) resolveQuotaMetadataTarget(ctx context.Context, accountID, managem
 
 func (a *App) persistQuotaMetadata(account Account, metadata quotaMetadata, consumed bool) QuotaMetadataResponse {
 	observedAt := time.Now().UTC()
-	if metadata.quota != nil || isAntigravityAccount(account) {
+	if metadata.quota != nil || isAntigravityAccount(account) || isKimiAccount(account) {
 		snapshot := cloneQuotaUsage(metadata.quota)
 		if snapshot == nil {
 			snapshot = &QuotaUsageSnapshot{}
 		}
-		snapshot.Provider = "antigravity"
+		snapshot.Provider = firstNonEmpty(func() string {
+			if metadata.quota != nil {
+				return metadata.quota.Provider
+			}
+			return ""
+		}(), account.Provider, account.Type, "antigravity")
 		snapshot.PlanType = metadata.planType
 		snapshot.Warning = metadata.warning
 		snapshot.MetadataObservedAt = observedAt
@@ -324,6 +329,9 @@ func (group accountObserverGroup) ObserveAccounts(accounts []Account) {
 func (a *App) fetchProviderQuotaMetadata(ctx context.Context, client *managementClient, account Account) (quotaMetadata, error) {
 	if isAntigravityAccount(account) {
 		return a.fetchAntigravityQuotaMetadata(ctx, client, account)
+	}
+	if isKimiAccount(account) {
+		return fetchKimiQuotaMetadata(ctx, client, account)
 	}
 	return fetchQuotaMetadata(ctx, client, account, a.quotaAccountID(ctx, account))
 }

@@ -408,6 +408,182 @@ func antigravityQuotaMetadataHost() *fakeAuthHost {
 	}
 }
 
+func kimiQuotaMetadataHost() *fakeAuthHost {
+	path := filepath.Join(os.TempDir(), "kimi-1.json")
+	pathCompat := filepath.Join(os.TempDir(), "compat-1.json")
+	return &fakeAuthHost{
+		entries: []cpaapi.HostAuthFileEntry{
+			{
+				AuthIndex: "kimi-1", Name: "kimi-1.json", Provider: "kimi", Type: "kimi", AccountType: "oauth",
+				Email: "kimi@example.com", Source: "file", Path: path,
+			},
+			{
+				AuthIndex: "compat-1", Name: "compat-1.json", Provider: "openai-compatible-kimi", Type: "openai-compatible-kimi",
+				AccountType: "api_key", Email: "compat@example.com", Source: "file", Path: pathCompat,
+			},
+		},
+		details: map[string]cpaapi.HostAuthGetResponse{
+			"kimi-1": {
+				AuthIndex: "kimi-1", Name: "kimi-1.json", Path: path,
+				JSON: json.RawMessage(`{"email":"kimi@example.com","type":"kimi","access_token":"token-1"}`),
+			},
+			"compat-1": {
+				AuthIndex: "compat-1", Name: "compat-1.json", Path: pathCompat,
+				JSON: json.RawMessage(`{"email":"compat@example.com","type":"openai-compatible-kimi","api_key":"secret"}`),
+			},
+		},
+	}
+}
+
+func TestKimiQuotaMetadataRefreshAndPersistProvider(t *testing.T) {
+	dataDir := t.TempDir()
+	host := kimiQuotaMetadataHost()
+	var mu sync.Mutex
+	requests := make([]managementAPICallRequest, 0, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var call managementAPICallRequest
+		if errDecode := json.NewDecoder(request.Body).Decode(&call); errDecode != nil {
+			t.Errorf("decode API call: %v", errDecode)
+		}
+		mu.Lock()
+		requests = append(requests, call)
+		mu.Unlock()
+		body := `{"limits":[{"window":{"duration":5,"time_unit":"h"},"detail":{"limit":100,"used":25,"reset_in_seconds":3600}}]}`
+		_ = json.NewEncoder(writer).Encode(map[string]any{"status_code": 200, "header": map[string][]string{}, "body": body})
+	}))
+	defer server.Close()
+
+	app := NewApp(host, []byte("index"))
+	app.Configure([]byte(fmt.Sprintf("data_dir: %q\nmanagement_base_url: %q\n", dataDir, server.URL)))
+
+	// 1. Refresh native kimi succeeds
+	response := app.HandleManagement(context.Background(), cpaapi.ManagementRequest{
+		Method:  http.MethodPost,
+		Path:    "/v0/management/plugins/cpa-account-config-manager/accounts/quota-metadata/refresh",
+		Headers: http.Header{"Authorization": []string{"Bearer management-secret"}},
+		Body:    []byte(`{"account_id":"kimi-1"}`),
+	})
+	if response.StatusCode != http.StatusOK {
+		app.Close()
+		t.Fatalf("kimi refresh = %d %s", response.StatusCode, response.Body)
+	}
+
+	var refreshed QuotaMetadataResponse
+	if errDecode := json.Unmarshal(response.Body, &refreshed); errDecode != nil {
+		app.Close()
+		t.Fatalf("decode response: %v", errDecode)
+	}
+	if refreshed.ActiveResetCount != nil {
+		app.Close()
+		t.Fatalf("kimi refreshed active reset count should be nil: %#v", refreshed)
+	}
+
+	// 2. Persisted usage snapshot has Provider == "kimi"
+	listed, errList := app.accounts.List(context.Background(), ListQuery{Page: 1, PageSize: 50})
+	if errList != nil || len(listed.Accounts) < 1 {
+		app.Close()
+		t.Fatalf("listed accounts: %v", errList)
+	}
+	var kimiAccount *Account
+	for i := range listed.Accounts {
+		if listed.Accounts[i].ID == "kimi-1" {
+			kimiAccount = &listed.Accounts[i]
+			break
+		}
+	}
+	if kimiAccount == nil || kimiAccount.Usage == nil || kimiAccount.Usage.Quota == nil {
+		app.Close()
+		t.Fatalf("kimi usage snapshot not persisted: %#v", kimiAccount)
+	}
+	if kimiAccount.Usage.Quota.Provider != "kimi" {
+		app.Close()
+		t.Fatalf("kimi usage quota provider = %q, want %q", kimiAccount.Usage.Quota.Provider, "kimi")
+	}
+	if kimiAccount.Usage.Quota.FiveHour == nil || kimiAccount.Usage.Quota.FiveHour.UsedPercent != 25 {
+		app.Close()
+		t.Fatalf("kimi 5h window = %#v", kimiAccount.Usage.Quota.FiveHour)
+	}
+	if kimiAccount.Usage.Codex != nil {
+		app.Close()
+		t.Fatalf("kimi should not have codex snapshot: %#v", kimiAccount.Usage.Codex)
+	}
+	app.Close()
+
+	// 3. Restart persists provider == "kimi"
+	restarted := NewApp(host, []byte("index"))
+	restarted.Configure([]byte(fmt.Sprintf("data_dir: %q\nmanagement_base_url: %q\n", dataDir, server.URL)))
+	reloaded, errReload := restarted.accounts.List(context.Background(), ListQuery{Page: 1, PageSize: 50})
+	if errReload != nil {
+		restarted.Close()
+		t.Fatalf("reloaded account error: %v", errReload)
+	}
+	kimiAccount = nil
+	for i := range reloaded.Accounts {
+		if reloaded.Accounts[i].ID == "kimi-1" {
+			kimiAccount = &reloaded.Accounts[i]
+			break
+		}
+	}
+	if kimiAccount == nil || kimiAccount.Usage == nil || kimiAccount.Usage.Quota == nil ||
+		kimiAccount.Usage.Quota.Provider != "kimi" || kimiAccount.Usage.Quota.FiveHour == nil ||
+		kimiAccount.Usage.Quota.FiveHour.UsedPercent != 25 {
+		restarted.Close()
+		t.Fatalf("reloaded kimi account = %#v", kimiAccount)
+	}
+	restarted.Close()
+
+	// 4. Check API call URL and AuthIndex
+	mu.Lock()
+	captured := append([]managementAPICallRequest(nil), requests...)
+	mu.Unlock()
+	if len(captured) != 1 || captured[0].URL != kimiQuotaURL || captured[0].AuthIndex != "kimi-1" {
+		t.Fatalf("captured API calls = %#v", captured)
+	}
+
+	// 5. openai-compatible-kimi is rejected
+	appCompat := NewApp(host, []byte("index"))
+	defer appCompat.Close()
+	appCompat.Configure([]byte(fmt.Sprintf("data_dir: %q\nmanagement_base_url: %q\n", t.TempDir(), server.URL)))
+	responseCompat := appCompat.HandleManagement(context.Background(), cpaapi.ManagementRequest{
+		Method:  http.MethodPost,
+		Path:    "/v0/management/plugins/cpa-account-config-manager/accounts/quota-metadata/refresh",
+		Headers: http.Header{"Authorization": []string{"Bearer management-secret"}},
+		Body:    []byte(`{"account_id":"compat-1"}`),
+	})
+	if responseCompat.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("compat-1 refresh status = %d, want %d", responseCompat.StatusCode, http.StatusUnprocessableEntity)
+	}
+	if !bytes.Contains(responseCompat.Body, []byte(ErrQuotaMetadataUnsupported.Error())) {
+		t.Fatalf("compat-1 refresh body = %s, want %s", responseCompat.Body, ErrQuotaMetadataUnsupported.Error())
+	}
+}
+
+func TestKimiQuotaMetadataResetRemainsUnsupported(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		called = true
+		_ = json.NewEncoder(writer).Encode(map[string]any{"status_code": 200, "body": `{}`})
+	}))
+	defer server.Close()
+	app := NewApp(kimiQuotaMetadataHost(), []byte("index"))
+	defer app.Close()
+	app.Configure([]byte(fmt.Sprintf("data_dir: %q\nmanagement_base_url: %q\n", t.TempDir(), server.URL)))
+	response := app.HandleManagement(context.Background(), cpaapi.ManagementRequest{
+		Method: http.MethodPost, Path: "/v0/management/plugins/cpa-account-config-manager/accounts/quota-metadata/reset",
+		Headers: http.Header{"Authorization": []string{"Bearer management-secret"}},
+		Body:    []byte(`{"account_id":"kimi-1","confirm":true}`),
+	})
+	if response.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("reset = %d %s", response.StatusCode, response.Body)
+	}
+	if !bytes.Contains(response.Body, []byte(ErrQuotaMetadataUnsupported.Error())) {
+		t.Fatalf("reset body = %s", response.Body)
+	}
+	if called {
+		t.Fatal("kimi reset called upstream")
+	}
+}
+
 func TestQuotaMetadataPersistenceKeepsAccountsSeparatedByIdentity(t *testing.T) {
 	tracker := NewUsageTracker()
 	tracker.persistDelay = time.Hour

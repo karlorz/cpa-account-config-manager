@@ -327,7 +327,7 @@ func (e *accountQuotaMetadataBootstrap) currentTime() time.Time {
 func quotaMetadataBootstrapEligible(account Account) bool {
 	provider := strings.ToLower(strings.TrimSpace(firstNonEmpty(account.Provider, account.Type)))
 	return strings.TrimSpace(account.ID) != "" && !account.RuntimeOnly &&
-		(provider == "codex" || provider == agentIdentityProvider || provider == "antigravity")
+		(provider == "codex" || provider == agentIdentityProvider || provider == "antigravity" || provider == "kimi")
 }
 
 func quotaMetadataAlreadyObserved(account Account) bool {

@@ -143,11 +143,73 @@ func TestQuotaMetadataBootstrapShutdownCancelsWorkAndClearsManagementKey(t *test
 func testQuotaBootstrapAccount(id, provider string, observedAt time.Time) Account {
 	account := Account{ID: id, AuthID: id, Name: id + ".json", Provider: provider, Type: provider, Email: id + "@example.com", ProjectID: "proj-" + id}
 	if !observedAt.IsZero() {
-		if provider == "antigravity" {
-			account.Usage = &AccountUsageSnapshot{Quota: &QuotaUsageSnapshot{MetadataObservedAt: observedAt}}
+		if provider == "antigravity" || provider == "kimi" {
+			account.Usage = &AccountUsageSnapshot{Quota: &QuotaUsageSnapshot{MetadataObservedAt: observedAt, Provider: provider}}
 		} else {
 			account.Usage = &AccountUsageSnapshot{Codex: &CodexUsageSnapshot{MetadataObservedAt: observedAt}}
 		}
 	}
 	return account
+}
+
+func TestQuotaMetadataBootstrapEligibilityKimi(t *testing.T) {
+	nativeKimi := Account{ID: "kimi-1", Provider: "kimi"}
+	if !quotaMetadataBootstrapEligible(nativeKimi) {
+		t.Errorf("quotaMetadataBootstrapEligible(nativeKimi) = false, want true")
+	}
+
+	compatKimi := Account{ID: "compat-1", Provider: "openai-compatible-kimi"}
+	if quotaMetadataBootstrapEligible(compatKimi) {
+		t.Errorf("quotaMetadataBootstrapEligible(compatKimi) = true, want false")
+	}
+
+	compatTypeKimi := Account{ID: "compat-2", Type: "openai-compatible-kimi"}
+	if quotaMetadataBootstrapEligible(compatTypeKimi) {
+		t.Errorf("quotaMetadataBootstrapEligible(compatTypeKimi) = true, want false")
+	}
+
+	kimiType := Account{ID: "kimi-2", Type: "kimi"}
+	if !quotaMetadataBootstrapEligible(kimiType) {
+		t.Errorf("quotaMetadataBootstrapEligible(kimiType) = false, want true")
+	}
+
+	runtimeKimi := Account{ID: "kimi-3", Provider: "kimi", RuntimeOnly: true}
+	if quotaMetadataBootstrapEligible(runtimeKimi) {
+		t.Errorf("quotaMetadataBootstrapEligible(runtimeKimi) = true, want false")
+	}
+}
+
+func TestQuotaMetadataBootstrapCollectsMissingKimiAccountsOnce(t *testing.T) {
+	engine := NewAccountQuotaMetadataBootstrap()
+	var mu sync.Mutex
+	calls := make([]string, 0, 1)
+	engine.SetHandler(func(_ context.Context, account Account, key string) error {
+		if key != "management-secret" {
+			t.Errorf("management key = %q", key)
+		}
+		mu.Lock()
+		calls = append(calls, account.ID)
+		mu.Unlock()
+		return nil
+	})
+	engine.Arm("management-secret")
+	observedAt := time.Date(2026, time.July, 27, 5, 0, 0, 0, time.UTC)
+	missingKimi := testQuotaBootstrapAccount("kimi-missing", "kimi", time.Time{})
+	observedKimi := testQuotaBootstrapAccount("kimi-observed", "kimi", observedAt)
+	compatKimi := testQuotaBootstrapAccount("kimi-compat", "openai-compatible-kimi", time.Time{})
+
+	engine.ObserveAccounts([]Account{missingKimi, observedKimi, compatKimi})
+	engine.reconcile(context.Background())
+	engine.ObserveAccounts([]Account{missingKimi, observedKimi, compatKimi})
+	engine.reconcile(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	got := map[string]int{}
+	for _, id := range calls {
+		got[id]++
+	}
+	if len(got) != 1 || got[missingKimi.ID] != 1 {
+		t.Fatalf("handler calls = %#v, want missing Kimi once", calls)
+	}
 }

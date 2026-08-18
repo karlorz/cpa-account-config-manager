@@ -474,7 +474,7 @@ func sanitizeQuotaUsage(snapshot *QuotaUsageSnapshot) *QuotaUsageSnapshot {
 	snapshot.MetadataObservedAt = snapshot.MetadataObservedAt.UTC()
 	snapshot.PlanType = safeAccountPlanType(snapshot.PlanType)
 	snapshot.Warning = safeOperationIdentifier(snapshot.Warning, 64)
-	if provider := strings.ToLower(strings.TrimSpace(snapshot.Provider)); provider == "antigravity" {
+	if provider := strings.ToLower(strings.TrimSpace(snapshot.Provider)); provider == "antigravity" || provider == "kimi" {
 		snapshot.Provider = provider
 	} else {
 		snapshot.Provider = ""
