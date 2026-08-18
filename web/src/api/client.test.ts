@@ -893,6 +893,32 @@ describe("management API client", () => {
     expect(officialOnly.latest_version).toBeUndefined();
   });
 
+  it("treats the GitHub refs/heads raw registry URL as the karlorz fork channel", () => {
+    const status = {
+      policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
+      current_version: "0.3.1332-5", update_available: false, checking: false, pending: false,
+    };
+    const result = reconcileUpdateStatus(status, {
+      plugins_enabled: true,
+      plugins: [{
+        id: "cpa-account-config-manager",
+        version: "0.3.1332-6",
+        installed: true,
+        installed_version: "0.3.1332-5",
+        update_available: true,
+        source_id: "source-d7c43a219e2a",
+        source_url: "https://raw.githubusercontent.com/karlorz/cpa-account-config-manager/refs/heads/main/registry.json",
+      }],
+    });
+    expect(result).toMatchObject({
+      latest_version: "0.3.1332-6",
+      update_available: true,
+      release_source: "fork_store",
+      release_url: "https://github.com/karlorz/cpa-account-config-manager/releases/tag/v0.3.1332-6",
+    });
+    expect(result.error).toBeUndefined();
+  });
+
   it("installs the matching fork-channel version through the selected store source", async () => {
     setSession("", "management-secret");
     const fetchMock = vi.fn()

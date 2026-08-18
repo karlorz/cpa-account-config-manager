@@ -609,10 +609,14 @@ function normalizeLookupURL(value: string | undefined): string {
   return (value ?? "").trim().replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
 }
 
+function canonicalizeGitHubRawURL(value: string | undefined): string {
+  return normalizeLookupURL(value).replace("/refs/heads/", "/");
+}
+
 function isForkStoreEntry(entry: PluginStoreEntry | undefined): boolean {
   if (!entry || entry.id !== pluginID) return false;
   if (normalizeLookupURL(entry.repository) === normalizeLookupURL(forkRepository)) return true;
-  return normalizeLookupURL(entry.source_url) === normalizeLookupURL(forkRegistryURL);
+  return canonicalizeGitHubRawURL(entry.source_url) === canonicalizeGitHubRawURL(forkRegistryURL);
 }
 
 function selectForkStorePlugin(store: PluginStoreResponse | null): PluginStoreEntry | undefined {
