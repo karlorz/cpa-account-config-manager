@@ -649,6 +649,7 @@ export const zhTWUI: Record<UIMessageKey, string> = {
   "ui.no_recent_cpa_request_windows": "CPA 暫無近期請求時段",
   "ui.codex_quota_appears_after_cpa_captures_the_relevant_upstream_response_headers": "CPA 擷取到對應上游回應標頭後會顯示 Codex 額度",
   "ui.antigravity_quota_appears_after_cloud_code_retrieve_user_quota_summary": "Antigravity 額度會在 Cloud Code retrieveUserQuotaSummary 回傳後顯示",
+  "ui.kimi_quota_appears_after_coding_v1_usages": "Kimi 額度會在 coding/v1/usages 回傳後顯示",
   "ui.cpa_does_not_currently_provide_agent_identity_quota": "CPA 目前未提供 Agent Identity 額度",
   "ui.quota": "額度",
   "ui.label_percent_percent_used_resets_reset_minutes_minute_window": "{label} 已用 {percent}%，重設 {reset}，視窗 {minutes} 分鐘",

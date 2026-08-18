@@ -62,7 +62,9 @@ export function AccountUsageCell({ account, weeklyOverdraftEnabled = false, cred
       ? tx("ui.codex_quota_appears_after_cpa_captures_the_relevant_upstream_response_headers")
       : providerName === "antigravity"
         ? tx("ui.antigravity_quota_appears_after_cloud_code_retrieve_user_quota_summary")
-        : tx("ui.no_cpa_usage_data_received");
+        : providerName === "kimi"
+          ? tx("ui.kimi_quota_appears_after_coding_v1_usages")
+          : tx("ui.no_cpa_usage_data_received");
   let exhaustedAction = tx("ui.suggested_disable");
   const gateStatus = account.automation?.auto_disable_probe_status;
   if (account.disabled) {

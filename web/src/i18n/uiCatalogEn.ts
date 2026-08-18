@@ -647,6 +647,7 @@ export const enUI = {
   "ui.no_recent_cpa_request_windows": "No recent CPA request windows",
   "ui.codex_quota_appears_after_cpa_captures_the_relevant_upstream_response_headers": "Codex quota appears after CPA captures the relevant upstream response headers",
   "ui.antigravity_quota_appears_after_cloud_code_retrieve_user_quota_summary": "Antigravity quota appears after Cloud Code retrieveUserQuotaSummary",
+  "ui.kimi_quota_appears_after_coding_v1_usages": "Kimi quota appears after coding/v1/usages returns",
   "ui.cpa_does_not_currently_provide_agent_identity_quota": "CPA does not currently provide Agent Identity quota",
   "ui.quota": "Quota",
   "ui.label_percent_percent_used_resets_reset_minutes_minute_window": "{label} {percent}% used, resets {reset}, {minutes}-minute window",

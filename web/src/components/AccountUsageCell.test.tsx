@@ -321,6 +321,39 @@ describe("AccountUsageCell", () => {
     expect(screen.queryByText("等待用量采集")).not.toBeInTheDocument();
   });
 
+  it("renders Kimi coding usages quota meters with used percentages", () => {
+    render(<AccountUsageCell account={{
+      ...baseAccount,
+      provider: "kimi",
+      type: "kimi",
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        reasoning_tokens: 0,
+        cached_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        total_tokens: 0,
+        quota: {
+          provider: "kimi",
+          observed_at: "2026-08-18T10:00:00Z",
+          five_hour: { used_percent: 15, window_minutes: 300 },
+          seven_day: { used_percent: 40, window_minutes: 10_080 },
+        },
+      },
+    }} />);
+
+    expect(screen.getByRole("meter", { name: "5h 用量 15%" })).toBeInTheDocument();
+    expect(screen.getByRole("meter", { name: "7d 用量 40%" })).toBeInTheDocument();
+    expect(screen.queryByText("等待用量采集")).not.toBeInTheDocument();
+  });
+
+  it("explains that Kimi quota comes from coding/v1/usages", () => {
+    const { container } = render(<AccountUsageCell account={{ ...baseAccount, provider: "kimi", type: "kimi" }} />);
+    expect(container.querySelector(".usage-quota-empty")).toHaveAttribute("title", "Kimi 额度会在 coding/v1/usages 返回后显示");
+    expect(screen.getByText("等待用量采集")).toBeInTheDocument();
+  });
+
   it("explains that Antigravity quota comes from Cloud Code retrieveUserQuotaSummary", () => {
     const { container } = render(<AccountUsageCell account={{ ...baseAccount, provider: "antigravity", type: "antigravity" }} />);
     expect(container.querySelector(".usage-quota-empty")).toHaveAttribute("title", "Antigravity 额度会在 Cloud Code retrieveUserQuotaSummary 返回后显示");

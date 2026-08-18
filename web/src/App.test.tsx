@@ -1115,6 +1115,63 @@ describe("primary account batch flow", () => {
 		expect(JSON.parse(String(requests.find(({ url }) => url.includes("/quota-metadata/refresh"))?.init.body))).toEqual({ account_id: "ag-1" });
 	});
 
+	it("refreshes Kimi quota without offering an active reset", async () => {
+		const user = userEvent.setup();
+		let observedAt = "";
+		const kimiAccount = {
+			...account,
+			id: "kimi-1",
+			auth_id: "kimi-auth",
+			label: "kimi@example.com",
+			email: "kimi@example.com",
+			name: "kimi.json",
+			provider: "kimi",
+			type: "kimi",
+			plan_type: "",
+		};
+		const requests: Array<{ url: string; init: RequestInit }> = [];
+		vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+			const url = String(input);
+			requests.push({ url, init });
+			if (url.includes("/batch/status")) {
+				return jsonResponse({ state: "idle", running: false, total: 0, eligible: 0, done: 0, succeeded: 0, failed: 0, conflicts: 0, skipped: 0, workers: 0, patch: { fields: [], proxy_mutation: false }, retry_available: false, persisted: false });
+			}
+			if (url.includes("/accounts/quota-metadata/refresh")) {
+				observedAt = "2026-08-18T12:00:00Z";
+				return jsonResponse({ account_id: "kimi-1", observed_at: observedAt });
+			}
+			return jsonResponse({
+				accounts: [{
+					...kimiAccount,
+					usage: observedAt ? {
+						input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, cached_tokens: 0,
+						cache_read_tokens: 0, cache_creation_tokens: 0, total_tokens: 0,
+						quota: {
+							provider: "kimi",
+							metadata_observed_at: observedAt,
+							observed_at: observedAt,
+							five_hour: { used_percent: 15, window_minutes: 300 },
+							seven_day: { used_percent: 40, window_minutes: 10_080 },
+						},
+					} : undefined,
+				}],
+				total: 1, page: 1, page_size: 50, pages: 1,
+			});
+		}));
+
+		render(<App />);
+		await user.type(await screen.findByLabelText("Management Key"), "management-secret");
+		await user.click(screen.getByRole("button", { name: "验证并进入" }));
+		const row = (await screen.findByText("kimi@example.com")).closest("tr") as HTMLTableRowElement;
+		expect(within(row).queryByRole("button", { name: "主动重置" })).not.toBeInTheDocument();
+		await user.click(within(row).getByRole("button", { name: "刷新 kimi@example.com 的额度" }));
+		await waitFor(() => expect(within(row).getByText(/获取于/)).toBeInTheDocument());
+		expect(within(row).queryByRole("button", { name: "主动重置" })).not.toBeInTheDocument();
+		expect(within(row).getByRole("meter", { name: "5h 用量 15%" })).toBeInTheDocument();
+		expect(within(row).getByRole("meter", { name: "7d 用量 40%" })).toBeInTheDocument();
+		expect(JSON.parse(String(requests.find(({ url }) => url.includes("/quota-metadata/refresh"))?.init.body))).toEqual({ account_id: "kimi-1" });
+	});
+
   it("keeps the newest account result when an older filter request finishes later", async () => {
     const user = userEvent.setup();
     let resolveCodex: ((response: Response) => void) | undefined;

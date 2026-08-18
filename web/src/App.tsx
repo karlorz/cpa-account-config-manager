@@ -1441,17 +1441,19 @@ function AccountQuotaMetadataCell({ account, busy, onRefresh, onReset }: { accou
 	const { tx, formatNumber, formatDateTime } = useI18n();
 	const provider = String(account.provider || account.type).trim().toLowerCase();
 	const antigravity = provider === "antigravity";
-	const supported = provider === "codex" || provider === "codex-agent-identity" || antigravity;
+	const kimi = provider === "kimi";
+	const quotaProvider = antigravity || kimi;
+	const supported = provider === "codex" || provider === "codex-agent-identity" || quotaProvider;
 	const count = account.usage?.codex?.active_reset_count;
-	const known = !antigravity && typeof count === "number" && Number.isFinite(count) && count >= 0;
-	const observedAt = antigravity ? account.usage?.quota?.metadata_observed_at : account.usage?.codex?.metadata_observed_at;
+	const known = !quotaProvider && typeof count === "number" && Number.isFinite(count) && count >= 0;
+	const observedAt = quotaProvider ? account.usage?.quota?.metadata_observed_at : account.usage?.codex?.metadata_observed_at;
 	const planType = account.usage?.quota?.plan_type || account.plan_type;
 	const accountLabel = account.label || account.email || account.name || account.id;
 	if (!supported) return <span className="quota-metadata-unsupported">-</span>;
 	return (
 		<div className="quota-metadata-cell">
-			<div className="quota-metadata-value"><strong>{antigravity ? (planType || "-") : known ? formatNumber(count) : "-"}</strong><IconButton label={tx(antigravity ? "ui.refresh_quota_for_account" : "ui.refresh_plan_and_active_reset", { account: accountLabel })} disabled={Boolean(busy)} onClick={onRefresh}>{busy === "refresh" ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}</IconButton></div>
-			{!antigravity && known && count > 0 ? <button className="quota-reset-button" type="button" disabled={Boolean(busy)} onClick={onReset}>{busy === "reset" ? <LoaderCircle className="spin" size={12} /> : <RotateCcw size={12} />}{tx("ui.use_active_reset")}</button> : null}
+			<div className="quota-metadata-value"><strong>{quotaProvider ? (planType || "-") : known ? formatNumber(count) : "-"}</strong><IconButton label={tx(quotaProvider ? "ui.refresh_quota_for_account" : "ui.refresh_plan_and_active_reset", { account: accountLabel })} disabled={Boolean(busy)} onClick={onRefresh}>{busy === "refresh" ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}</IconButton></div>
+			{!quotaProvider && known && count > 0 ? <button className="quota-reset-button" type="button" disabled={Boolean(busy)} onClick={onReset}>{busy === "reset" ? <LoaderCircle className="spin" size={12} /> : <RotateCcw size={12} />}{tx("ui.use_active_reset")}</button> : null}
 			<small>{observedAt ? tx("ui.quota_metadata_collected_at", { time: formatDateTime(observedAt) }) : tx("ui.not_collected")}</small>
 		</div>
 	);
