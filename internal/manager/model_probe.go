@@ -26,8 +26,13 @@ const (
 	maxModelIdentifierLength     = 128
 	defaultCodexFallbackModel    = "gpt-5.5"
 	codexCompatibilityMiniModel  = "gpt-5.4-mini"
-	defaultAntigravityProbeModel = "gemini-3.7-flash-high"
+	defaultAntigravityProbeModel = "gemini-3-flash"
 )
+
+var antigravityProbeFallbackModels = []string{
+	defaultAntigravityProbeModel,
+	"gemini-3.6-flash-high",
+}
 
 var antigravityGenerateContentURLs = []string{
 	"https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent",
@@ -513,7 +518,16 @@ func (s *ModelTestService) Run(ctx context.Context, request ModelTestRequest, ma
 
 	primaryAttempt, primaryResponse, primaryErr := runAttempt("primary", selectedModel, probe, result.Experiment)
 	applyAttempt(primaryAttempt)
-	if primaryErr != nil || request.ExperimentalWeeklyOverdraft || !shouldFallbackCodexModel(probe, selectedModel, primaryResponse) {
+	if primaryErr != nil || request.ExperimentalWeeklyOverdraft {
+		return result, nil
+	}
+	if shouldFallbackAntigravityModel(probe, primaryResponse) {
+		if errFallback := s.runAntigravityFallbackAttempts(runAttempt, applyAttempt, &result, probeProvider, selectedModel, metadata, account); errFallback != nil {
+			return ModelTestResult{}, errFallback
+		}
+		return result, nil
+	}
+	if !shouldFallbackCodexModel(probe, selectedModel, primaryResponse) {
 		return result, nil
 	}
 	fallbackProbe, fallbackModel, fallbackSupported, errFallback := buildModelProbe(probeProvider, defaultCodexFallbackModel, metadata)
@@ -544,6 +558,42 @@ func (s *ModelTestService) Run(ctx context.Context, request ModelTestRequest, ma
 	return result, nil
 }
 
+func (s *ModelTestService) runAntigravityFallbackAttempts(
+	runAttempt func(role, attemptModel string, attemptProbe modelProbe, experiment *ModelTestExperiment) (ModelTestAttempt, modelProbeHTTPResponse, error),
+	applyAttempt func(ModelTestAttempt),
+	result *ModelTestResult,
+	probeProvider, selectedModel string,
+	metadata modelTestAuthMetadata,
+	account Account,
+) error {
+	if result == nil {
+		return nil
+	}
+	for _, fallbackModel := range antigravityProbeFallbackModels {
+		if fallbackModel == "" || fallbackModel == selectedModel {
+			continue
+		}
+		if !accountModelPolicyAllows(account.ModelPolicy, fallbackModel) {
+			continue
+		}
+		fallbackProbe, nextModel, fallbackSupported, errFallback := buildModelProbe(probeProvider, fallbackModel, metadata)
+		if errFallback != nil || !fallbackSupported {
+			continue
+		}
+		if result.FallbackModel == "" {
+			result.FallbackModel = nextModel
+		}
+		fallbackAttempt, _, _ := runAttempt("fallback", nextModel, fallbackProbe, nil)
+		applyAttempt(fallbackAttempt)
+		if fallbackAttempt.Status == "available" {
+			result.FallbackUsed = true
+			result.FallbackModel = nextModel
+			return nil
+		}
+	}
+	return nil
+}
+
 func (s *ModelTestService) observeNormalQuotaFailure(accountID, quotaWindow, reason string, testedAt time.Time, experimental bool) {
 	if s == nil || experimental || safeModelProbeReason(reason) != "quota_limited" || s.overdraft == nil {
 		return
@@ -558,6 +608,19 @@ func (s *ModelTestService) observeNormalQuotaFailure(accountID, quotaWindow, rea
 func shouldFallbackCodexModel(probe modelProbe, model string, response modelProbeHTTPResponse) bool {
 	return probe.kind == "codex" && response.StatusCode == http.StatusBadRequest && model == defaultOpenAIProbeModel &&
 		unsupportedChatGPTAccountModel(response.Body) == model
+}
+
+// shouldFallbackAntigravityModel retries CPA-listed Gemini models on the same
+// OAuth account when the primary Cloud Code probe is a missing model or a
+// generic 429, not an explicit quota-exhausted body.
+func shouldFallbackAntigravityModel(probe modelProbe, response modelProbeHTTPResponse) bool {
+	if probe.kind != "antigravity" {
+		return false
+	}
+	if response.StatusCode == http.StatusNotFound {
+		return true
+	}
+	return response.StatusCode == http.StatusTooManyRequests && !modelProbeBodyHasQuotaEvidence(response.Body)
 }
 
 func (s *ModelTestService) callAccountProbe(ctx context.Context, managementBaseURL, managementKey, callbackID string, account Account, probe modelProbe) (modelProbeHTTPResponse, error) {

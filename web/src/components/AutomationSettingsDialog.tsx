@@ -30,7 +30,7 @@ export function AutomationSettingsDialog({
   const [probeBatchSize, setProbeBatchSize] = useState(String(inspection.model_probe_batch_size));
   const [probeModels, setProbeModels] = useState({
     ...inspection.model_probe_models,
-    antigravity: inspection.model_probe_models.antigravity || "gemini-3.7-flash-high",
+    antigravity: inspection.model_probe_models.antigravity || "gemini-3-flash",
   });
   const [failureThreshold, setFailureThreshold] = useState(String(inspection.failure_threshold));
   const [recoveryThreshold, setRecoveryThreshold] = useState(String(inspection.recovery_threshold));

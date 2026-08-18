@@ -949,7 +949,7 @@ func TestBuildModelProbeAntigravityUsesCloudCodeGenerateContent(t *testing.T) {
 	if probe.headers["User-Agent"] != antigravityQuotaUserAgent || probe.headers["Authorization"] != "Bearer $TOKEN$" {
 		t.Fatalf("headers = %#v", probe.headers)
 	}
-	if !strings.Contains(probe.data, `"project":"gcp-project"`) || !strings.Contains(probe.data, `"model":"gemini-3.7-flash-high"`) ||
+	if !strings.Contains(probe.data, `"project":"gcp-project"`) || !strings.Contains(probe.data, `"model":"`+defaultAntigravityProbeModel+`"`) ||
 		!strings.Contains(probe.data, `"requestType":"agent"`) {
 		t.Fatalf("data = %s", probe.data)
 	}
@@ -1055,6 +1055,125 @@ func TestHandleAccountModelTestAntigravityFallsThrough404Hosts(t *testing.T) {
 	}
 	if len(urls) < 2 || urls[0] == urls[len(urls)-1] {
 		t.Fatalf("expected host fallback, urls=%v", urls)
+	}
+}
+
+func TestHandleAccountModelTestAntigravityFallsBackToGemini3FlashOnGeneric429SameOAuthAccount(t *testing.T) {
+	host := &fakeAuthHost{
+		entries: []cpaapi.HostAuthFileEntry{{
+			AuthIndex: "ag-1", Name: "ag.json", Provider: "antigravity", Type: "antigravity",
+			ProjectID: "gcp-project", Source: "file", Path: "/auths/ag.json",
+		}},
+		details: map[string]cpaapi.HostAuthGetResponse{
+			"ag-1": {AuthIndex: "ag-1", Name: "ag.json", Path: "/auths/ag.json", JSON: json.RawMessage(`{"type":"antigravity","access_token":"ag-secret","project_id":"gcp-project"}`)},
+		},
+	}
+	var calls []managementAPICallRequest
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var call managementAPICallRequest
+		if errDecode := json.NewDecoder(request.Body).Decode(&call); errDecode != nil {
+			t.Errorf("decode management request: %v", errDecode)
+		}
+		calls = append(calls, call)
+		status := http.StatusTooManyRequests
+		body := `{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`
+		if strings.Contains(call.Data, `"model":"gemini-3-flash"`) {
+			status = http.StatusOK
+			body = `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]}}]}}`
+		}
+		_ = json.NewEncoder(writer).Encode(managementAPICallResponse{StatusCode: status, Body: managementAPICallBody(body)})
+	}))
+	defer server.Close()
+	app := NewApp(host, []byte("index"))
+	app.modelTests.doer = server.Client()
+	app.Configure([]byte("data_dir: " + t.TempDir() + "\nmanagement_base_url: " + server.URL + "\n"))
+	defer app.Close()
+	response := app.HandleManagement(context.Background(), cpaapi.ManagementRequest{
+		Method: http.MethodPost, Path: "/v0/management/plugins/cpa-account-config-manager/accounts/model-test",
+		Headers: http.Header{"Authorization": []string{"Bearer management-secret"}},
+		Body:    []byte(`{"account_id":"ag-1","model":"gemini-3.7-flash-high"}`),
+	})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("model test = %d %s", response.StatusCode, response.Body)
+	}
+	var result ModelTestResult
+	if errDecode := json.Unmarshal(response.Body, &result); errDecode != nil {
+		t.Fatalf("decode result: %v", errDecode)
+	}
+	if result.Status != "available" || result.ReasonCode != "model_response_ok" || !result.FallbackUsed ||
+		result.SelectedModel != "gemini-3-flash" || result.Model != "gemini-3-flash" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(calls) < 2 {
+		t.Fatalf("expected primary then fallback api-call, calls=%d", len(calls))
+	}
+	for index, call := range calls {
+		if call.AuthIndex != "ag-1" {
+			t.Fatalf("call %d auth_index = %q, want same OAuth account ag-1", index, call.AuthIndex)
+		}
+		if call.Header["Authorization"] != "Bearer $TOKEN$" {
+			t.Fatalf("call %d authorization = %#v", index, call.Header)
+		}
+		if !strings.Contains(call.URL, "cloudcode-pa.googleapis.com/v1internal:generateContent") {
+			t.Fatalf("call %d url = %q", index, call.URL)
+		}
+		if !strings.Contains(call.Data, `"project":"gcp-project"`) {
+			t.Fatalf("call %d data = %s", index, call.Data)
+		}
+	}
+	if !strings.Contains(calls[0].Data, `"model":"gemini-3.7-flash-high"`) || !strings.Contains(calls[len(calls)-1].Data, `"model":"gemini-3-flash"`) {
+		t.Fatalf("expected only the model field to change, first=%s last=%s", calls[0].Data, calls[len(calls)-1].Data)
+	}
+}
+
+func TestHandleAccountModelTestAntigravityKeepsQuotaLimited429WithoutFallback(t *testing.T) {
+	host := &fakeAuthHost{
+		entries: []cpaapi.HostAuthFileEntry{{
+			AuthIndex: "ag-1", Name: "ag.json", Provider: "antigravity", Type: "antigravity",
+			ProjectID: "gcp-project", Source: "file", Path: "/auths/ag.json",
+		}},
+		details: map[string]cpaapi.HostAuthGetResponse{
+			"ag-1": {AuthIndex: "ag-1", Name: "ag.json", Path: "/auths/ag.json", JSON: json.RawMessage(`{"type":"antigravity","access_token":"ag-secret","project_id":"gcp-project"}`)},
+		},
+	}
+	var models []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var call managementAPICallRequest
+		_ = json.NewDecoder(request.Body).Decode(&call)
+		if strings.Contains(call.Data, `"model":"`) {
+			start := strings.Index(call.Data, `"model":"`) + len(`"model":"`)
+			end := strings.Index(call.Data[start:], `"`)
+			if end > 0 {
+				models = append(models, call.Data[start:start+end])
+			}
+		}
+		_ = json.NewEncoder(writer).Encode(managementAPICallResponse{
+			StatusCode: http.StatusTooManyRequests,
+			Body:       managementAPICallBody(`{"error":{"code":429,"message":"quota exhausted","status":"RESOURCE_EXHAUSTED"}}`),
+		})
+	}))
+	defer server.Close()
+	app := NewApp(host, []byte("index"))
+	app.modelTests.doer = server.Client()
+	app.Configure([]byte("data_dir: " + t.TempDir() + "\nmanagement_base_url: " + server.URL + "\n"))
+	defer app.Close()
+	response := app.HandleManagement(context.Background(), cpaapi.ManagementRequest{
+		Method: http.MethodPost, Path: "/v0/management/plugins/cpa-account-config-manager/accounts/model-test",
+		Headers: http.Header{"Authorization": []string{"Bearer management-secret"}},
+		Body:    []byte(`{"account_id":"ag-1","model":"gemini-3.7-flash-high"}`),
+	})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("model test = %d %s", response.StatusCode, response.Body)
+	}
+	var result ModelTestResult
+	if errDecode := json.Unmarshal(response.Body, &result); errDecode != nil {
+		t.Fatalf("decode result: %v", errDecode)
+	}
+	if result.Status != "review" || result.ReasonCode != "quota_limited" || result.FallbackUsed {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(models) != 1 || models[0] != "gemini-3.7-flash-high" {
+		t.Fatalf("quota 429 should not fallback, models=%v", models)
 	}
 }
 

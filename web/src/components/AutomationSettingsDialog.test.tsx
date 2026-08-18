@@ -8,7 +8,7 @@ function policy(overrides: Partial<InspectionPolicy> = {}): InspectionPolicy {
   return {
     enabled: false, scan_interval_minutes: 30,
     model_probe_enabled: true, model_probe_full_sweep: false, scan_manually_disabled: false, model_probe_interval_minutes: 60, model_probe_batch_size: 20,
-    model_probe_models: { codex: "gpt-5.4", openai: "gpt-5.4", claude: "claude-sonnet-4-5-20250929", gemini: "gemini-2.0-flash", antigravity: "gemini-3.7-flash-high", xai: "grok-4" },
+    model_probe_models: { codex: "gpt-5.4", openai: "gpt-5.4", claude: "claude-sonnet-4-5-20250929", gemini: "gemini-2.0-flash", antigravity: "gemini-3-flash", xai: "grok-4" },
     failure_threshold: 3, recovery_threshold: 2,
     passive_circuit_enabled: false, passive_failure_threshold: 5, passive_failure_window_minutes: 180, passive_circuit_minutes: 15,
     auto_disable: false, auto_enable: false, auto_delete: false, auto_delete_invalid_credentials: false, delete_grace_hours: 168, delete_batch_size: 10,
@@ -24,7 +24,7 @@ describe("AutomationSettingsDialog", () => {
   it("shows separate Gemini CLI and Antigravity probe model fields", () => {
     render(<AutomationSettingsDialog inspection={policy()} saving={false} onClose={() => undefined} onSave={() => undefined} />);
     expect(screen.getByLabelText("Gemini 测试模型")).toHaveValue("gemini-2.0-flash");
-    expect(screen.getByLabelText("Antigravity 测试模型")).toHaveValue("gemini-3.7-flash-high");
+    expect(screen.getByLabelText("Antigravity 测试模型")).toHaveValue("gemini-3-flash");
   });
 
   it("keeps notification settings outside the inspection dialog while preserving them on save", async () => {

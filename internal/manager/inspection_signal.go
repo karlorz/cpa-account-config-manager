@@ -331,7 +331,7 @@ func decideInspection(account Account, record inspectionRecord, now time.Time) i
 			QuotaWindow:         quotaWindow,
 		}
 	}
-	if hasProbeDecision {
+	if hasProbeDecision && !antigravityModelTransient429DefersToNative(account, record.Probe) {
 		return probeDecision
 	}
 	if account.Disabled && !record.Result.OwnedDisable {
@@ -524,6 +524,19 @@ func isCodexInspectionProvider(provider string) bool {
 
 func inspectionProbeDecisionOutranksQuota(decision inspectionDecision) bool {
 	return decision.Health == InspectionHealthInvalidCredentials || decision.Health == InspectionHealthDeactivated
+}
+
+func antigravityModelTransient429DefersToNative(account Account, probe inspectionProbeSignal) bool {
+	if !isAntigravityAccount(account) {
+		return false
+	}
+	if normalizeInspectionProbeKind(probe.Kind) != InspectionProbeKindModel {
+		return false
+	}
+	if safeModelProbeReason(probe.ReasonCode) != "transient_failure" {
+		return false
+	}
+	return probe.StatusCode == http.StatusTooManyRequests
 }
 
 func decisionFromModelProbe(probe inspectionProbeSignal, now time.Time) (inspectionDecision, bool) {

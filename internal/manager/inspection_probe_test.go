@@ -110,6 +110,45 @@ func TestInspectionProbeEligibilityRespectsManualDisablePolicyAndOwnership(t *te
 	}
 }
 
+func TestDecideInspectionKeepsNativeHealthyWhenAntigravityGeneric429AndQuotaRemains(t *testing.T) {
+	now := time.Date(2026, time.August, 18, 8, 0, 0, 0, time.UTC)
+	account := Account{
+		ID: "ag-1", Provider: "antigravity", Type: "antigravity", Status: "active",
+		Usage: &AccountUsageSnapshot{Quota: &QuotaUsageSnapshot{
+			FiveHour: &UsageWindowSnapshot{UsedPercent: 39, WindowMinutes: 300},
+			SevenDay: &UsageWindowSnapshot{UsedPercent: 64, WindowMinutes: 10080},
+		}},
+	}
+	record := inspectionRecord{Probe: inspectionProbeSignal{
+		Status: "review", Kind: InspectionProbeKindModel, ReasonCode: "transient_failure",
+		StatusCode: http.StatusTooManyRequests, Model: "gemini-3.7-flash-high", TestedAt: now,
+	}}
+	decision := decideInspection(account, record, now)
+	if decision.Health != InspectionHealthHealthy || decision.ReasonCode != "healthy_recent_success" ||
+		decision.Recommendation != InspectionRecommendationKeep || decision.SignalSource != InspectionSignalNative {
+		t.Fatalf("generic 429 overrode healthy antigravity account: %#v", decision)
+	}
+}
+
+func TestDecideInspectionKeepsQuotaExhaustedWhenAntigravityGeneric429AndQuotaLimited(t *testing.T) {
+	now := time.Date(2026, time.August, 18, 8, 0, 0, 0, time.UTC)
+	account := Account{
+		ID: "ag-1", Provider: "antigravity", Type: "antigravity", Status: "active",
+		Usage: &AccountUsageSnapshot{Quota: &QuotaUsageSnapshot{
+			FiveHour: &UsageWindowSnapshot{UsedPercent: 100, WindowMinutes: 300},
+		}},
+	}
+	record := inspectionRecord{Probe: inspectionProbeSignal{
+		Status: "review", Kind: InspectionProbeKindModel, ReasonCode: "transient_failure",
+		StatusCode: http.StatusTooManyRequests, Model: "gemini-3-flash", TestedAt: now,
+	}}
+	decision := decideInspection(account, record, now)
+	if decision.Health != InspectionHealthQuotaLimited || decision.ReasonCode != "quota_exhausted" ||
+		decision.Recommendation != InspectionRecommendationDisable || decision.SignalSource != InspectionSignalNative {
+		t.Fatalf("generic 429 hid native quota exhaustion: %#v", decision)
+	}
+}
+
 func TestInspectionCredentialFailuresAndCurrentQuotaOverrideOrdinaryProbeState(t *testing.T) {
 	now := time.Date(2026, time.July, 21, 9, 0, 0, 0, time.UTC)
 	resetAt := now.Add(6 * time.Hour)
@@ -1151,10 +1190,12 @@ func TestInspectionReloadRestoresBoundedLiveCheckpointWithoutSecrets(t *testing.
 func TestInspectionRefreshesAntigravityQuotaWindows(t *testing.T) {
 	host := antigravityQuotaMetadataHost()
 	var quotaCalls atomic.Int32
+	fiveHourReset := time.Now().UTC().Add(3 * time.Hour).Format(time.RFC3339)
+	weeklyReset := time.Now().UTC().Add(5 * 24 * time.Hour).Format(time.RFC3339)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		var call managementAPICallRequest
 		_ = json.NewDecoder(request.Body).Decode(&call)
-		body := `{"groups":[{"buckets":[{"remainingFraction":0.835363,"window":"5h","resetTime":"2026-08-17T15:49:00Z"},{"remainingFraction":0.39436734,"window":"weekly","resetTime":"2026-08-22T02:22:00Z"}]}]}`
+		body := `{"groups":[{"buckets":[{"remainingFraction":0.835363,"window":"5h","resetTime":"` + fiveHourReset + `"},{"remainingFraction":0.39436734,"window":"weekly","resetTime":"` + weeklyReset + `"}]}]}`
 		switch {
 		case strings.Contains(call.URL, "retrieveUserQuotaSummary"):
 			quotaCalls.Add(1)
@@ -1173,10 +1214,11 @@ func TestInspectionRefreshesAntigravityQuotaWindows(t *testing.T) {
 	defer app.Close()
 	app.usage.ObserveQuotaUsage("ag-1", &QuotaUsageSnapshot{
 		Provider: "antigravity",
-		FiveHour: &UsageWindowSnapshot{UsedPercent: 0, WindowMinutes: 300, ResetAt: timePointer(time.Date(2026, time.August, 17, 14, 28, 0, 0, time.UTC))},
-		SevenDay: &UsageWindowSnapshot{UsedPercent: 58, WindowMinutes: 10080, ResetAt: timePointer(time.Date(2026, time.August, 22, 2, 22, 0, 0, time.UTC))},
+		FiveHour: &UsageWindowSnapshot{UsedPercent: 0, WindowMinutes: 300, ResetAt: timePointer(time.Now().UTC().Add(2 * time.Hour))},
+		SevenDay: &UsageWindowSnapshot{UsedPercent: 58, WindowMinutes: 10080, ResetAt: timePointer(time.Now().UTC().Add(5 * 24 * time.Hour))},
 	})
 
+	before := app.inspection.Snapshot().LastRun.StartedAt
 	response := app.HandleManagement(context.Background(), cpaapi.ManagementRequest{
 		Method:  http.MethodPost,
 		Path:    "/v0/management/plugins/cpa-account-config-manager/inspection/scan",
@@ -1188,7 +1230,7 @@ func TestInspectionRefreshesAntigravityQuotaWindows(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		snapshot := app.inspection.Snapshot()
-		if !snapshot.Pending && !snapshot.Running && !snapshot.LastRun.FinishedAt.IsZero() {
+		if !snapshot.Pending && !snapshot.Running && snapshot.LastRun.StartedAt.After(before) && !snapshot.LastRun.FinishedAt.IsZero() {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -1201,7 +1243,11 @@ func TestInspectionRefreshesAntigravityQuotaWindows(t *testing.T) {
 	if errList != nil || len(listed.Accounts) != 1 || listed.Accounts[0].Usage == nil || listed.Accounts[0].Usage.Quota == nil ||
 		listed.Accounts[0].Usage.Quota.FiveHour == nil || listed.Accounts[0].Usage.Quota.FiveHour.UsedPercent < 16 || listed.Accounts[0].Usage.Quota.FiveHour.UsedPercent > 17 ||
 		listed.Accounts[0].Usage.Quota.SevenDay == nil || listed.Accounts[0].Usage.Quota.SevenDay.UsedPercent < 60 || listed.Accounts[0].Usage.Quota.SevenDay.UsedPercent > 61 {
-		t.Fatalf("account quota after inspection = %#v err=%v", listed.Accounts, errList)
+		quota := (*QuotaUsageSnapshot)(nil)
+		if errList == nil && len(listed.Accounts) == 1 && listed.Accounts[0].Usage != nil {
+			quota = listed.Accounts[0].Usage.Quota
+		}
+		t.Fatalf("account quota after inspection = %#v err=%v quotaCalls=%d", quota, errList, quotaCalls.Load())
 	}
 	results := app.inspection.ListResults(InspectionResultQuery{Page: 1, PageSize: 50})
 	if len(results.Results) != 1 || results.Results[0].QuotaUsage == nil || results.Results[0].QuotaUsage.FiveHour == nil ||
@@ -1263,11 +1309,11 @@ func TestInspectionKeepsStaleAntigravityQuotaWhenSummaryFails(t *testing.T) {
 	app.modelTests.doer = server.Client()
 	app.Configure([]byte("data_dir: " + t.TempDir() + "\nmanagement_base_url: " + server.URL + "\n"))
 	defer app.Close()
-	staleReset := time.Date(2026, time.August, 17, 14, 28, 0, 0, time.UTC)
+	staleReset := time.Now().UTC().Add(2 * time.Hour)
 	app.usage.ObserveQuotaUsage("ag-1", &QuotaUsageSnapshot{
 		Provider: "antigravity",
 		FiveHour: &UsageWindowSnapshot{UsedPercent: 12, WindowMinutes: 300, ResetAt: timePointer(staleReset)},
-		SevenDay: &UsageWindowSnapshot{UsedPercent: 58, WindowMinutes: 10080},
+		SevenDay: &UsageWindowSnapshot{UsedPercent: 58, WindowMinutes: 10080, ResetAt: timePointer(time.Now().UTC().Add(5 * 24 * time.Hour))},
 	})
 	app.inspection.ArmModelProbes("current-management-secret")
 	before := app.inspection.Snapshot().LastRun.StartedAt
@@ -1275,15 +1321,19 @@ func TestInspectionKeepsStaleAntigravityQuotaWhenSummaryFails(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		snapshot := app.inspection.Snapshot()
-		if !snapshot.Pending && !snapshot.Running && snapshot.LastRun.StartedAt.After(before) && !snapshot.LastRun.FinishedAt.IsZero() {
-			break
+		results := app.inspection.ListResults(InspectionResultQuery{Page: 1, PageSize: 50})
+		if !snapshot.Pending && !snapshot.Running && snapshot.LastRun.StartedAt.After(before) && !snapshot.LastRun.FinishedAt.IsZero() &&
+			len(results.Results) == 1 && results.Results[0].QuotaUsage != nil && results.Results[0].QuotaUsage.FiveHour != nil &&
+			results.Results[0].QuotaUsage.FiveHour.UsedPercent == 12 && results.Results[0].QuotaUsage.SevenDay != nil &&
+			results.Results[0].QuotaUsage.SevenDay.UsedPercent == 58 {
+			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	results := app.inspection.ListResults(InspectionResultQuery{Page: 1, PageSize: 50})
-	if len(results.Results) != 1 || results.Results[0].QuotaUsage == nil || results.Results[0].QuotaUsage.FiveHour == nil ||
-		results.Results[0].QuotaUsage.FiveHour.UsedPercent != 12 || results.Results[0].QuotaUsage.SevenDay == nil ||
-		results.Results[0].QuotaUsage.SevenDay.UsedPercent != 58 {
-		t.Fatalf("stale quota was replaced = %#v", results.Results)
+	quota := (*QuotaUsageSnapshot)(nil)
+	if len(results.Results) == 1 {
+		quota = results.Results[0].QuotaUsage
 	}
+	t.Fatalf("stale quota was replaced = %#v", quota)
 }

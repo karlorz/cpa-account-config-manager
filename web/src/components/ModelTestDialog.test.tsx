@@ -230,7 +230,7 @@ describe("ModelTestDialog", () => {
     expect(onTest).toHaveBeenCalledWith("gpt-5.6-sol", true);
   });
 
-  it("defaults Antigravity accounts to gemini-3.7-flash-high", async () => {
+  it("defaults Antigravity accounts to gemini-3-flash", async () => {
     const user = userEvent.setup();
     const onTest = vi.fn();
     render(<ModelTestDialog
@@ -243,9 +243,9 @@ describe("ModelTestDialog", () => {
     />);
 
     const dialog = screen.getByRole("dialog", { name: "模型可用性测试" });
-    expect(within(dialog).getByLabelText("测试模型")).toHaveValue("gemini-3.7-flash-high");
+    expect(within(dialog).getByLabelText("测试模型")).toHaveValue("gemini-3-flash");
     await user.click(within(dialog).getByRole("button", { name: "开始测试" }));
-    expect(onTest).toHaveBeenCalledWith("gemini-3.7-flash-high", false);
+    expect(onTest).toHaveBeenCalledWith("gemini-3-flash", false);
   });
 
   it("uses Codex defaults and experimental controls for Agent Identity accounts", async () => {
