@@ -297,6 +297,35 @@ func TestUsageTrackerObserveQuotaUsageDoesNotWriteCodexOrOverdraft(t *testing.T)
 	}
 }
 
+func TestUsageTrackerShowsQuotaForKimiAccountWithoutIdentity(t *testing.T) {
+	tracker := NewUsageTracker()
+	tracker.persistDelay = time.Hour
+	defer tracker.Close()
+	now := time.Date(2026, time.August, 18, 10, 0, 0, 0, time.UTC)
+	tracker.now = func() time.Time { return now }
+
+	authIndex := "kimi-1786629623133"
+	tracker.DiscoverAuthStorage([]cpaapi.HostAuthFileEntry{{
+		AuthIndex: authIndex,
+		Provider:  "kimi",
+		Type:      "kimi",
+		Name:      "kimi-1786629623133.json",
+	}})
+
+	tracker.ObserveQuotaUsage(authIndex, &QuotaUsageSnapshot{
+		Provider: "kimi",
+		FiveHour: &UsageWindowSnapshot{UsedPercent: 15, WindowMinutes: 300},
+		SevenDay: &UsageWindowSnapshot{UsedPercent: 40, WindowMinutes: 10080},
+	})
+
+	snapshot := tracker.Snapshot(authIndex)
+	if snapshot == nil || snapshot.Quota == nil || snapshot.Quota.Provider != "kimi" ||
+		snapshot.Quota.FiveHour == nil || snapshot.Quota.FiveHour.UsedPercent != 15 ||
+		snapshot.Quota.SevenDay == nil || snapshot.Quota.SevenDay.UsedPercent != 40 {
+		t.Fatalf("snapshot for Kimi account without email identity = %#v", snapshot)
+	}
+}
+
 func TestAccountQuotaLimitedUsesFrozenOverdraftRecoveryTime(t *testing.T) {
 	now := time.Date(2026, time.July, 30, 4, 0, 0, 0, time.UTC)
 	mutableResetAt := now.Add(6 * time.Hour)

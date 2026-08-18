@@ -136,6 +136,8 @@ type UsageTracker struct {
 	storeMu          sync.Mutex
 	accounts         map[string]usageAggregate
 	bindings         map[string]usageBinding
+	unbound          map[string]struct{}
+	conflicted       map[string]struct{}
 	bindingsReady    bool
 	now              func() time.Time
 	store            string
@@ -156,6 +158,8 @@ func NewUsageTracker() *UsageTracker {
 	tracker := &UsageTracker{
 		accounts:     make(map[string]usageAggregate),
 		bindings:     make(map[string]usageBinding),
+		unbound:      make(map[string]struct{}),
+		conflicted:   make(map[string]struct{}),
 		now:          time.Now,
 		persistDelay: usagePersistDelay,
 		wake:         make(chan struct{}, 1),
@@ -228,13 +232,15 @@ func (t *UsageTracker) DiscoverAuthStorage(entries []cpaapi.HostAuthFileEntry) {
 }
 
 func (t *UsageTracker) bindUsageAccounts(entries []cpaapi.HostAuthFileEntry) {
-	bindings := buildUsageBindings(entries)
+	state := buildUsageBindingState(entries)
 	now := t.currentTime()
 	changed := false
 	t.mu.Lock()
-	t.bindings = bindings
+	t.bindings = state.bindings
+	t.unbound = state.unbound
+	t.conflicted = state.conflicted
 	t.bindingsReady = true
-	for authIndex, binding := range bindings {
+	for authIndex, binding := range state.bindings {
 		current, exists := t.accounts[binding.Key]
 		if exists && usageIdentitiesConflict(current.Identity, binding.Identity) {
 			if binding.Disabled && usageIdentityCanRebindByEmail(current.Identity, binding.Identity) {
@@ -295,11 +301,11 @@ func (t *UsageTracker) AccountLifecycle(authIndex string) AccountLifecycleSnapsh
 		return AccountLifecycleSnapshot{}
 	}
 	t.mu.RLock()
-	storageKey, identity := t.usageStorageKeyLocked(authIndex)
-	if t.bindingsReady && identity == (usageIdentityFingerprint{}) {
+	if _, conflicted := t.conflicted[authIndex]; conflicted {
 		t.mu.RUnlock()
 		return AccountLifecycleSnapshot{}
 	}
+	storageKey, identity := t.usageStorageKeyLocked(authIndex)
 	aggregate, exists := t.accounts[storageKey]
 	t.mu.RUnlock()
 	if !exists || usageIdentitiesConflict(aggregate.Identity, identity) || aggregate.Lifecycle == nil {
@@ -664,11 +670,11 @@ func (t *UsageTracker) Snapshot(authIndex string) *AccountUsageSnapshot {
 		return nil
 	}
 	t.mu.RLock()
-	storageKey, identity := t.usageStorageKeyLocked(authIndex)
-	if t.bindingsReady && identity == (usageIdentityFingerprint{}) {
+	if _, conflicted := t.conflicted[authIndex]; conflicted {
 		t.mu.RUnlock()
 		return nil
 	}
+	storageKey, identity := t.usageStorageKeyLocked(authIndex)
 	aggregate, exists := t.accounts[storageKey]
 	t.mu.RUnlock()
 	if !exists || usageIdentitiesConflict(aggregate.Identity, identity) {

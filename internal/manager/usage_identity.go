@@ -29,6 +29,12 @@ type usageBinding struct {
 	ModTime   time.Time
 }
 
+type usageBindingState struct {
+	bindings   map[string]usageBinding
+	unbound    map[string]struct{}
+	conflicted map[string]struct{}
+}
+
 func usageBindingForEntry(entry cpaapi.HostAuthFileEntry) (usageBinding, bool) {
 	provider := deduplicationProviderFamily(firstNonEmpty(entry.Provider, entry.Type))
 	if provider == "" {
@@ -67,7 +73,14 @@ func usageBindingForEntry(entry cpaapi.HostAuthFileEntry) (usageBinding, bool) {
 }
 
 func buildUsageBindings(entries []cpaapi.HostAuthFileEntry) map[string]usageBinding {
+	state := buildUsageBindingState(entries)
+	return state.bindings
+}
+
+func buildUsageBindingState(entries []cpaapi.HostAuthFileEntry) usageBindingState {
 	indexCounts := make(map[string]int, len(entries))
+	unbound := make(map[string]struct{})
+	conflicted := make(map[string]struct{})
 	for _, entry := range entries {
 		if authIndex := strings.TrimSpace(entry.AuthIndex); authIndex != "" {
 			indexCounts[authIndex]++
@@ -82,11 +95,16 @@ func buildUsageBindings(entries []cpaapi.HostAuthFileEntry) map[string]usageBind
 	conflictedKeys := make(map[string]struct{})
 	for _, entry := range entries {
 		authIndex := strings.TrimSpace(entry.AuthIndex)
-		if authIndex == "" || indexCounts[authIndex] != 1 {
+		if authIndex == "" {
+			continue
+		}
+		if indexCounts[authIndex] > 1 {
+			conflicted[authIndex] = struct{}{}
 			continue
 		}
 		binding, ok := usageBindingForEntry(entry)
 		if !ok {
+			unbound[authIndex] = struct{}{}
 			continue
 		}
 		if existing, exists := identities[binding.Key]; exists {
@@ -102,12 +120,17 @@ func buildUsageBindings(entries []cpaapi.HostAuthFileEntry) map[string]usageBind
 	}
 	bindings := make(map[string]usageBinding, len(candidates))
 	for _, item := range candidates {
-		if _, conflicted := conflictedKeys[item.binding.Key]; conflicted {
+		if _, keyConflicted := conflictedKeys[item.binding.Key]; keyConflicted {
+			conflicted[item.authIndex] = struct{}{}
 			continue
 		}
 		bindings[item.authIndex] = item.binding
 	}
-	return bindings
+	return usageBindingState{
+		bindings:   bindings,
+		unbound:    unbound,
+		conflicted: conflicted,
+	}
 }
 
 func firstValidUsageEmail(values ...string) string {
