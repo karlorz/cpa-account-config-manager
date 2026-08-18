@@ -1058,7 +1058,7 @@ func TestHandleAccountModelTestAntigravityFallsThrough404Hosts(t *testing.T) {
 	}
 }
 
-func TestHandleAccountModelTestAntigravityFallsBackToGemini3FlashOnGeneric429SameOAuthAccount(t *testing.T) {
+func TestHandleAccountModelTestAntigravityDoesNotFallbackOnGeneric429(t *testing.T) {
 	host := &fakeAuthHost{
 		entries: []cpaapi.HostAuthFileEntry{{
 			AuthIndex: "ag-1", Name: "ag.json", Provider: "antigravity", Type: "antigravity",
@@ -1100,29 +1100,29 @@ func TestHandleAccountModelTestAntigravityFallsBackToGemini3FlashOnGeneric429Sam
 	if errDecode := json.Unmarshal(response.Body, &result); errDecode != nil {
 		t.Fatalf("decode result: %v", errDecode)
 	}
-	if result.Status != "available" || result.ReasonCode != "model_response_ok" || !result.FallbackUsed ||
-		result.SelectedModel != "gemini-3-flash" || result.Model != "gemini-3-flash" {
+	if result.Status != "review" || result.ReasonCode != "transient_failure" || result.FallbackUsed {
 		t.Fatalf("result = %#v", result)
 	}
-	if len(calls) < 2 {
-		t.Fatalf("expected primary then fallback api-call, calls=%d", len(calls))
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 api-call, calls=%d", len(calls))
 	}
-	for index, call := range calls {
-		if call.AuthIndex != "ag-1" {
-			t.Fatalf("call %d auth_index = %q, want same OAuth account ag-1", index, call.AuthIndex)
-		}
-		if call.Header["Authorization"] != "Bearer $TOKEN$" {
-			t.Fatalf("call %d authorization = %#v", index, call.Header)
-		}
-		if !strings.Contains(call.URL, "cloudcode-pa.googleapis.com/v1internal:generateContent") {
-			t.Fatalf("call %d url = %q", index, call.URL)
-		}
-		if !strings.Contains(call.Data, `"project":"gcp-project"`) {
-			t.Fatalf("call %d data = %s", index, call.Data)
-		}
+	if calls[0].AuthIndex != "ag-1" {
+		t.Fatalf("call auth_index = %q, want same OAuth account ag-1", calls[0].AuthIndex)
 	}
-	if !strings.Contains(calls[0].Data, `"model":"gemini-3.7-flash-high"`) || !strings.Contains(calls[len(calls)-1].Data, `"model":"gemini-3-flash"`) {
-		t.Fatalf("expected only the model field to change, first=%s last=%s", calls[0].Data, calls[len(calls)-1].Data)
+	if calls[0].Header["Authorization"] != "Bearer $TOKEN$" {
+		t.Fatalf("call authorization = %#v", calls[0].Header)
+	}
+	if !strings.Contains(calls[0].URL, "cloudcode-pa.googleapis.com/v1internal:generateContent") {
+		t.Fatalf("call url = %q", calls[0].URL)
+	}
+	if !strings.Contains(calls[0].Data, `"project":"gcp-project"`) {
+		t.Fatalf("call data = %s", calls[0].Data)
+	}
+	if !strings.Contains(calls[0].Data, `"model":"gemini-3.7-flash-high"`) {
+		t.Fatalf("call data model = %s, want gemini-3.7-flash-high", calls[0].Data)
+	}
+	if strings.Contains(calls[0].Data, `"model":"gemini-3-flash"`) || strings.Contains(calls[0].Data, `"model":"gemini-3.6-flash-high"`) {
+		t.Fatalf("fallback model found in call data: %s", calls[0].Data)
 	}
 }
 
