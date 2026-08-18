@@ -99,6 +99,9 @@ func runInspectionModelProbesObserved(
 		go func() {
 			defer wait.Done()
 			for account := range jobs {
+				if isAntigravityAccount(account) {
+					continue
+				}
 				model := inspectionProbeModel(account, policy.ModelProbeModels)
 				result, errRun := service.Run(ctx, ModelTestRequest{AccountID: account.ID, Model: model, Inspection: true, SelectPolicyFallback: true}, managementBaseURL, managementKey)
 				if errRun != nil {
@@ -146,6 +149,9 @@ func inspectionProbeEligibleAccounts(accounts []Account, records map[string]insp
 	for _, account := range accounts {
 		id := strings.TrimSpace(account.ID)
 		if id == "" {
+			continue
+		}
+		if isAntigravityAccount(account) {
 			continue
 		}
 		if account.Disabled && !records[id].Result.OwnedDisable && !scanManuallyDisabled {
@@ -238,7 +244,7 @@ func retryInspectionProbeResultsObserved(ctx context.Context, service *ModelTest
 			continue
 		}
 		account, exists := byID[result.AccountID]
-		if !exists || ctx.Err() != nil {
+		if !exists || isAntigravityAccount(account) || ctx.Err() != nil {
 			continue
 		}
 		model := inspectionProbeModel(account, policy.ModelProbeModels)

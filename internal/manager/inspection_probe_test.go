@@ -42,6 +42,29 @@ func TestDefaultInspectionProbeModelsUseCurrentOpenAIModel(t *testing.T) {
 	if models.Codex != "gpt-5.6-sol" || models.OpenAI != "gpt-5.6-sol" {
 		t.Fatalf("default OpenAI-family probe models = %#v", models)
 	}
+	if models.Antigravity != "gemini-3-flash" {
+		t.Fatalf("default Antigravity probe model = %q, want gemini-3-flash", models.Antigravity)
+	}
+}
+
+func TestNormalizeInspectionPolicyKeepsSavedAntigravityModel(t *testing.T) {
+	policyWithSaved := normalizeInspectionPolicy(InspectionPolicy{
+		ModelProbeModels: ModelProbeModels{
+			Antigravity: "gemini-3.7-flash-high",
+		},
+	})
+	if policyWithSaved.ModelProbeModels.Antigravity != "gemini-3.7-flash-high" {
+		t.Fatalf("saved antigravity probe model overwritten: got %q, want gemini-3.7-flash-high", policyWithSaved.ModelProbeModels.Antigravity)
+	}
+
+	policyWithEmpty := normalizeInspectionPolicy(InspectionPolicy{
+		ModelProbeModels: ModelProbeModels{
+			Antigravity: "",
+		},
+	})
+	if policyWithEmpty.ModelProbeModels.Antigravity != "gemini-3-flash" {
+		t.Fatalf("empty antigravity probe model default: got %q, want gemini-3-flash", policyWithEmpty.ModelProbeModels.Antigravity)
+	}
 }
 
 func TestInspectionProbeModelKeepsGeminiCLISeparateFromAntigravity(t *testing.T) {
@@ -82,9 +105,10 @@ func TestPolicyBlockedProbeDoesNotOverwriteInspectionEvidence(t *testing.T) {
 
 func TestInspectionProbeEligibilityRespectsManualDisablePolicyAndOwnership(t *testing.T) {
 	accounts := []Account{
-		{ID: "active"},
-		{ID: "manual-disabled", Disabled: true},
-		{ID: "inspection-disabled", Disabled: true},
+		{ID: "active", Provider: "codex", Type: "codex"},
+		{ID: "manual-disabled", Provider: "codex", Type: "codex", Disabled: true},
+		{ID: "inspection-disabled", Provider: "codex", Type: "codex", Disabled: true},
+		{ID: "antigravity-account", Provider: "antigravity", Type: "antigravity"},
 	}
 	records := map[string]inspectionRecord{
 		"inspection-disabled": {Result: InspectionResult{OwnedDisable: true}},
@@ -107,6 +131,89 @@ func TestInspectionProbeEligibilityRespectsManualDisablePolicyAndOwnership(t *te
 	updateInspectionRecord(&record, accounts[1], decision, now)
 	if record.Result.Recommendation != InspectionRecommendationEnable || record.Result.OwnedDisable {
 		t.Fatalf("healthy manually disabled account did not become an explicit enable suggestion: %#v", record.Result)
+	}
+}
+
+func TestInspectionScanDoesNotPostGenerateContentForAntigravity(t *testing.T) {
+	entries := []cpaapi.HostAuthFileEntry{
+		{AuthIndex: "ag-account", Name: "ag-account.json", Provider: "antigravity", Type: "antigravity", Source: "file", Path: "/auths/ag-account.json"},
+		{AuthIndex: "codex-account", Name: "codex-account.json", Provider: "codex", Type: "codex", Source: "file", Path: "/auths/codex-account.json"},
+	}
+	details := map[string]cpaapi.HostAuthGetResponse{
+		"ag-account": {
+			AuthIndex: "ag-account", Name: "ag-account.json", Path: "/auths/ag-account.json",
+			JSON: json.RawMessage(`{"type":"antigravity","access_token":"ag-token","email":"ag@example.com","project_id":"p-1"}`),
+		},
+		"codex-account": {
+			AuthIndex: "codex-account", Name: "codex-account.json", Path: "/auths/codex-account.json",
+			JSON: json.RawMessage(`{"type":"codex","access_token":"codex-token"}`),
+		},
+	}
+	host := &fakeAuthHost{entries: entries, details: details}
+
+	var agGenerateContentCalls atomic.Int32
+	var codexCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var call managementAPICallRequest
+		_ = json.NewDecoder(request.Body).Decode(&call)
+		if call.Method == http.MethodGet {
+			_ = json.NewEncoder(writer).Encode(managementAPICallResponse{StatusCode: http.StatusOK, Body: `{}`})
+			return
+		}
+		if strings.Contains(call.URL, "generateContent") {
+			agGenerateContentCalls.Add(1)
+		}
+		if strings.Contains(call.Data, "codex-probe-model") {
+			codexCalls.Add(1)
+		}
+		_ = json.NewEncoder(writer).Encode(managementAPICallResponse{StatusCode: http.StatusOK, Body: "data: {\"type\":\"response.completed\"}\n\n"})
+	}))
+	defer server.Close()
+
+	service := NewModelTestService(NewAccountService(host))
+	service.doer = server.Client()
+	accounts, errAccounts := service.accounts.baseAccounts(context.Background())
+	if errAccounts != nil {
+		t.Fatalf("list accounts: %v", errAccounts)
+	}
+
+	policy := defaultInspectionPolicy()
+	policy.ModelProbeBatchSize = 10
+	policy.ModelProbeModels.Codex = "codex-probe-model"
+	policy.ModelProbeModels.Antigravity = "gemini-3-flash"
+
+	results, cursor := runInspectionModelProbes(context.Background(), service, accounts, nil, policy, 0, server.URL, "management-secret")
+	if agGenerateContentCalls.Load() != 0 {
+		t.Fatalf("expected 0 generateContent calls for antigravity during scan, got %d", agGenerateContentCalls.Load())
+	}
+	if codexCalls.Load() != 1 {
+		t.Fatalf("expected 1 codex probe call, got %d", codexCalls.Load())
+	}
+	if len(results) != 1 || results[0].AccountID != "codex-account" {
+		t.Fatalf("expected only codex result, got %#v", results)
+	}
+	if cursor != 0 {
+		t.Fatalf("expected cursor 0, got %d", cursor)
+	}
+
+	// Also verify that if an antigravity account is passed directly to runInspectionModelProbesObserved or retry,
+	// it is skipped without calling generateContent and without emitting synthetic model results.
+	agOnly := []Account{{ID: "ag-account", Provider: "antigravity", Type: "antigravity"}}
+	directResults, _ := runInspectionModelProbesObserved(context.Background(), service, agOnly, nil, policy, 0, server.URL, "management-secret", nil)
+	if len(directResults) != 0 {
+		t.Fatalf("expected 0 results for direct antigravity probe batch, got %#v", directResults)
+	}
+	if agGenerateContentCalls.Load() != 0 {
+		t.Fatalf("expected 0 generateContent calls after direct run, got %d", agGenerateContentCalls.Load())
+	}
+
+	staleRetry := []ModelTestResult{{AccountID: "ag-account", ReasonCode: "upstream_unavailable"}}
+	retryResults, completed := retryInspectionProbeResultsObserved(context.Background(), service, agOnly, staleRetry, policy, server.URL, "management-secret", nil)
+	if len(retryResults) != 0 || completed != 0 {
+		t.Fatalf("expected retry to skip antigravity, got results=%#v completed=%d", retryResults, completed)
+	}
+	if agGenerateContentCalls.Load() != 0 {
+		t.Fatalf("expected 0 generateContent calls after retry, got %d", agGenerateContentCalls.Load())
 	}
 }
 
