@@ -178,6 +178,18 @@ func TestAccountQuotaRecoveryAfterDisableUsesFreshRelevantCodexWindow(t *testing
 				ObservedAt: now.Add(-time.Minute), SevenDay: &UsageWindowSnapshot{UsedPercent: 100, WindowMinutes: 10080},
 			}},
 		}, record: baseRecord},
+		{name: "kimi quota recovered", account: Account{
+			ID: "kimi-account", Provider: "kimi", Disabled: true, Editable: true,
+			Usage: &AccountUsageSnapshot{Quota: &QuotaUsageSnapshot{
+				Provider: "kimi", ObservedAt: now.Add(-time.Minute), SevenDay: &UsageWindowSnapshot{UsedPercent: 0, WindowMinutes: 10080},
+			}},
+		}, record: baseRecord, want: true},
+		{name: "kimi quota still exhausted", account: Account{
+			ID: "kimi-account", Provider: "kimi", Disabled: true, Editable: true,
+			Usage: &AccountUsageSnapshot{Quota: &QuotaUsageSnapshot{
+				Provider: "kimi", ObservedAt: now.Add(-time.Minute), SevenDay: &UsageWindowSnapshot{UsedPercent: 100, WindowMinutes: 10080},
+			}},
+		}, record: baseRecord},
 	}
 
 	for _, test := range tests {

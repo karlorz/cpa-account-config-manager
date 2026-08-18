@@ -321,6 +321,26 @@ func (s *ModelTestService) RefreshAntigravityInspectionQuota(ctx context.Context
 	s.usage.ObserveQuotaUsage(account.ID, snapshot)
 }
 
+func (s *ModelTestService) RefreshKimiInspectionQuota(ctx context.Context, managementBaseURL, managementKey string, account Account) {
+	if s == nil || s.usage == nil || !isKimiAccount(account) || strings.TrimSpace(managementKey) == "" {
+		return
+	}
+	client, errClient := newManagementClient(managementBaseURL, managementKey, s.doer)
+	if errClient != nil {
+		return
+	}
+	defer client.clearSecrets()
+	metadata, errFetch := fetchKimiQuotaMetadata(ctx, client, account)
+	if errFetch != nil || metadata.quota == nil {
+		return
+	}
+	snapshot := metadata.quota
+	snapshot.Provider = "kimi"
+	snapshot.PlanType = metadata.planType
+	snapshot.MetadataObservedAt = s.currentTime()
+	s.usage.ObserveQuotaUsage(account.ID, snapshot)
+}
+
 func (s *ModelTestService) SetAgentIdentityExperiment(experiment *AgentIdentityExperiment) {
 	if s == nil {
 		return

@@ -427,11 +427,15 @@ func decideInspection(account Account, record inspectionRecord, now time.Time) i
 	}
 }
 
+func usesGenericQuotaSnapshot(account Account) bool {
+	return isAntigravityAccount(account) || isKimiAccount(account)
+}
+
 func accountQuotaRecoveredAfterDisable(account Account, record inspectionRecord, now time.Time) (string, bool) {
 	if !account.Disabled || !account.Editable || !record.Result.OwnedDisable || record.DisableReason != "quota_exhausted" || account.Usage == nil {
 		return "", false
 	}
-	if isAntigravityAccount(account) {
+	if usesGenericQuotaSnapshot(account) {
 		snapshot := account.Usage.Quota
 		if snapshot == nil || !freshQuotaRecoveryObservedAt(snapshot.ObservedAt, record.DisabledAt, now) || quotaRecoveryBlockedByFailure(account, record, now) {
 			return "", false

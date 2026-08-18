@@ -1294,6 +1294,109 @@ func TestInspectionReloadRestoresBoundedLiveCheckpointWithoutSecrets(t *testing.
 	}
 }
 
+func TestInspectionProbeEligibleAccountsSkipsAntigravityAndKimi(t *testing.T) {
+	accounts := []Account{
+		{ID: "codex-1", Provider: "codex"},
+		{ID: "antigravity-1", Provider: "antigravity"},
+		{ID: "kimi-1", Provider: "kimi"},
+		{ID: "claude-1", Provider: "claude"},
+	}
+	eligible := inspectionProbeEligibleAccounts(accounts, nil, false)
+	if len(eligible) != 2 {
+		t.Fatalf("eligible len=%d, want 2: %#v", len(eligible), eligible)
+	}
+	for _, acc := range eligible {
+		if acc.ID == "antigravity-1" || acc.ID == "kimi-1" {
+			t.Fatalf("eligible contains skipped account: %s", acc.ID)
+		}
+	}
+}
+
+func TestInspectionRefreshesKimiQuotaWindows(t *testing.T) {
+	host := kimiQuotaMetadataHost()
+	var quotaCalls atomic.Int32
+	fiveHourReset := time.Now().UTC().Add(3 * time.Hour).Format(time.RFC3339)
+	weeklyReset := time.Now().UTC().Add(5 * 24 * time.Hour).Format(time.RFC3339)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var call managementAPICallRequest
+		_ = json.NewDecoder(request.Body).Decode(&call)
+		if strings.Contains(call.URL, "coding/v1/usages") {
+			quotaCalls.Add(1)
+		}
+		body := `{
+			"usage": { "used": 40, "limit": 100, "reset_at": "` + weeklyReset + `" },
+			"limits": [
+				{
+					"detail": { "used": 15, "limit": 100, "reset_at": "` + fiveHourReset + `" },
+					"window": { "duration": 5, "timeUnit": "HOURS" }
+				}
+			]
+		}`
+		_ = json.NewEncoder(writer).Encode(managementAPICallResponse{StatusCode: http.StatusOK, Body: managementAPICallBody(body)})
+	}))
+	defer server.Close()
+
+	app := NewApp(host, []byte("index"))
+	app.modelTests.doer = server.Client()
+	app.Configure([]byte("data_dir: " + t.TempDir() + "\nmanagement_base_url: " + server.URL + "\n"))
+	defer app.Close()
+
+	before := app.inspection.Snapshot().LastRun.StartedAt
+	response := app.HandleManagement(context.Background(), cpaapi.ManagementRequest{
+		Method:  http.MethodPost,
+		Path:    "/v0/management/plugins/cpa-account-config-manager/inspection/scan",
+		Headers: http.Header{"Authorization": []string{"Bearer current-management-secret"}},
+	})
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("inspection scan = %d %s", response.StatusCode, response.Body)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := app.inspection.Snapshot()
+		if !snapshot.Pending && !snapshot.Running && snapshot.LastRun.StartedAt.After(before) && !snapshot.LastRun.FinishedAt.IsZero() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if quotaCalls.Load() == 0 {
+		t.Fatal("inspection did not call kimi usages URL")
+	}
+	listed, errList := app.accounts.List(context.Background(), ListQuery{Page: 1, PageSize: 50})
+	if errList != nil || len(listed.Accounts) < 1 {
+		t.Fatalf("list accounts err=%v len=%d", errList, len(listed.Accounts))
+	}
+	var kimiAccount *Account
+	for i := range listed.Accounts {
+		if listed.Accounts[i].ID == "kimi-1" {
+			kimiAccount = &listed.Accounts[i]
+			break
+		}
+	}
+	if kimiAccount == nil || kimiAccount.Usage == nil || kimiAccount.Usage.Quota == nil ||
+		kimiAccount.Usage.Quota.FiveHour == nil || kimiAccount.Usage.Quota.FiveHour.UsedPercent != 15 ||
+		kimiAccount.Usage.Quota.SevenDay == nil || kimiAccount.Usage.Quota.SevenDay.UsedPercent != 40 {
+		t.Fatalf("account quota after kimi inspection = %#v err=%v quotaCalls=%d", kimiAccount, errList, quotaCalls.Load())
+	}
+	results := app.inspection.ListResults(InspectionResultQuery{Page: 1, PageSize: 50})
+	var kimiResult *InspectionResult
+	for i := range results.Results {
+		if results.Results[i].ID == "kimi-1" {
+			kimiResult = &results.Results[i]
+			break
+		}
+	}
+	if kimiResult == nil || kimiResult.QuotaUsage == nil || kimiResult.QuotaUsage.FiveHour == nil ||
+		kimiResult.QuotaUsage.FiveHour.UsedPercent != 15 ||
+		kimiResult.QuotaUsage.SevenDay == nil || kimiResult.QuotaUsage.SevenDay.UsedPercent != 40 {
+		t.Fatalf("inspection results for kimi = %#v", kimiResult)
+	}
+	// Check that Kimi account does not get unsupported_provider reason code from model probes
+	if kimiResult.ProbeReasonCode == "unsupported_provider" {
+		t.Fatalf("kimi account probe reason code was unsupported_provider")
+	}
+}
+
 func TestInspectionRefreshesAntigravityQuotaWindows(t *testing.T) {
 	host := antigravityQuotaMetadataHost()
 	var quotaCalls atomic.Int32
