@@ -6,7 +6,7 @@
       "name": "CPA Account Config Manager",
       "description": "Authenticated CPA account management plugin: listing, batch edits, import/export, quota, model tests, inspection, and operation logs without exposing raw credentials to the browser.",
       "author": "karlorz",
-      "version": "0.3.1332-7",
+      "version": "0.3.1332-8",
       "repository": "https://github.com/karlorz/cpa-account-config-manager",
       "homepage": "https://github.com/karlorz/cpa-account-config-manager",
       "license": "MIT",
