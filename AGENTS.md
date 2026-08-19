@@ -30,6 +30,14 @@ Follow the same fork-series convention as `karlorz/cpa-glm-vision-bridge`:
   `v<same-version>` to **origin only**. The `check` job in
   `.github/workflows/release.yml` enforces both rules (pattern + upstream
   collision) and gates the build.
+- **Fork release tags must be annotated** (`git tag -a v<version> -m "..."`),
+  not lightweight (`git tag v<version>`). The release workflow's "Publish"
+  step runs `git cat-file -t` and rejects lightweight tags. A lightweight
+  tag will fail CI with `release tag must be annotated`.
+- After pushing a release tag, verify the CI run on the fork
+  (`gh repo set-default karlorz/cpa-account-config-manager && gh run list`)
+  reaches green before declaring the release done. The `gh` CLI may default
+  to the upstream repo — always set the fork as the default repo first.
 
 ## Upstream sync
 
