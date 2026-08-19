@@ -28,7 +28,10 @@ const modelSuggestions: Record<string, string[]> = {
   "gemini-cli": ["gemini-2.0-flash", "gemini-2.5-pro"],
   "gemini-interactions": ["gemini-2.0-flash", "gemini-2.5-pro"],
   aistudio: ["gemini-2.0-flash", "gemini-2.5-pro"],
+  vertex: ["gemini-2.0-flash", "gemini-2.5-pro"],
   antigravity: ["gemini-3-flash", "gemini-3.6-flash-high", "gemini-3.7-flash-high"],
+  kimi: ["kimi-k2.6", "kimi-k2.5", "kimi-k3"],
+  "openai-compatible": ["gpt-4o-mini", "gpt-4o", "deepseek-chat"],
   xai: ["grok-4", "grok-4-fast"],
 };
 
@@ -71,7 +74,11 @@ const quotaWindowLabels: Record<NonNullable<ModelTestResult["quota_window"]>, UI
 export function ModelTestDialog({ account, result, error, testing, experimentalAvailable = false, onClose, onTest }: ModelTestDialogProps) {
   const { locale, tx } = useI18n();
   const accountProvider = (account.provider || account.type || "").trim().toLowerCase();
-  const provider = accountProvider === "codex-agent-identity" ? "codex" : accountProvider;
+  const provider = accountProvider === "codex-agent-identity"
+    ? "codex"
+    : accountProvider.startsWith("openai-compatible-") || accountProvider.startsWith("openai-compatibility-")
+      ? "openai-compatible"
+      : accountProvider;
   const builtInSuggestions = useMemo(() => modelSuggestions[provider] || [], [provider]);
   const initialPreference = useMemo(
     () => readManualModelTestPreference(provider, builtInSuggestions[0] || ""),
