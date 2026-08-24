@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -142,7 +143,7 @@ func TestInspectionReported194AccountDistributionRemainsCompleteAfterProbeKindFi
 	}
 }
 
-func TestCodexInspectionAcceptsObjectBodiesAndUsesCredentialHealthDirectly(t *testing.T) {
+func TestCodexInspectionLastVerifyUsesOfficialResponsesAndQuotaHeaders(t *testing.T) {
 	host := &fakeAuthHost{
 		entries: []cpaapi.HostAuthFileEntry{
 			{AuthIndex: "healthy", Name: "healthy.json", Provider: "codex", Type: "oauth", Source: "file", Path: "/auths/healthy.json"},
@@ -153,17 +154,20 @@ func TestCodexInspectionAcceptsObjectBodiesAndUsesCredentialHealthDirectly(t *te
 			"deactivated": {AuthIndex: "deactivated", Name: "deactivated.json", Path: "/auths/deactivated.json", JSON: json.RawMessage(`{"type":"codex","access_token":"secret","account_id":"deactivated-workspace"}`)},
 		},
 	}
-	var calls atomic.Int32
+	var mu sync.Mutex
+	var urls []string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		calls.Add(1)
 		var call managementAPICallRequest
 		_ = json.NewDecoder(request.Body).Decode(&call)
+		mu.Lock()
+		urls = append(urls, call.URL)
+		mu.Unlock()
 		writer.Header().Set("Content-Type", "application/json")
 		if call.AuthIndex == "deactivated" {
 			_, _ = writer.Write([]byte(`{"status_code":402,"body":{"detail":{"code":"deactivated_workspace"}}}`))
 			return
 		}
-		_, _ = writer.Write([]byte(`{"status_code":200,"body":{"rate_limit":{"allowed":true,"primary_window":{"used_percent":12,"limit_window_seconds":18000,"reset_after_seconds":3600},"secondary_window":{"used_percent":30,"limit_window_seconds":604800,"reset_after_seconds":7200}}}}`))
+		_, _ = writer.Write([]byte(`{"status_code":200,"header":{"X-Codex-Secondary-Used-Percent":["12"],"X-Codex-Secondary-Window-Minutes":["300"],"X-Codex-Primary-Used-Percent":["30"],"X-Codex-Primary-Window-Minutes":["10080"]},"body":"data: {\"type\":\"response.completed\"}\n\n"}`))
 	}))
 	defer server.Close()
 
@@ -173,19 +177,30 @@ func TestCodexInspectionAcceptsObjectBodiesAndUsesCredentialHealthDirectly(t *te
 	service.doer = server.Client()
 	healthy, errHealthy := service.Run(context.Background(), ModelTestRequest{AccountID: "healthy", Inspection: true}, server.URL, "management-secret")
 	deactivated, errDeactivated := service.Run(context.Background(), ModelTestRequest{AccountID: "deactivated", Inspection: true}, server.URL, "management-secret")
-	if errHealthy != nil || healthy.Status != "available" || healthy.ProbeKind != InspectionProbeKindCredential || healthy.ReasonCode != "credential_response_ok" {
-		t.Fatalf("healthy credential result=%#v error=%v", healthy, errHealthy)
+	if errHealthy != nil || healthy.Status != "available" || healthy.ProbeKind != InspectionProbeKindModel || healthy.ReasonCode != "model_response_ok" {
+		t.Fatalf("healthy last-verify result=%#v error=%v", healthy, errHealthy)
 	}
 	if errDeactivated != nil || deactivated.StatusCode != http.StatusPaymentRequired || deactivated.ProbeKind != InspectionProbeKindCredential || deactivated.ReasonCode != "workspace_deactivated" {
-		t.Fatalf("deactivated credential result=%#v error=%v", deactivated, errDeactivated)
+		t.Fatalf("deactivated last-verify result=%#v error=%v", deactivated, errDeactivated)
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("inspection made %d calls, want one credential call per account", calls.Load())
+	mu.Lock()
+	got := append([]string(nil), urls...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("inspection made %d calls, want one official /responses call per account; urls=%v", len(got), got)
+	}
+	for _, url := range got {
+		if strings.Contains(url, "/backend-api/wham/") {
+			t.Fatalf("inspection last-verify called unofficial WHAM URL %q", url)
+		}
+		if url != "https://chatgpt.com/backend-api/codex/responses" {
+			t.Fatalf("inspection last-verify URL = %q", url)
+		}
 	}
 	snapshot := usage.Snapshot("healthy")
 	if snapshot == nil || snapshot.Codex == nil || snapshot.Codex.FiveHour == nil || snapshot.Codex.SevenDay == nil ||
 		snapshot.Codex.FiveHour.UsedPercent != 12 || snapshot.Codex.SevenDay.UsedPercent != 30 {
-		t.Fatalf("credential usage snapshot = %#v", snapshot)
+		t.Fatalf("official last-verify usage snapshot = %#v", snapshot)
 	}
 }
 

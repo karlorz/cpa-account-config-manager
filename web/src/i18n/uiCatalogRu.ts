@@ -1114,6 +1114,7 @@ export const ruUI: Record<UIMessageKey, string> = {
   "ui.live_updated_at": "Обновлено {time}",
   "ui.quota_and_usage": "Квота / использование",
   "ui.quota_reset_at": "Сброс {time}",
+  "ui.quota_observed_at": "Зафиксировано {time}",
   "ui.passive_circuit_open_reason": "Учётная запись временно отключена после повторных сбоев сервиса",
   "ui.quota_reset_reason": "Учётная запись включена после наступления времени восстановления квоты",
   "ui.passive_circuit_recovered_reason": "Учётная запись включена после завершения временной блокировки",

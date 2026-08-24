@@ -1034,7 +1034,7 @@ func TestManualFullInspectionActuallyProbesManuallyDisabledUnavailableAccounts(t
 		case "manual-reauth":
 			_, _ = writer.Write([]byte(`{"status_code":401,"body":{"error":{"message":"Your authentication token has been invalidated"}}}`))
 		case "manual-enable":
-			_, _ = writer.Write([]byte(`{"status_code":200,"body":{"rate_limit":{"allowed":true,"primary_window":{"used_percent":10,"limit_window_seconds":18000},"secondary_window":{"used_percent":20,"limit_window_seconds":604800}}}}`))
+			_, _ = writer.Write([]byte(`{"status_code":200,"header":{"X-Codex-Primary-Used-Percent":["10"],"X-Codex-Primary-Window-Minutes":["10080"]},"body":"data: {\"type\":\"response.completed\"}\n\n"}`))
 		default:
 			t.Errorf("unexpected auth index %q", call.AuthIndex)
 			_, _ = writer.Write([]byte(`{"status_code":500,"body":{}}`))

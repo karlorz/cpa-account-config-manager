@@ -918,7 +918,7 @@ func TestModelProbeHTTP401PromotesToCredentialEvidenceAfterInconclusivePreflight
 	if errRun != nil {
 		t.Fatalf("Run() error = %v", errRun)
 	}
-	if credentialCalls != 1 || modelCalls != 1 || result.StatusCode != http.StatusUnauthorized ||
+	if credentialCalls != 0 || modelCalls != 1 || result.StatusCode != http.StatusUnauthorized ||
 		result.ReasonCode != "authentication_failed" || result.ProbeKind != InspectionProbeKindCredential {
 		t.Fatalf("result=%#v credential_calls=%d model_calls=%d", result, credentialCalls, modelCalls)
 	}
@@ -1379,8 +1379,8 @@ func TestInspectionCredentialProbeOverridesMisleadingAPIKeyType(t *testing.T) {
 	if errRun != nil {
 		t.Fatalf("Run() error = %v", errRun)
 	}
-	if received.URL != "https://chatgpt.com/backend-api/wham/usage" {
-		t.Fatalf("probe URL = %q, want the OAuth credential endpoint", received.URL)
+	if received.URL != "https://chatgpt.com/backend-api/codex/responses" {
+		t.Fatalf("probe URL = %q, want official CPA Codex /responses", received.URL)
 	}
 	if result.ProbeKind != InspectionProbeKindCredential || result.StatusCode != 402 || result.ReasonCode != "workspace_deactivated" {
 		t.Fatalf("result = %#v", result)
@@ -1419,8 +1419,8 @@ func TestInspectionCodexAlwaysUsesCredentialProbeForAPIKeyRuntimeMetadata(t *tes
 	if errRun != nil {
 		t.Fatalf("Run() error = %v", errRun)
 	}
-	if received.URL != "https://chatgpt.com/backend-api/wham/usage" {
-		t.Fatalf("probe URL = %q, want the Codex credential endpoint", received.URL)
+	if received.URL != "https://chatgpt.com/backend-api/codex/responses" {
+		t.Fatalf("probe URL = %q, want official CPA Codex /responses", received.URL)
 	}
 	if result.ProbeKind != InspectionProbeKindCredential || result.ReasonCode != "workspace_deactivated" {
 		t.Fatalf("result = %#v", result)

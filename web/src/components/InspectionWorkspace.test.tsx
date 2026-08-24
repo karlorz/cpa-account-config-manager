@@ -133,6 +133,58 @@ describe("InspectionWorkspace", () => {
     expect(localStorage.getItem("cpa-account-config-manager:inspection-page-size")).toBe("100");
   });
 
+  it("shows quota observed time and omits leftover HTTP on native quota exhaustion", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/inspection/results")) {
+        return jsonResponse({
+          results: [{
+            id: "codex-1",
+            name: "codex-plus.json",
+            provider: "codex",
+            type: "codex",
+            plan_type: "plus",
+            health: "quota_limited",
+            reason_code: "quota_exhausted",
+            confidence: "high",
+            recommendation: "keep",
+            disabled: true,
+            editable: true,
+            auto_disable_eligible: true,
+            owned_disable: true,
+            failure_streak: 66,
+            healthy_streak: 0,
+            last_checked_at: "2026-08-24T04:51:00Z",
+            signal_source: "native",
+            probe_kind: "model",
+            probe_reason_code: "request_timeout",
+            probe_tested_at: "2026-08-23T16:02:00Z",
+            usage_total_tokens: 1038912714,
+            quota_window: "seven_day",
+            codex_usage: {
+              observed_at: "2026-08-24T04:00:00Z",
+              seven_day: { used_percent: 100, window_minutes: 10080, reset_at: "2026-08-28T07:20:00Z" },
+            },
+          }],
+          total: 1,
+          page: 1,
+          page_size: 50,
+          pages: 1,
+        });
+      }
+      if (url.includes("/inspection/actions")) return jsonResponse({ actions: [] });
+      if (url.endsWith("/inspection")) return jsonResponse({ ...inspectionSnapshot, probe_sweep_remaining: 0, probe_sweep_total: 0, probe_sweep_completed: 0, probe_sweep_status: "completed" });
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<InspectionWorkspace onAPIError={() => undefined} onNotice={() => undefined} />);
+    expect(await screen.findByText("codex-plus.json")).toBeInTheDocument();
+    expect(screen.queryByText("HTTP 408", { exact: false })).not.toBeInTheDocument();
+    expect(screen.getByText("7 天用量")).toBeInTheDocument();
+    expect(screen.getByText(/观测于/)).toBeInTheDocument();
+  });
+
   it("streams completed account results into visible inline operations while the run is active", async () => {
     const user = userEvent.setup();
     const requests: Array<{ url: string; init: RequestInit }> = [];

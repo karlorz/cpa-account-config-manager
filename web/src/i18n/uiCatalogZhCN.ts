@@ -1114,6 +1114,7 @@ export const zhCNUI: Record<UIMessageKey, string> = {
   "ui.live_updated_at": "实时更新于 {time}",
   "ui.quota_and_usage": "额度 / 用量",
   "ui.quota_reset_at": "恢复于 {time}",
+  "ui.quota_observed_at": "观测于 {time}",
   "ui.passive_circuit_open_reason": "连续探测到上游失败，临时禁用账号",
   "ui.quota_reset_reason": "额度恢复时间已到，已启用账号",
   "ui.passive_circuit_recovered_reason": "临时熔断时间已结束，已启用账号",

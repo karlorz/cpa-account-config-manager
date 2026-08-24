@@ -1112,6 +1112,7 @@ export const enUI = {
   "ui.live_updated_at": "Live update {time}",
   "ui.quota_and_usage": "Quota / usage",
   "ui.quota_reset_at": "Resets {time}",
+  "ui.quota_observed_at": "Observed {time}",
   "ui.passive_circuit_open_reason": "Temporarily disabled after repeated upstream failures",
   "ui.quota_reset_reason": "Enabled because the quota recovery time was reached",
   "ui.passive_circuit_recovered_reason": "Enabled after the temporary circuit period ended",

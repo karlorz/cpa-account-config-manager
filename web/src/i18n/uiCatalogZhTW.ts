@@ -1114,6 +1114,7 @@ export const zhTWUI: Record<UIMessageKey, string> = {
   "ui.live_updated_at": "即時更新於 {time}",
   "ui.quota_and_usage": "額度 / 用量",
   "ui.quota_reset_at": "恢復於 {time}",
+  "ui.quota_observed_at": "觀測於 {time}",
   "ui.passive_circuit_open_reason": "連續偵測到上游失敗，暫時停用帳號",
   "ui.quota_reset_reason": "額度恢復時間已到，已啟用帳號",
   "ui.passive_circuit_recovered_reason": "暫時熔斷時間已結束，已啟用帳號",

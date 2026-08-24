@@ -394,6 +394,9 @@ func (s *ModelTestService) Run(ctx context.Context, request ModelTestRequest, ma
 	if request.ExperimentalWeeklyOverdraft && (probeProvider != "codex" || metadata.usesAPIKey()) {
 		return ModelTestResult{}, fmt.Errorf("weekly overdraft experiment requires a Codex OAuth account")
 	}
+	if request.Inspection && probeProvider == "codex" {
+		metadata.hasAPIKey = false
+	}
 	probe, selectedModel, supported, errProbe := buildModelProbe(probeProvider, model, metadata)
 	if errProbe != nil {
 		return ModelTestResult{}, errProbe
@@ -431,10 +434,11 @@ func (s *ModelTestService) Run(ctx context.Context, request ModelTestRequest, ma
 	if len(hostCallbackID) > 0 {
 		callbackID = strings.TrimSpace(hostCallbackID[0])
 	}
-	// Inspection must use the Codex credential endpoint even when CPA runtime
-	// metadata says api_key. The runtime label can be stale or describe the
-	// routing adapter rather than the physical auth file.
-	if probeProvider == "codex" && !request.ExperimentalWeeklyOverdraft && (request.Inspection || !metadata.usesAPIKey()) {
+	// Armed inspection last-verify uses official CPA Codex /responses only.
+	// GET chatgpt.com/backend-api/wham/usage is not a CPA executor path
+	// (CLIProxyAPI v7.2.140-0 has no WHAM routes) and must not run on scans.
+	// Manual model tests still use the credential preflight for OAuth files.
+	if probeProvider == "codex" && !request.ExperimentalWeeklyOverdraft && !request.Inspection && !metadata.usesAPIKey() {
 		credential := buildCodexCredentialProbe(metadata)
 		credentialResponse, errCredential := s.callAccountProbe(probeCtx, managementBaseURL, managementKey, callbackID, account, credential)
 		if errCredential == nil {
@@ -444,16 +448,14 @@ func (s *ModelTestService) Run(ctx context.Context, request ModelTestRequest, ma
 			}
 			status, reason, quotaWindow := classifyCredentialProbeDetails(statusCode, body)
 			s.observeNormalQuotaFailure(account.ID, quotaWindow, reason, s.currentTime(), request.ExperimentalWeeklyOverdraft)
-			if credentialProbeResultIsDefinitive(reason) || (request.Inspection && reason == "credential_response_ok") {
+			if credentialProbeResultIsDefinitive(reason) {
 				result.Status = status
 				result.ProbeKind = InspectionProbeKindCredential
 				result.ReasonCode = reason
 				result.StatusCode = boundedHTTPStatus(statusCode)
 				result.QuotaWindow = quotaWindow
 				result.LatencyMS = maxInt64(0, s.currentTime().Sub(startedAt).Milliseconds())
-				if !request.Inspection {
-					result.Response = sanitizeModelTestResponsePreview(credentialResponse)
-				}
+				result.Response = sanitizeModelTestResponsePreview(credentialResponse)
 				return result, nil
 			}
 		} else if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
@@ -503,7 +505,7 @@ func (s *ModelTestService) Run(ctx context.Context, request ModelTestRequest, ma
 		attempt.StatusCode = boundedHTTPStatus(upstreamResponse.StatusCode)
 		// HTTP 401 is account authentication evidence even when it was observed
 		// while calling a model endpoint. Other model failures remain model-scoped.
-		if attempt.StatusCode == http.StatusUnauthorized && attempt.ReasonCode == "authentication_failed" {
+		if inspectionProbeKindIsCredential(attempt.StatusCode, attempt.ReasonCode) {
 			attempt.ProbeKind = InspectionProbeKindCredential
 		}
 		if !request.Inspection {
@@ -530,6 +532,10 @@ func (s *ModelTestService) Run(ctx context.Context, request ModelTestRequest, ma
 
 	primaryAttempt, primaryResponse, primaryErr := runAttempt("primary", selectedModel, probe, result.Experiment)
 	applyAttempt(primaryAttempt)
+	if probeProvider == "codex" && s.usage != nil && primaryErr == nil {
+		s.usage.ObserveCredentialUsage(account.ID, parseCodexUsageHeaders(http.Header(primaryResponse.Header), s.currentTime()))
+		s.usage.ObserveCredentialUsage(account.ID, codexUsageProbeSnapshot(primaryResponse.Body, s.currentTime()))
+	}
 	if primaryErr != nil || request.ExperimentalWeeklyOverdraft {
 		return result, nil
 	}
@@ -1253,6 +1259,17 @@ func credentialProbeResultIsDefinitive(reason string) bool {
 	}
 }
 
+func inspectionProbeKindIsCredential(statusCode int, reason string) bool {
+	switch safeModelProbeReason(reason) {
+	case "authentication_failed":
+		return statusCode == http.StatusUnauthorized
+	case "workspace_deactivated", "account_deactivated", "quota_limited":
+		return statusCode == http.StatusPaymentRequired
+	default:
+		return false
+	}
+}
+
 func classifyModelProbe(kind string, statusCode int, body []byte) (string, string) {
 	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
 		if validModelProbeBody(kind, body) {
@@ -1266,6 +1283,8 @@ func classifyModelProbe(kind string, statusCode int, body []byte) (string, strin
 	switch statusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return "unavailable", "authentication_failed"
+	case http.StatusPaymentRequired:
+		return classifyCredentialProbe(statusCode, body)
 	case http.StatusTooManyRequests:
 		if modelProbeBodyHasQuotaEvidence(body) {
 			return "review", "quota_limited"

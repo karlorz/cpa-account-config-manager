@@ -897,6 +897,7 @@ function InspectionQuotaUsage({ result, compact = false }: { result: InspectionR
     <div className={`inspection-quota${compact ? " is-compact" : ""}`}>
       <div><strong>{Number(result.usage_total_tokens ?? 0).toLocaleString(locale)}</strong><span>{tx("ui.total_tokens")}</span></div>
       {windows.map(({ key, label, value }) => value ? <div className="inspection-quota-window" key={key}><span>{label}<b>{Math.min(100, Math.max(0, value.used_percent)).toFixed(0)}%</b></span><progress max={100} value={Math.min(100, Math.max(0, value.used_percent))} />{value.reset_at ? <small>{tx("ui.quota_reset_at", { time: formatDateTime(value.reset_at) })}</small> : null}</div> : null)}
+      {source?.observed_at ? <small>{tx("ui.quota_observed_at", { time: formatDateTime(source.observed_at) })}</small> : null}
       {windows.length === 0 && quotaLabel ? <span className="inspection-quota-label">{quotaLabel}{result.recover_after ? ` · ${tx("ui.quota_reset_at", { time: formatDateTime(result.recover_after) })}` : ""}</span> : null}
       {windows.length === 0 && !quotaLabel ? <span className="inspection-quota-empty">-</span> : null}
     </div>

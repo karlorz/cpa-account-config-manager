@@ -2109,9 +2109,12 @@ func updateInspectionRecord(record *inspectionRecord, account Account, decision 
 	result.LastSuccessAt = timePointer(record.Signal.LastSuccessAt)
 	result.RecoverAfter = timePointer(decision.RecoverAfter)
 	result.SignalSource = normalizeInspectionSignalSource(decision.SignalSource)
-	result.StatusCode = boundedHTTPStatus(record.Signal.StatusCode)
-	if result.SignalSource == InspectionSignalActiveProbe {
+	result.StatusCode = 0
+	switch result.SignalSource {
+	case InspectionSignalActiveProbe:
 		result.StatusCode = boundedHTTPStatus(record.Probe.StatusCode)
+	case InspectionSignalPassive:
+		result.StatusCode = boundedHTTPStatus(record.Signal.StatusCode)
 	}
 	result.QuotaWindow = normalizeInspectionQuotaWindow(decision.QuotaWindow)
 	result.UsageTotalTokens = 0
