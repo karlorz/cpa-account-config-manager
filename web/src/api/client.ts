@@ -19,6 +19,18 @@ import type {
 	ExperimentalSettings,
 	ExperimentalSettingsSnapshot,
 	AgentIdentitySessionLoginResponse,
+	OpenCodeAccountSaveResponse,
+	OpenCodeAccountsResponse,
+	OpenCodeProbeResponse,
+	OpenCodeZenAccountSaveResponse,
+	OpenCodeZenAccountsResponse,
+	OpenCodeZenProbeAccountResponse,
+	OpenCodeZenProbeResponse,
+	AIProviderChannelKind,
+	AIProviderChannelSnapshot,
+	AIProviderChannelEntry,
+	AIProviderAPIKeyEntry,
+	AIProviderChannelModel,
 	ForceSyncJobSnapshot,
 	ForceSyncPreview,
   ExportFormat,
@@ -581,6 +593,76 @@ export async function completeAgentIdentitySessionLogin(state: string, sessionJS
 	});
 }
 
+export async function listOpenCodeAccounts(): Promise<OpenCodeAccountsResponse> {
+	return request<OpenCodeAccountsResponse>("/opencode/accounts");
+}
+
+export async function saveOpenCodeAccount(workspaceID: string, authCookie: string): Promise<OpenCodeAccountSaveResponse> {
+	return request<OpenCodeAccountSaveResponse>("/opencode/accounts", {
+		method: "POST",
+		body: JSON.stringify({ workspace_id: workspaceID, auth_cookie: authCookie }),
+	});
+}
+
+export async function removeOpenCodeAccount(accountID: string): Promise<void> {
+	await request<{ removed: boolean }>("/opencode/accounts?account_id=" + encodeURIComponent(accountID), {
+		method: "DELETE",
+	});
+}
+
+export async function refreshOpenCodeQuota(): Promise<{ results: Record<string, import("../types").OpenCodeQuotaResult> }> {
+	return request<{ results: Record<string, import("../types").OpenCodeQuotaResult> }>("/opencode/refresh", {
+		method: "POST",
+	});
+}
+
+export async function probeOpenCodeQuota(workspaceID: string, authCookie: string, timeoutSeconds = 30): Promise<OpenCodeProbeResponse> {
+	return request<OpenCodeProbeResponse>("/opencode/probe", {
+		method: "POST",
+		body: JSON.stringify({ workspace_id: workspaceID, auth_cookie: authCookie, timeout_seconds: timeoutSeconds }),
+	});
+}
+
+export async function listOpenCodeZenAccounts(): Promise<OpenCodeZenAccountsResponse> {
+	return request<OpenCodeZenAccountsResponse>("/opencode/zen/accounts");
+}
+
+export async function saveOpenCodeZenAccount(options: {
+	account_id?: string;
+	name?: string;
+	base_url: string;
+	zen_api_key?: string;
+	timeout_seconds?: number;
+}): Promise<OpenCodeZenAccountSaveResponse> {
+	return request<OpenCodeZenAccountSaveResponse>("/opencode/zen/accounts", {
+		method: "POST",
+		body: JSON.stringify(options),
+	});
+}
+
+export async function removeOpenCodeZenAccount(accountID: string): Promise<void> {
+	await request<{ removed: boolean }>("/opencode/zen/accounts?account_id=" + encodeURIComponent(accountID), {
+		method: "DELETE",
+	});
+}
+
+export async function probeOpenCodeZen(options: {
+	base_url: string;
+	zen_api_key: string;
+	timeout_seconds?: number;
+}): Promise<OpenCodeZenProbeResponse> {
+	return request<OpenCodeZenProbeResponse>("/opencode/zen/probe", {
+		method: "POST",
+		body: JSON.stringify(options),
+	});
+}
+
+export async function probeOpenCodeZenAccount(accountID: string): Promise<OpenCodeZenProbeAccountResponse> {
+	return request<OpenCodeZenProbeAccountResponse>("/opencode/zen/probe-account?account_id=" + encodeURIComponent(accountID), {
+		method: "POST",
+	});
+}
+
 export async function saveUpdatePolicy(policy: UpdatePolicy, confirmAutoUpdate = false): Promise<UpdateSnapshot> {
 	await persistPluginSettings({ update_policy: policy });
   const status = await request<UpdateSnapshot>("/updates", {
@@ -942,4 +1024,404 @@ function numericHeader(value: string | null): number | undefined {
   if (value === null || value.trim() === "") return undefined;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+export const AI_PROVIDER_CHANNELS: Array<{ kind: AIProviderChannelKind; labelKey: string; apiPath: string }> = [
+  { kind: "openai-compatibility", labelKey: "ui.ai_provider_channel_openai_compatibility", apiPath: "/openai-compatibility" },
+  { kind: "gemini-api-key", labelKey: "ui.ai_provider_channel_gemini", apiPath: "/gemini-api-key" },
+  { kind: "interactions-api-key", labelKey: "ui.ai_provider_channel_interactions", apiPath: "/interactions-api-key" },
+  { kind: "claude-api-key", labelKey: "ui.ai_provider_channel_claude", apiPath: "/claude-api-key" },
+  { kind: "codex-api-key", labelKey: "ui.ai_provider_channel_codex", apiPath: "/codex-api-key" },
+  { kind: "xai-api-key", labelKey: "ui.ai_provider_channel_xai", apiPath: "/xai-api-key" },
+  { kind: "vertex-api-key", labelKey: "ui.ai_provider_channel_vertex", apiPath: "/vertex-api-key" },
+  { kind: "api-keys", labelKey: "ui.ai_provider_channel_api_keys", apiPath: "/api-keys" },
+  { kind: "opencode-go", labelKey: "ui.ai_provider_channel_opencode", apiPath: "" },
+  { kind: "opencode-zen", labelKey: "ui.ai_provider_channel_opencode_zen", apiPath: "" },
+];
+
+function channelModelFromJSON(source: Record<string, unknown>): AIProviderChannelModel {
+  const model: AIProviderChannelModel = { name: typeof source["name"] === "string" ? source["name"] : "" };
+  if (typeof source["alias"] === "string") model.alias = source["alias"];
+  if (typeof source["display-name"] === "string") model.display_name = source["display-name"];
+  if (typeof source["max-context-length"] === "number") model.max_context_length = source["max-context-length"];
+  if (typeof source["force-mapping"] === "boolean") model.force_mapping = source["force-mapping"];
+  if (typeof source["is-compat"] === "boolean") model.is_compat = source["is-compat"];
+  if (typeof source["image"] === "boolean") model.image = source["image"];
+  if (Array.isArray(source["input-modalities"])) model.input_modalities = source["input-modalities"] as string[];
+  if (Array.isArray(source["output-modalities"])) model.output_modalities = source["output-modalities"] as string[];
+  if (source["thinking"] !== undefined && source["thinking"] !== null) model.thinking = source["thinking"];
+  return model;
+}
+
+function mapAPIKeyEntryFromJSON(source: Record<string, unknown>): AIProviderAPIKeyEntry {
+  const entry: AIProviderAPIKeyEntry = {};
+  if (typeof source["api-key"] === "string") entry.api_key = source["api-key"];
+  if (source["weight"] !== undefined && source["weight"] !== null) entry.weight = Number(source["weight"]);
+  if (typeof source["proxy-url"] === "string") entry.proxy_url = source["proxy-url"];
+  return entry;
+}
+
+function channelEntriesFromResponse(kind: AIProviderChannelKind, payload: unknown): AIProviderChannelEntry[] {
+  const record = (payload ?? {}) as Record<string, unknown>;
+  const raw = record[kind];
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item, index) => {
+    if (typeof item === "string") {
+      return { index, api_key: item };
+    }
+    const source = (item ?? {}) as Record<string, unknown>;
+    const entry: AIProviderChannelEntry = { index };
+    if (typeof source["name"] === "string") entry.name = source["name"];
+    if (typeof source["api-key"] === "string") entry.api_key = source["api-key"];
+    if (Array.isArray(source["api-key-entries"])) {
+      entry.api_key_entries = (source["api-key-entries"] as Array<Record<string, unknown>>).map(mapAPIKeyEntryFromJSON);
+      const firstKey = entry.api_key_entries.find((keyEntry) => keyEntry.api_key);
+      if (firstKey?.api_key) entry.api_key = firstKey.api_key;
+    }
+    if (typeof source["base-url"] === "string") entry.base_url = source["base-url"];
+    if (typeof source["proxy-url"] === "string") entry.proxy_url = source["proxy-url"];
+    if (typeof source["prefix"] === "string") entry.prefix = source["prefix"];
+    if (typeof source["priority"] === "number") entry.priority = source["priority"];
+    if (typeof source["disabled"] === "boolean") entry.disabled = source["disabled"];
+    if (source["weight"] !== undefined && source["weight"] !== null) entry.weight = Number(source["weight"]);
+    if (source["headers"] !== undefined && source["headers"] !== null) entry.headers = source["headers"] as Record<string, string>;
+    if (Array.isArray(source["models"])) entry.models = (source["models"] as Array<Record<string, unknown>>).map(channelModelFromJSON);
+    if (Array.isArray(source["excluded-models"])) entry.excluded_models = source["excluded-models"] as string[];
+    if (typeof source["support-prompt-cache-key"] === "boolean") entry.support_prompt_cache_key = source["support-prompt-cache-key"];
+    if (typeof source["disable-cooling"] === "boolean") entry.disable_cooling = source["disable-cooling"];
+    if (typeof source["alpha-search"] === "boolean") entry.alpha_search = source["alpha-search"];
+    if (typeof source["websockets"] === "boolean") entry.websockets = source["websockets"];
+    if (typeof source["rebuild-mid-system-message"] === "boolean") entry.rebuild_mid_system_message = source["rebuild-mid-system-message"];
+    if (typeof source["auth-index"] === "string") entry.auth_index = source["auth-index"];
+    return entry;
+  });
+}
+
+/**
+ * Fetch every provider channel, sequentially. Failures on individual channels
+ * degrade to an empty entry list (opencode-go / opencode-zen / missing host
+ * channels), but an authentication or throttling failure (401/403) aborts the
+ * whole refresh immediately instead of hammering the host with more requests:
+ * the CPA management API bans an IP after 5 failed attempts, so a wrong key
+ * must surface once rather than as a burst.
+ */
+export async function listAIProviderChannels(): Promise<AIProviderChannelSnapshot[]> {
+  const channels: AIProviderChannelSnapshot[] = [];
+  for (const channel of AI_PROVIDER_CHANNELS) {
+    try {
+      if (channel.kind === "opencode-go") {
+        const listed = await listOpenCodeAccounts();
+        channels.push({
+          kind: channel.kind,
+          count: listed.accounts?.length ?? 0,
+          entries: (listed.accounts ?? []).map((account, index) => ({
+            index,
+            account_id: account.id,
+            workspace_id: account.workspace_id,
+            name: account.workspace_id,
+          })),
+        });
+        continue;
+      }
+      if (channel.kind === "opencode-zen") {
+        const listed = await listOpenCodeZenAccounts();
+        channels.push({
+          kind: channel.kind,
+          count: listed.accounts?.length ?? 0,
+          entries: (listed.accounts ?? []).map((account, index) => ({
+            index,
+            account_id: account.id,
+            name: account.name ?? account.base_url,
+            base_url: account.base_url,
+            key_set: account.key_set,
+          })),
+        });
+        continue;
+      }
+      if (channel.apiPath) {
+        const payload = await managementRequest<unknown>(channel.apiPath);
+        const entries = channelEntriesFromResponse(channel.kind, payload);
+        channels.push({ kind: channel.kind, count: entries.length, entries });
+        continue;
+      }
+      channels.push({ kind: channel.kind, count: 0, entries: [] as AIProviderChannelEntry[] });
+    } catch (caught) {
+      if (caught instanceof APIError && (caught.status === 401 || caught.status === 403)) {
+        throw caught;
+      }
+      channels.push({ kind: channel.kind, count: 0, entries: [] as AIProviderChannelEntry[] });
+    }
+  }
+  return channels;
+}
+
+export async function putAIProviderChannel(kind: AIProviderChannelKind, items: unknown[]): Promise<void> {
+  await managementRequest<void>(`/${kind}`, {
+    method: "PUT",
+    body: JSON.stringify(items),
+  });
+}
+
+export async function deleteAIProviderChannelEntry(kind: AIProviderChannelKind, index: number, accountID?: string): Promise<void> {
+  if (kind === "opencode-go") {
+    if (!accountID) throw new Error("OpenCode account id is required");
+    await removeOpenCodeAccount(accountID);
+    return;
+  }
+  if (kind === "opencode-zen") {
+    if (!accountID) throw new Error("OpenCode Zen account id is required");
+    await removeOpenCodeZenAccount(accountID);
+    return;
+  }
+  await managementRequest<void>(`/${kind}?index=${index}`, { method: "DELETE" });
+}
+
+export async function patchAIProviderChannelEntry(kind: AIProviderChannelKind, index: number, value: Record<string, unknown>): Promise<void> {
+  await managementRequest<void>(`/${kind}`, {
+    method: "PATCH",
+    body: JSON.stringify({ index, value }),
+  });
+}
+
+/** Strip auth-index metadata so a channel object can be written back to the host. */
+function stripAuthIndex(item: unknown): Record<string, unknown> {
+  const copy = { ...((item ?? {}) as Record<string, unknown>) };
+  delete copy["auth-index"];
+  return copy;
+}
+
+/** Serialize one AIProviderChannelModel into the host JSON shape (kebab-case tags). */
+function modelToJSON(model: AIProviderChannelModel): Record<string, unknown> {
+  const out: Record<string, unknown> = { name: model.name };
+  if (model.alias !== undefined && model.alias !== "") out["alias"] = model.alias;
+  if (model.display_name !== undefined && model.display_name !== "") out["display-name"] = model.display_name;
+  if (model.max_context_length !== undefined) out["max-context-length"] = model.max_context_length;
+  if (model.force_mapping === true) out["force-mapping"] = true;
+  if (model.is_compat === true) out["is-compat"] = true;
+  if (model.image === true) out["image"] = true;
+  if (model.input_modalities && model.input_modalities.length > 0) out["input-modalities"] = model.input_modalities;
+  if (model.output_modalities && model.output_modalities.length > 0) out["output-modalities"] = model.output_modalities;
+  if (model.thinking !== undefined) out["thinking"] = model.thinking;
+  return out;
+}
+
+function normalizedNumber(value: number | string | null | undefined): number | null | undefined {
+  if (value === null) return null;
+  if (typeof value === "number") return value;
+  if (value === undefined || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function keyEntriesToJSON(entries: Array<{ api_key?: string; weight?: number | string | null; proxy_url?: string }> | undefined): Record<string, unknown>[] | undefined {
+  if (!entries || entries.length === 0) return undefined;
+  return entries.map((entry) => {
+    const out: Record<string, unknown> = {};
+    if (entry.api_key) out["api-key"] = entry.api_key;
+    if (entry.weight !== undefined && entry.weight !== null) {
+      const parsed = Number(entry.weight);
+      if (Number.isFinite(parsed)) out["weight"] = parsed;
+    }
+    if (entry.proxy_url) out["proxy-url"] = entry.proxy_url;
+    return out;
+  });
+}
+
+export interface AIProviderChannelEntryPatch {
+  name?: string;
+  api_key?: string;
+  base_url?: string;
+  proxy_url?: string;
+  prefix?: string;
+  priority?: number | string | null;
+  weight?: number | string | null;
+  disabled?: boolean;
+  headers?: Record<string, string>;
+  excluded_models?: string[];
+  models?: AIProviderChannelModel[];
+  api_key_entries?: Array<{ api_key?: string; weight?: number | string | null; proxy_url?: string }>;
+  support_prompt_cache_key?: boolean;
+  disable_cooling?: boolean;
+  alpha_search?: boolean;
+  websockets?: boolean;
+  rebuild_mid_system_message?: boolean;
+}
+
+/**
+ * Update one host-managed channel entry by rewriting the whole channel list
+ * (PUT). The host GET returns full plaintext objects, so untouched fields are
+ * preserved verbatim, and the documented PATCH gap (priority, websockets,
+ * disable-cooling, model alias rows, ...) is covered by the full rewrite.
+ */
+export async function saveAIProviderChannelEntry(
+  kind: AIProviderChannelKind,
+  index: number,
+  patch: AIProviderChannelEntryPatch,
+): Promise<void> {
+  if (kind === "opencode-go" || kind === "opencode-zen") {
+    throw new Error("saveAIProviderChannelEntry only supports host-managed channels");
+  }
+  const payload = (await managementRequest<unknown>("/" + kind)) as Record<string, unknown>;
+  const raw = payload[kind];
+  if (!Array.isArray(raw)) throw new Error(kind + " channel is not available");
+  if (index < 0 || index >= raw.length) throw new Error(kind + " entry #" + (index + 1) + " was not found");
+
+  const items = raw.map((item) => stripAuthIndex(typeof item === "string" ? { "api-key": item } : (item as Record<string, unknown>)));
+  const target = items[index];
+  const patched: Record<string, unknown> = { ...target };
+
+  if (patch.api_key !== undefined && patch.api_key.trim() !== "") {
+    patched["api-key"] = patch.api_key.trim();
+  }
+  if (patch.name !== undefined) patched["name"] = patch.name.trim();
+  if (patch.base_url !== undefined) patched["base-url"] = patch.base_url.trim();
+  if (patch.proxy_url !== undefined) patched["proxy-url"] = patch.proxy_url.trim();
+  if (patch.prefix !== undefined) patched["prefix"] = patch.prefix.trim();
+  const priority = normalizedNumber(patch.priority);
+  if (priority !== undefined) {
+    if (priority === null) delete patched["priority"];
+    else patched["priority"] = priority;
+  }
+  const weight = normalizedNumber(patch.weight);
+  if (weight !== undefined) {
+    if (weight === null) patched["weight"] = null;
+    else patched["weight"] = weight;
+  }
+  if (patch.disabled !== undefined) patched["disabled"] = patch.disabled;
+  if (patch.support_prompt_cache_key !== undefined) patched["support-prompt-cache-key"] = patch.support_prompt_cache_key;
+  if (patch.disable_cooling !== undefined) patched["disable-cooling"] = patch.disable_cooling;
+  if (patch.alpha_search !== undefined) patched["alpha-search"] = patch.alpha_search;
+  if (patch.websockets !== undefined) patched["websockets"] = patch.websockets;
+  if (patch.rebuild_mid_system_message !== undefined) patched["rebuild-mid-system-message"] = patch.rebuild_mid_system_message;
+  if (patch.headers !== undefined) patched["headers"] = patch.headers;
+  if (patch.excluded_models !== undefined) {
+    if (patch.excluded_models.length > 0) patched["excluded-models"] = patch.excluded_models;
+    else delete patched["excluded-models"];
+  }
+  if (patch.models !== undefined) patched["models"] = patch.models.map(modelToJSON);
+  if (patch.api_key_entries !== undefined) patched["api-key-entries"] = keyEntriesToJSON(patch.api_key_entries);
+
+  items[index] = patched;
+  await putAIProviderChannel(kind, items);
+}
+
+export interface AIProviderProbeResult {
+  reachable: boolean;
+  status_code?: number;
+  detail?: string;
+}
+
+export async function testAIProviderChannel(baseURL: string, apiKey: string, timeoutSeconds = 15): Promise<AIProviderProbeResult> {
+  const response = await request<AIProviderProbeResult>("/ai-providers/test", {
+    method: "POST",
+    body: JSON.stringify({ base_url: baseURL, api_key: apiKey, timeout_seconds: timeoutSeconds }),
+  });
+  return response;
+}
+
+/** Toggle a channel's enabled/disabled state through the host PATCH semantics. */
+export async function setAIProviderChannelEnabled(kind: AIProviderChannelKind, index: number, enabled: boolean): Promise<void> {
+  if (kind === "opencode-go" || kind === "opencode-zen") return;
+  if (kind === "openai-compatibility") {
+    await patchAIProviderChannelEntry(kind, index, { disabled: !enabled });
+    return;
+  }
+  // API-key channels gate credentials through weight (0 excludes the credential).
+  await patchAIProviderChannelEntry(kind, index, { weight: enabled ? 1 : 0 });
+}
+
+export interface NewOpenAICompatibilityProvider {
+  name: string;
+  base_url: string;
+  api_key: string;
+}
+
+export interface NewOpenCodeGoProvider {
+  workspace_id: string;
+  auth_cookie: string;
+}
+
+export interface NewOpenCodeZenProvider {
+  name?: string;
+  base_url: string;
+  api_key: string;
+}
+
+export interface NewAPIKeyProvider {
+  api_key: string;
+  base_url?: string;
+}
+
+export type NewAIProvider = NewOpenAICompatibilityProvider | NewOpenCodeGoProvider | NewOpenCodeZenProvider | NewAPIKeyProvider;
+
+const apiKeyChannelKinds: AIProviderChannelKind[] = [
+  "gemini-api-key",
+  "interactions-api-key",
+  "claude-api-key",
+  "codex-api-key",
+  "xai-api-key",
+  "vertex-api-key",
+];
+
+export async function addAIProviderChannel(kind: AIProviderChannelKind, provider: NewAIProvider): Promise<void> {
+  if (kind === "opencode-go") {
+    const opencode = provider as NewOpenCodeGoProvider;
+    await saveOpenCodeAccount(opencode.workspace_id, opencode.auth_cookie);
+    return;
+  }
+  if (kind === "opencode-zen") {
+    const zen = provider as NewOpenCodeZenProvider;
+    await saveOpenCodeZenAccount({
+      name: zen.name || undefined,
+      base_url: zen.base_url,
+      zen_api_key: zen.api_key,
+    });
+    return;
+  }
+  if (kind === "api-keys") {
+    const apiKey = (provider as NewAPIKeyProvider).api_key.trim();
+    const current = await listAIProviderChannels();
+    const existing = current.find((channel) => channel.kind === kind);
+    const items = [...(existing?.entries ?? []).map((entry) => entry.api_key ?? ""), apiKey];
+    await putAIProviderChannel(kind, items);
+    return;
+  }
+  const openai = provider as NewOpenAICompatibilityProvider;
+  const current = await listAIProviderChannels();
+  const existing = current.find((channel) => channel.kind === kind);
+  if (kind === "openai-compatibility") {
+    const items = (existing?.entries ?? []).map((entry) => ({
+      name: entry.name ?? "",
+      "base-url": entry.base_url ?? "",
+      "api-key-entries": entry.api_key
+        ? [{ "api-key": entry.api_key, ...(entry.proxy_url ? { "proxy-url": entry.proxy_url } : {}) }]
+        : [],
+      ...(entry.prefix ? { prefix: entry.prefix } : {}),
+      ...(entry.priority !== undefined ? { priority: entry.priority } : {}),
+      ...(entry.disabled ? { disabled: true } : {}),
+      ...(entry.models && entry.models.length > 0 ? { models: entry.models } : {}),
+      ...(entry.headers ? { headers: entry.headers } : {}),
+    }));
+    items.push({
+      name: openai.name.trim(),
+      "base-url": openai.base_url.trim(),
+      "api-key-entries": [{ "api-key": openai.api_key.trim() }],
+    });
+    await putAIProviderChannel(kind, items);
+    return;
+  }
+  // Plain API-key channels (gemini / interactions / claude / codex / xai / vertex).
+  const apiKeyProvider = provider as NewAPIKeyProvider;
+  const items = (existing?.entries ?? []).map((entry) => ({
+    "api-key": entry.api_key ?? "",
+    ...(entry.base_url ? { "base-url": entry.base_url } : {}),
+    ...(entry.proxy_url ? { "proxy-url": entry.proxy_url } : {}),
+    ...(entry.prefix ? { prefix: entry.prefix } : {}),
+    ...(entry.priority !== undefined ? { priority: entry.priority } : {}),
+  }));
+  items.push({
+    "api-key": apiKeyProvider.api_key.trim(),
+    ...(apiKeyProvider.base_url?.trim() ? { "base-url": apiKeyProvider.base_url.trim() } : {}),
+  });
+  await putAIProviderChannel(kind, items);
 }

@@ -634,7 +634,7 @@ export type ResultExportFormat = "json" | "csv" | "jsonl";
 
 export type ExportFormat = AccountExportFormat | ResultExportFormat;
 
-export type OperationCategory = "account" | "batch" | "import" | "export" | "default_policy" | "inspection" | "update" | "journal";
+export type OperationCategory = "account" | "batch" | "import" | "export" | "default_policy" | "inspection" | "update" | "journal" | "opencode";
 export type OperationStatus = "running" | "succeeded" | "partial" | "failed" | "interrupted" | "warning" | "skipped";
 export type OperationSource = "manual" | "background" | "default_policy" | "inspection" | "import" | "plugin_store";
 export type OperationExportFormat = "json" | "csv" | "jsonl";
@@ -1067,4 +1067,134 @@ export interface AgentIdentitySessionLoginResponse {
     provider: string;
     login_state: string;
   };
+}
+
+export interface OpenCodeAccountView {
+  id: string;
+  workspace_id: string;
+}
+
+export interface OpenCodeWindowUsage {
+  usage_percent: number;
+  percent_remaining: number;
+  reset_in_sec: number;
+  reset_at: string;
+}
+
+export interface OpenCodeQuotaResult {
+  success: boolean;
+  account_id?: string;
+  workspace?: string;
+  rolling?: OpenCodeWindowUsage;
+  weekly?: OpenCodeWindowUsage;
+  monthly?: OpenCodeWindowUsage;
+  source?: string;
+  fetched_at?: string;
+  error?: string;
+}
+
+export interface OpenCodeAccountSaveResponse {
+  account: OpenCodeAccountView;
+  result: OpenCodeQuotaResult;
+}
+
+export interface OpenCodeProbeResponse {
+  result: OpenCodeQuotaResult;
+}
+
+export interface OpenCodeZenAccountView {
+  id: string;
+  name?: string;
+  base_url: string;
+  key_set: boolean;
+}
+
+export interface OpenCodeZenAccountsResponse {
+  accounts: OpenCodeZenAccountView[];
+}
+
+export interface OpenCodeZenProbeResult {
+  reachable: boolean;
+  status_code?: number;
+  detail?: string;
+}
+
+export interface OpenCodeZenProbeResponse {
+  result: OpenCodeZenProbeResult;
+}
+
+export interface OpenCodeZenAccountSaveResponse {
+  account: OpenCodeZenAccountView;
+  result: OpenCodeZenProbeResult;
+}
+
+export interface OpenCodeZenProbeAccountResponse {
+  account: OpenCodeZenAccountView;
+  result: OpenCodeZenProbeResult;
+}
+
+export interface OpenCodeAccountsResponse {
+  accounts: OpenCodeAccountView[];
+}
+
+export type AIProviderChannelKind =
+  | "openai-compatibility"
+  | "gemini-api-key"
+  | "interactions-api-key"
+  | "claude-api-key"
+  | "codex-api-key"
+  | "xai-api-key"
+  | "vertex-api-key"
+  | "api-keys"
+  | "opencode-go"
+  | "opencode-zen";
+
+export interface AIProviderChannelModel {
+  name: string;
+  alias?: string;
+  display_name?: string;
+  max_context_length?: number;
+  force_mapping?: boolean;
+  is_compat?: boolean;
+  image?: boolean;
+  input_modalities?: string[];
+  output_modalities?: string[];
+  thinking?: unknown;
+}
+
+export interface AIProviderAPIKeyEntry {
+  api_key?: string;
+  weight?: number | null;
+  proxy_url?: string;
+}
+
+export interface AIProviderChannelEntry {
+  index: number;
+  name?: string;
+  api_key?: string;
+  base_url?: string;
+  proxy_url?: string;
+  prefix?: string;
+  priority?: number;
+  disabled?: boolean;
+  weight?: number | null;
+  headers?: Record<string, string>;
+  models?: AIProviderChannelModel[];
+  excluded_models?: string[];
+  api_key_entries?: AIProviderAPIKeyEntry[];
+  support_prompt_cache_key?: boolean;
+  disable_cooling?: boolean;
+  alpha_search?: boolean;
+  websockets?: boolean;
+  rebuild_mid_system_message?: boolean;
+  auth_index?: string;
+  account_id?: string;
+  workspace_id?: string;
+  key_set?: boolean;
+}
+
+export interface AIProviderChannelSnapshot {
+  kind: AIProviderChannelKind;
+  count: number;
+  entries: AIProviderChannelEntry[];
 }
