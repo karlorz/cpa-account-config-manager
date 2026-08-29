@@ -24,7 +24,8 @@ type openCodeZenProbeRequest struct {
 }
 
 type openCodeZenAccountsResponse struct {
-	Accounts []OpenCodeZenAccountView `json:"accounts"`
+	Accounts     []OpenCodeZenAccountView `json:"accounts"`
+	StorageError string                   `json:"storage_error,omitempty"`
 }
 
 type openCodeZenProbeResponse struct {
@@ -55,7 +56,9 @@ func (a *App) handleOpenCodeZenAccounts(ctx context.Context, req cpaapi.Manageme
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	switch method {
 	case http.MethodGet:
-		return jsonResponse(http.StatusOK, openCodeZenAccountsResponse{Accounts: a.opencodeZen.ListAccounts()})
+		return jsonResponse(http.StatusOK, openCodeZenAccountsResponse{
+			Accounts: a.opencodeZen.ListAccounts(), StorageError: a.opencodeZen.StorageError(),
+		})
 	case http.MethodPost, http.MethodDelete:
 		if resolveManagementKey(req.Headers) == "" {
 			return jsonResponse(http.StatusUnauthorized, map[string]any{"error": "management key is unavailable"})
@@ -135,8 +138,8 @@ func (a *App) handleOpenCodeZenProbe(ctx context.Context, req cpaapi.ManagementR
 	if errDecode := decodeJSONRequest(req.Body, &request); errDecode != nil {
 		return jsonResponse(http.StatusBadRequest, map[string]any{"error": "invalid OpenCode Zen probe request"})
 	}
-	if strings.TrimSpace(request.BaseURL) == "" || strings.TrimSpace(request.ZenAPIKey) == "" {
-		return jsonResponse(http.StatusBadRequest, map[string]any{"error": "base_url and zen_api_key are both required"})
+	if strings.TrimSpace(request.ZenAPIKey) == "" {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"error": "zen_api_key is required"})
 	}
 	result := a.opencodeZen.Probe(ctx, request.BaseURL, request.ZenAPIKey, openCodeZenTimeout(request.TimeoutSeconds))
 	status := http.StatusOK

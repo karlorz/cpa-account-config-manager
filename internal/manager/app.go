@@ -54,6 +54,7 @@ type RegistrationCapabilities struct {
 type App struct {
 	mu              sync.RWMutex
 	config          Config
+	configErr       string
 	accounts        *AccountService
 	deduplication   *AccountDeduplicationService
 	deletions       *AccountDeleteService
@@ -74,12 +75,15 @@ type App struct {
 	managementDoer  HTTPDoer
 	requestHooks    *RequestHook
 	concurrency     *AccountConcurrencyService
+	providerRuntime *ProviderRuntimeTracker
 	hostSchema      uint32
 	runtime         *RuntimeOwnership
 	experiments     *ExperimentalSettingsService
 	agentIdentity   *AgentIdentityExperiment
 	opencode        *OpenCodeQuotaService
 	opencodeZen     *OpenCodeZenService
+	proxyProfiles   *ProxyProfileService
+	quotaPolicies   *QuotaPolicyService
 	indexHTML       []byte
 	quiesceOnce     sync.Once
 	quotaResetLocks [64]sync.Mutex
@@ -107,6 +111,8 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	quotaBootstrap := NewAccountQuotaMetadataBootstrap()
 	opencode := NewOpenCodeQuotaService()
 	opencodeZen := NewOpenCodeZenService()
+	proxyProfiles := NewProxyProfileService()
+	quotaPolicies := NewQuotaPolicyService()
 	var identityTransport AgentIdentityTransport
 	if transport, ok := host.(AgentIdentityTransport); ok {
 		identityTransport = transport
@@ -115,8 +121,14 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	modelTests.SetAgentIdentityExperiment(agentIdentity)
 	imports := NewImportService(host, mutations)
 	imports.SetAgentIdentityExperiment(agentIdentity)
-	weeklyOverdraft := NewWeeklyOverdraftExperiment(experiments.WeeklyOverdraftEnabled)
-	requestHooks := NewRequestHook(concurrency, weeklyOverdraft)
+	weeklyOverdraft := NewWeeklyOverdraftExperiment(experiments.WeeklyOverdraftEnabled).WithOverdraftGate(usage)
+	codexIdentity := NewCodexIdentityExperiment(experiments, accounts)
+	setCodexIdentitySettingsProvider(experiments.codexIdentitySnapshot)
+	modelTests.SetCodexIdentityExperiment(codexIdentity)
+	providerRuntime := NewProviderRuntimeTracker(creditUsage)
+	providerRuntime.SetAccountConcurrency(concurrency)
+	quotaGuard := NewAccountQuotaGuard(usage, quotaPolicies)
+	requestHooks := NewRequestHook(quotaGuard, providerRuntime, concurrency, weeklyOverdraft, codexIdentity)
 	runtimeMarker := ""
 	if provider, ok := host.(interface{ RuntimeProcessMarker() string }); ok {
 		runtimeMarker = provider.RuntimeProcessMarker()
@@ -152,18 +164,27 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 		quotaBootstrap:  quotaBootstrap,
 		requestHooks:    requestHooks,
 		concurrency:     concurrency,
+		providerRuntime: providerRuntime,
 		hostSchema:      cpaapi.SchemaVersion,
 		runtime:         runtime,
 		experiments:     experiments,
 		agentIdentity:   agentIdentity,
 		opencode:        opencode,
 		opencodeZen:     opencodeZen,
+		proxyProfiles:   proxyProfiles,
+		quotaPolicies:   quotaPolicies,
 		indexHTML:       append([]byte(nil), indexHTML...),
 	}
 	app.previews.SetAccountConcurrency(concurrency)
+	app.previews.SetProxyProfiles(proxyProfiles)
+	jobs.SetProxyProfiles(proxyProfiles)
+	jobs.SetQuotaPolicies(quotaPolicies)
+	accounts.SetQuotaPolicies(quotaPolicies)
 	accounts.SetObserver(accountObserverGroup{newAccountProbe, quotaBootstrap})
 	policies.SetObserver(newAccountProbe)
 	policies.SetModelPolicyApplier(app.applyConditionalModelPolicy)
+	policies.SetProxyProfiles(proxyProfiles)
+	policies.SetAIProviderProxyApplier(app.applyAIProviderProxyPolicy)
 	policies.SetQuotaMetadataProbe(app.runPolicyQuotaMetadataProbe)
 	newAccountProbe.SetEligibility(func(account Account) bool {
 		resolved := resolveConditionalPolicy(policies.Snapshot().Policy, account)
@@ -183,9 +204,16 @@ func (a *App) ConfigureHost(raw []byte, hostSchema uint32) {
 	if a == nil {
 		return
 	}
+	config, errConfig := ParseConfigStrict(raw)
+	if errConfig != nil {
+		a.mu.Lock()
+		a.configErr = "plugin configuration is invalid"
+		a.mu.Unlock()
+		return
+	}
 	a.mu.Lock()
-	a.config = ParseConfig(raw)
-	config := a.config
+	a.config = config
+	a.configErr = ""
 	a.hostSchema = normalizeHostSchemaVersion(hostSchema)
 	hostSchema = a.hostSchema
 	a.mu.Unlock()
@@ -204,6 +232,9 @@ func (a *App) ConfigureHost(raw []byte, hostSchema uint32) {
 	a.operations.Configure(config)
 	a.opencode.Configure(config)
 	a.opencodeZen.Configure(config)
+	a.proxyProfiles.Configure(config)
+	a.quotaPolicies.Configure(config)
+	a.proxyProfiles.SetBindingApplier(a.applyProxyProfileBindings)
 	a.experiments.Configure(config)
 	a.creditUsage.Configure(config, a.experiments.Sub2APICreditUsageEnabled())
 	a.newAccountProbe.Configure(config)
@@ -223,14 +254,24 @@ func (a *App) configSnapshot() Config {
 	return a.config
 }
 
+func (a *App) configError() string {
+	if a == nil {
+		return "plugin configuration is invalid"
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.configErr
+}
+
 func (a *App) HandleUsage(record cpaapi.UsageRecord) {
 	if a == nil || a.usage == nil {
 		return
 	}
-	if a.runtime != nil && a.runtime.Snapshot().Superseded {
+	if a.runtimeSuperseded() {
 		return
 	}
 	a.usage.Observe(record)
+	a.providerRuntime.ObserveUsage(record)
 	a.inspection.Observe(record)
 }
 
@@ -238,8 +279,12 @@ func (a *App) Close() {
 	if a == nil {
 		return
 	}
-	a.quiesceRetiredInstance()
+	// Reconcile the last in-memory operation snapshots before shutting down the
+	// journal.  The previous order closed the journal first and then attempted
+	// to upsert those snapshots, which made shutdown entries silently disappear
+	// (and could leave a stale "running" operation on the next startup).
 	a.reconcileOperationSources()
+	a.quiesceRetiredInstance()
 	a.runtime.Shutdown()
 }
 
@@ -259,10 +304,18 @@ func (a *App) quiesceRetiredInstance() {
 		a.deletions.Clear()
 		a.previews.Clear()
 		a.imports.Shutdown()
+		a.agentIdentity.Shutdown()
 		a.agentIdentity.Clear()
 		a.concurrency.Shutdown()
+		a.providerRuntime.Shutdown()
 		a.creditUsage.Close()
 		a.usage.Close()
+		// Workers can finish with an interrupted/failed terminal snapshot while
+		// they are being quiesced. Reconcile once more after all producers have
+		// stopped, but before closing the journal, so the final operation status
+		// is durable instead of leaving a stale "running" entry after restart.
+		a.reconcileOperationSources()
+		a.operations.Close()
 		if superseded {
 			debug.FreeOSMemory()
 		}
@@ -303,36 +356,54 @@ func (a *App) Registration() Registration {
 }
 
 func (a *App) HandleRequestBefore(request cpaapi.RequestInterceptRequest) cpaapi.RequestInterceptResponse {
-	if a == nil || a.requestHooks == nil {
+	if a == nil || a.requestHooks == nil || a.runtimeSuperseded() {
 		return cpaapi.RequestInterceptResponse{}
 	}
 	return a.requestHooks.InterceptBefore(request)
 }
 
 func (a *App) RequestInterceptionActive() bool {
-	return a != nil && a.requestHooks != nil && a.requestHooks.Active()
+	return a != nil && !a.runtimeSuperseded() && a.requestLifecycleAvailable() && a.requestHooks != nil && a.requestHooks.Active()
 }
 
 func (a *App) RequestInterceptionAcceptsFormat(format string) bool {
-	return a != nil && a.requestHooks != nil && a.requestHooks.AcceptsFormat(format)
+	return a != nil && !a.runtimeSuperseded() && a.requestLifecycleAvailable() && a.requestHooks != nil && a.requestHooks.AcceptsFormat(format)
+}
+
+func (a *App) runtimeSuperseded() bool {
+	return a != nil && a.runtime != nil && a.runtime.Snapshot().Superseded
 }
 
 func (a *App) HandleRequestAfter(request cpaapi.RequestInterceptRequest) cpaapi.RequestInterceptResponse {
-	if a == nil || a.requestHooks == nil {
+	if a == nil || a.requestHooks == nil || a.runtimeSuperseded() {
 		return cpaapi.RequestInterceptResponse{}
 	}
 	return a.requestHooks.InterceptAfter(request)
 }
 
 func (a *App) HandleRequestComplete(completion cpaapi.RequestCompletion) {
-	if a == nil || a.concurrency == nil {
+	if a == nil || a.runtimeSuperseded() {
 		return
 	}
-	a.concurrency.Complete(completion)
+	if a.concurrency != nil {
+		a.concurrency.Complete(completion)
+	}
+	if a.providerRuntime != nil {
+		a.providerRuntime.Complete(completion)
+	}
 }
 
 func (a *App) RequestCompletionActive() bool {
-	return a != nil && a.concurrency != nil && a.concurrency.RequestInterceptionActive()
+	return a != nil && !a.runtimeSuperseded() && a.requestLifecycleAvailable() && ((a.concurrency != nil && a.concurrency.RequestInterceptionActive()) || a.providerRuntime != nil)
+}
+
+func (a *App) requestLifecycleAvailable() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return normalizeHostSchemaVersion(a.hostSchema) >= cpaapi.SchemaVersion
 }
 
 func (a *App) HandleAgentIdentityAuthParse(request cpaapi.AuthParseRequest) (cpaapi.AuthParseResponse, error) {
@@ -396,7 +467,10 @@ func (a *App) ManagementRegistration() cpaapi.ManagementRegistrationResponse {
 		Routes: []cpaapi.ManagementRoute{
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/accounts", Description: "List redacted CLIProxyAPI accounts."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/accounts/config", Description: "Read one editable account's current allow-listed configuration."},
-			{Method: http.MethodPost, Path: managementRoutePrefix + "/accounts/quota-metadata/refresh", Description: "Refresh one Codex or Antigravity account's quota metadata."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/quota-policies", Description: "Read persisted account and AI provider quota/concurrency policies."},
+			{Method: http.MethodPut, Path: managementRoutePrefix + "/quota-policies/account", Description: "Save one account's 5-hour and 7-day quota limits."},
+			{Method: http.MethodPut, Path: managementRoutePrefix + "/quota-policies/provider", Description: "Save one AI provider's plugin-managed budget, percentage, and concurrency limits."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/accounts/quota-metadata/refresh", Description: "Refresh one Codex, Antigravity, or Kimi account's quota metadata."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/accounts/quota-metadata/reset", Description: "Consume one explicitly confirmed Codex active reset credit and refresh quota metadata."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/accounts/models", Description: "Load the common effective model catalog for an editable account scope."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/accounts/deduplicate/preview", Description: "Find duplicate upstream accounts and return a redacted review plan."},
@@ -462,6 +536,11 @@ func (a *App) ManagementRegistration() cpaapi.ManagementRegistrationResponse {
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/opencode/zen/probe", Description: "Probe one OpenCode Zen or opencode-cc bridge endpoint without saving its credential."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/opencode/zen/probe-account", Description: "Probe one saved OpenCode Zen account with its stored key."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/ai-providers/test", Description: "Probe one AI provider channel endpoint with the submitted credential."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/ai-providers/runtime", Description: "Read redacted AI provider concurrency, token, and model cost metrics."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/proxy-profiles", Description: "List redacted reusable proxy profiles."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/proxy-profiles", Description: "Create a reusable proxy profile."},
+			{Method: http.MethodPut, Path: managementRoutePrefix + "/proxy-profiles", Description: "Update a reusable proxy profile."},
+			{Method: http.MethodDelete, Path: managementRoutePrefix + "/proxy-profiles", Description: "Delete a reusable proxy profile."},
 		},
 		Resources: []cpaapi.ResourceRoute{
 			{
@@ -487,26 +566,33 @@ func (a *App) HandleManagement(ctx context.Context, req cpaapi.ManagementRequest
 		method = http.MethodGet
 	}
 	path := normalizedRequestPath(req.Path)
-	if strings.HasPrefix(path, "/v0/management"+managementRoutePrefix) {
-		managementKey := resolveManagementKey(req.Headers)
-		a.policies.Arm(managementKey)
-		if a.policies.Snapshot().Policy.ManagesNewAccountProbe() {
-			a.newAccountProbe.Arm(managementKey, req.HostCallbackID)
-		}
-		managementKey = ""
-	}
-
-	switch {
-	case method == http.MethodGet && path == resourceRoutePrefix+"/index.html":
+	if method == http.MethodGet && path == resourceRoutePrefix+"/index.html" {
 		return cpaapi.ManagementResponse{
 			StatusCode: http.StatusOK,
 			Headers:    http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
 			Body:       append([]byte(nil), a.indexHTML...),
 		}
+	}
+	if configErr := a.configError(); configErr != "" {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": configErr})
+	}
+	if strings.HasPrefix(path, "/v0/management"+managementRoutePrefix) {
+		managementKey := resolveManagementKey(req.Headers)
+		a.policies.Arm(managementKey)
+		if a.policies.Snapshot().Policy.ManagesNewAccountProbe() {
+			a.newAccountProbe.SetManagementKey(managementKey, req.HostCallbackID)
+		}
+		managementKey = ""
+	}
+
+	switch {
 	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/accounts":
 		return a.handleListAccounts(ctx, req)
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/accounts/config":
 		return a.handleAccountConfig(ctx, req)
+	case (method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/quota-policies") ||
+		(method == http.MethodPut && (path == "/v0/management"+managementRoutePrefix+"/quota-policies/account" || path == "/v0/management"+managementRoutePrefix+"/quota-policies/provider")):
+		return a.handleQuotaPolicies(req)
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/accounts/quota-metadata/refresh":
 		return a.handleAccountQuotaMetadata(ctx, req, false)
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/accounts/quota-metadata/reset":
@@ -561,22 +647,8 @@ func (a *App) HandleManagement(ctx context.Context, req cpaapi.ManagementRequest
 	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/defaults/force/status":
 		return jsonResponse(http.StatusOK, a.force.Snapshot(statusWantsResults(req.Query)))
 	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/inspection":
-		inspectionSnapshot := a.inspection.Snapshot()
-		inspectionPolicy := inspectionSnapshot.Policy
-		if inspectionPolicy.ModelProbeEnabled || inspectionPolicy.AnomalyTriggerEnabled || inspectionPolicy.AutoDisable || inspectionPolicy.AutoEnable || inspectionPolicy.AutoDelete || inspectionSnapshot.ProbeSweepRemaining > 0 {
-			managementKey := resolveManagementKey(req.Headers)
-			if managementKey != "" {
-				a.inspection.ArmModelProbes(managementKey)
-				managementKey = ""
-			}
-		}
 		return jsonResponse(http.StatusOK, a.inspection.Snapshot())
 	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/inspection/live":
-		managementKey := resolveManagementKey(req.Headers)
-		if managementKey != "" {
-			a.inspection.ArmModelProbes(managementKey)
-			managementKey = ""
-		}
 		response := jsonResponse(http.StatusOK, a.inspection.Snapshot())
 		response.Headers.Set("Cache-Control", "no-store")
 		return response
@@ -652,6 +724,14 @@ func (a *App) HandleManagement(ctx context.Context, req cpaapi.ManagementRequest
 		return a.handleOpenCodeAccounts(ctx, req)
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/opencode/probe":
 		return a.handleOpenCodeProbe(ctx, req)
+	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/proxy-profiles":
+		return a.handleProxyProfilesList(ctx)
+	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/proxy-profiles":
+		return a.handleProxyProfileCreate(req)
+	case method == http.MethodPut && path == "/v0/management"+managementRoutePrefix+"/proxy-profiles":
+		return a.handleProxyProfileUpdate(req)
+	case method == http.MethodDelete && path == "/v0/management"+managementRoutePrefix+"/proxy-profiles":
+		return a.handleProxyProfileDelete(req)
 	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/opencode/zen/accounts":
 		return a.handleOpenCodeZenAccounts(ctx, req)
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/opencode/zen/accounts":
@@ -664,6 +744,11 @@ func (a *App) HandleManagement(ctx context.Context, req cpaapi.ManagementRequest
 		return a.handleOpenCodeZenProbeAccount(ctx, req)
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/ai-providers/test":
 		return a.handleAIProviderProbe(ctx, req)
+	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/ai-providers/runtime":
+		if resolveManagementKey(req.Headers) == "" {
+			return jsonResponse(http.StatusUnauthorized, map[string]any{"error": "management key is unavailable"})
+		}
+		return a.handleAIProviderRuntime()
 	case method == http.MethodGet && path == opencodeStatusResourcePath:
 		return a.handleOpenCodeStatusPage(ctx, req)
 	default:
@@ -720,13 +805,11 @@ func (a *App) handleExportInspection(req cpaapi.ManagementRequest) cpaapi.Manage
 }
 
 func (a *App) handleListOperations(req cpaapi.ManagementRequest) cpaapi.ManagementResponse {
-	a.reconcileOperationSources()
 	query := operationQueryFromRequest(req, operationPageSize)
 	return jsonResponse(http.StatusOK, a.operations.List(query))
 }
 
 func (a *App) handleExportOperations(req cpaapi.ManagementRequest) cpaapi.ManagementResponse {
-	a.reconcileOperationSources()
 	format := firstQuery(req.Query, "format")
 	if format == "" {
 		format = "json"
@@ -780,7 +863,10 @@ func operationQueryFromRequest(req cpaapi.ManagementRequest, pageSize int) Opera
 }
 
 func (a *App) handleClearOperations() cpaapi.ManagementResponse {
-	entry := a.operations.Clear()
+	entry, errClear := a.operations.ClearWithError()
+	if errClear != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]any{"error": "operation journal could not be cleared"})
+	}
 	return jsonResponse(http.StatusOK, map[string]any{"operation": entry, "retained": 1})
 }
 
@@ -797,6 +883,11 @@ func (a *App) handleRecordOperation(req cpaapi.ManagementRequest) cpaapi.Managem
 	entry.StartedAt = now
 	entry.FinishedAt = now
 	recorded := a.operations.Record(entry)
+	if recorded.ID == "" {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{
+			"error": "operation journal is unavailable",
+		})
+	}
 	return jsonResponse(http.StatusCreated, recorded)
 }
 
@@ -989,9 +1080,9 @@ func (a *App) handleForceStart(req cpaapi.ManagementRequest) cpaapi.ManagementRe
 
 func (a *App) handleListAccounts(ctx context.Context, req cpaapi.ManagementRequest) cpaapi.ManagementResponse {
 	managementKey := resolveManagementKey(req.Headers)
-	a.quotaBootstrap.Arm(managementKey)
+	a.quotaBootstrap.SetManagementKey(managementKey)
 	if a.policies.Snapshot().Policy.NewAccountModelProbeEnabled {
-		a.newAccountProbe.Arm(managementKey, req.HostCallbackID)
+		a.newAccountProbe.SetManagementKey(managementKey, req.HostCallbackID)
 	}
 	managementKey = ""
 	query, errQuery := listQueryFromValues(req.Query)

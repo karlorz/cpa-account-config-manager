@@ -10,16 +10,19 @@ import {
   Trash2,
   Workflow,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../api/client";
 import { operatorMessage } from "../format/operatorMessage";
 import { useI18n } from "../i18n";
+import type { UIMessageKey } from "../i18n/uiText";
 import type {
   ConditionalPolicyActions,
   ConditionalPolicyRule,
   DefaultPolicy,
   ModelPolicyMode,
   PolicySnapshot,
+  OperationFailureDetail,
+  ProxyProfileView,
 } from "../types";
 import { IconButton } from "./IconButton";
 import { Modal } from "./Modal";
@@ -42,31 +45,64 @@ export function AutomationPolicySettings({ refreshRevision, forceLoading, onAPIE
   const [scanning, setScanning] = useState(false);
   const [confirmRunAfterSave, setConfirmRunAfterSave] = useState(false);
   const [error, setError] = useState("");
+  const [proxyProfiles, setProxyProfiles] = useState<ProxyProfileView[]>([]);
+  const refreshRequest = useRef(0);
 
-  const refresh = useCallback(async () => {
+  const invalidateRefresh = () => {
+    refreshRequest.current += 1;
+  };
+
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    const requestID = ++refreshRequest.current;
     try {
-      const next = await api.getDefaultPolicy();
+      const next = await api.getDefaultPolicy(signal);
+      if (requestID !== refreshRequest.current) return;
       if (!next?.policy || !next.last_scan) throw new Error("ui.policy_unavailable");
       setSnapshot(next);
       setDraft((current) => current ?? clonePolicy(next.policy));
     } catch (caught) {
+      if (signal?.aborted || (caught instanceof DOMException && caught.name === "AbortError")) return;
+      if (requestID !== refreshRequest.current) return;
       if (caught instanceof api.APIError && caught.status === 401) onAPIError(caught);
       else setError(operatorMessage(caught instanceof Error ? caught.message : tx("ui.request_failed"), locale));
     } finally {
-      setLoading(false);
+      if (requestID === refreshRequest.current) setLoading(false);
     }
   }, [locale, onAPIError, tx]);
 
   useEffect(() => {
+    const controller = new AbortController();
     setLoading(true);
     setDraft(null);
-    void refresh();
+    void refresh(controller.signal);
+    return () => {
+      controller.abort();
+      invalidateRefresh();
+    };
   }, [refresh, refreshRevision]);
 
   useEffect(() => {
+    const controller = new AbortController();
+    void api.listProxyProfiles(controller.signal).then((response) => {
+      if (!controller.signal.aborted) setProxyProfiles(response.profiles.filter((profile) => profile.enabled));
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, [refreshRevision]);
+
+  useEffect(() => {
     if (!snapshot?.running) return;
-    const timer = window.setInterval(() => void refresh(), 1500);
-    return () => window.clearInterval(timer);
+    const controller = new AbortController();
+    let timer = 0;
+    const poll = async () => {
+      await refresh(controller.signal);
+      if (!controller.signal.aborted) timer = window.setTimeout(() => void poll(), 1500);
+    };
+    timer = window.setTimeout(() => void poll(), 1500);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+      invalidateRefresh();
+    };
   }, [refresh, snapshot?.running]);
 
   const dirty = useMemo(() => Boolean(snapshot && draft && JSON.stringify(draft) !== JSON.stringify(clonePolicy(snapshot.policy))), [draft, snapshot]);
@@ -76,6 +112,7 @@ export function AutomationPolicySettings({ refreshRevision, forceLoading, onAPIE
 
   const save = async () => {
     if (!draft) return;
+    invalidateRefresh();
     setError("");
     if (draft.enabled && !draft.new_account_model_probe_enabled && draft.priority === null && draft.websockets === null && rules.length === 0) {
       setError(tx("ui.select_at_least_one_default_field_before_enabling_the_policy"));
@@ -101,6 +138,7 @@ export function AutomationPolicySettings({ refreshRevision, forceLoading, onAPIE
   };
 
   const scan = async () => {
+    invalidateRefresh();
     setScanning(true);
     setError("");
     try {
@@ -120,7 +158,7 @@ export function AutomationPolicySettings({ refreshRevision, forceLoading, onAPIE
   }
 
   const lastScan = snapshot.last_scan;
-  const persistedFields = snapshot.policy.priority !== null || snapshot.policy.websockets !== null;
+  const persistedFields = snapshot.policy.priority !== null || snapshot.policy.websockets !== null || Boolean(snapshot.policy.proxy_profile_id) || Boolean(snapshot.policy.ai_provider_proxy_profile_id);
   const controlsLocked = saving || forceLoading;
   const policyError = error || (snapshot.new_account_model_probe_storage_error ? tx("ui.new_account_model_probe_storage_error") : "") || operatorMessage(lastScan.error, locale);
 
@@ -137,10 +175,12 @@ export function AutomationPolicySettings({ refreshRevision, forceLoading, onAPIE
           <PolicyMetric label={tx("ui.skipped")} value={lastScan.skipped} />
           <PolicyMetric label={tx("ui.failed")} value={lastScan.failed} tone={lastScan.failed ? "danger" : ""} />
         </div>
+        {lastScan.failure_details?.length ? <PolicyFailureDetails details={lastScan.failure_details} /> : null}
       </div>
 
       <section className="automation-policy-section" aria-label={tx("ui.global_default_policy")}>
         <header><div><strong>{tx("ui.global_default_policy")}</strong><span>{tx("ui.global_default_policy_description")}</span></div></header>
+        <p className="policy-section-help">{tx("ui.global_default_policy_help")}</p>
         <div className="policy-form automation-global-form">
           <label className={`policy-row policy-master ${draft.enabled ? "is-enabled" : ""}`}>
             <span><strong>{tx("ui.auto_apply")}</strong><small>{tx("ui.auth_files")}</small></span>
@@ -152,6 +192,11 @@ export function AutomationPolicySettings({ refreshRevision, forceLoading, onAPIE
           </label>
           <OptionalNumberRow label="Priority" ariaLabel={tx("ui.default_priority")} value={draft.priority} disabled={controlsLocked} onChange={(priority) => updateDraft({ priority })} />
           <OptionalBooleanRow label="WebSockets" ariaLabel={tx("ui.default_websockets")} value={draft.websockets} disabled={controlsLocked} onChange={(websockets) => updateDraft({ websockets })} />
+          <div className="policy-proxy-group">
+            <div className="policy-subsection-heading"><strong>{tx("ui.proxy_profiles")}</strong><span>{tx("ui.global_proxy_profile_help")}</span></div>
+            <ProxyProfileRow label={tx("ui.default_account_proxy")} value={draft.proxy_profile_id ?? null} profiles={proxyProfiles} disabled={controlsLocked} onChange={(proxy_profile_id) => updateDraft({ proxy_profile_id })} />
+            <ProxyProfileRow label={tx("ui.default_ai_provider_proxy")} value={draft.ai_provider_proxy_profile_id ?? null} profiles={proxyProfiles} disabled={controlsLocked} onChange={(ai_provider_proxy_profile_id) => updateDraft({ ai_provider_proxy_profile_id })} />
+          </div>
           <label className="policy-row policy-interval"><span className="edit-optin">{tx("ui.scan_interval")}</span><span className="number-suffix"><input type="number" min="5" max="300" value={draft.scan_interval_seconds} disabled={controlsLocked} onChange={(event) => updateDraft({ scan_interval_seconds: Number(event.target.value) })} aria-label={tx("ui.scan_interval")} /><b>{tx("ui.seconds")}</b></span></label>
         </div>
       </section>
@@ -172,6 +217,7 @@ export function AutomationPolicySettings({ refreshRevision, forceLoading, onAPIE
               disabled={controlsLocked}
               onChange={(next) => updateRules(rules.map((item, itemIndex) => itemIndex === index ? next : item))}
               onMove={(offset) => updateRules(moveRule(rules, index, index + offset))}
+              profiles={proxyProfiles}
               onDelete={() => updateRules(rules.filter((_, itemIndex) => itemIndex !== index))}
             />
           ))}
@@ -206,7 +252,7 @@ export function AutomationPolicySettings({ refreshRevision, forceLoading, onAPIE
   );
 }
 
-function ConditionalRuleEditor({ rule, index, total, disabled, onChange, onMove, onDelete }: { rule: ConditionalPolicyRule; index: number; total: number; disabled: boolean; onChange: (rule: ConditionalPolicyRule) => void; onMove: (offset: number) => void; onDelete: () => void }) {
+function ConditionalRuleEditor({ rule, index, total, disabled, profiles, onChange, onMove, onDelete }: { rule: ConditionalPolicyRule; index: number; total: number; disabled: boolean; profiles: ProxyProfileView[]; onChange: (rule: ConditionalPolicyRule) => void; onMove: (offset: number) => void; onDelete: () => void }) {
   const { tx } = useI18n();
   const updateActions = (actions: ConditionalPolicyActions) => onChange({ ...rule, actions });
   return (
@@ -223,15 +269,27 @@ function ConditionalRuleEditor({ rule, index, total, disabled, onChange, onMove,
       </header>
       <div className="conditional-rule-body">
         <section className="conditional-rule-conditions"><h4>{tx("ui.match_conditions")}</h4><PolicyConditionEditor group={rule.conditions} disabled={disabled} onChange={(conditions) => onChange({ ...rule, conditions })} /></section>
-        <section className="conditional-rule-actions"><h4>{tx("ui.automation_actions")}</h4>
+        <section className="conditional-rule-actions"><h4>{tx("ui.automation_actions")}</h4><p className="policy-action-help">{tx("ui.conditional_proxy_profile_help")}</p>
           <OptionalBooleanAction label={tx("ui.new_account_model_probe")} present={hasOwn(rule.actions, "new_account_model_probe")} value={rule.actions.new_account_model_probe ?? false} disabled={disabled} onChange={(present, value) => updateActions(updateOptionalAction(rule.actions, "new_account_model_probe", present, value))} />
           <OptionalNumberAction label="Priority" present={hasOwn(rule.actions, "priority")} value={rule.actions.priority ?? 0} disabled={disabled} onChange={(present, value) => updateActions(updateOptionalAction(rule.actions, "priority", present, value))} />
           <OptionalBooleanAction label="WebSockets" present={hasOwn(rule.actions, "websockets")} value={rule.actions.websockets ?? false} disabled={disabled} onChange={(present, value) => updateActions(updateOptionalAction(rule.actions, "websockets", present, value))} />
+          <OptionalProxyProfileAction label={tx("ui.account_proxy_profile")} value={rule.actions.proxy_profile_id ?? null} profiles={profiles} disabled={disabled} onChange={(value) => updateActions(updateOptionalAction(rule.actions, "proxy_profile_id", value !== null, value ?? undefined))} />
+          <OptionalProxyProfileAction label={tx("ui.ai_provider_proxy_profile")} value={rule.actions.ai_provider_proxy_profile_id ?? null} profiles={profiles} disabled={disabled} onChange={(value) => updateActions(updateOptionalAction(rule.actions, "ai_provider_proxy_profile_id", value !== null, value ?? undefined))} />
           <ModelPolicyAction actions={rule.actions} disabled={disabled} onChange={updateActions} />
         </section>
       </div>
     </article>
   );
+}
+
+function ProxyProfileRow({ label, value, profiles, disabled, onChange }: { label: string; value: string | null; profiles: ProxyProfileView[]; disabled: boolean; onChange: (value: string | null) => void }) {
+  const { tx } = useI18n();
+  return <label className={`policy-row ${value ? "is-enabled" : ""}`}><span className="edit-optin">{label}</span><select value={value ?? ""} disabled={disabled} onChange={(event) => onChange(event.target.value || null)}><option value="">{tx("ui.proxy_profile_unset")}</option>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.proxy_url_masked}</option>)}</select></label>;
+}
+
+function OptionalProxyProfileAction({ label, value, profiles, disabled, onChange }: { label: string; value: string | null; profiles: ProxyProfileView[]; disabled: boolean; onChange: (value: string | null) => void }) {
+  const present = value !== null;
+  return <div className={`conditional-action ${present ? "is-managed" : ""}`}><label><input type="checkbox" checked={present} disabled={disabled} onChange={(event) => onChange(event.target.checked ? (profiles[0]?.id ?? null) : null)} /><span>{label}</span></label>{present ? <select value={value ?? ""} disabled={disabled} onChange={(event) => onChange(event.target.value || null)}>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.proxy_url_masked}</option>)}</select> : null}</div>;
 }
 
 function ModelPolicyAction({ actions, disabled, onChange }: { actions: ConditionalPolicyActions; disabled: boolean; onChange: (actions: ConditionalPolicyActions) => void }) {
@@ -264,6 +322,30 @@ function OptionalBooleanAction({ label, present, value, disabled, onChange }: { 
 
 function OptionalNumberAction({ label, present, value, disabled, onChange }: { label: string; present: boolean; value: number; disabled: boolean; onChange: (present: boolean, value: number) => void }) {
   return <div className={`conditional-action ${present ? "is-managed" : ""}`}><label><input type="checkbox" checked={present} disabled={disabled} onChange={(event) => onChange(event.target.checked, value)} /><span>{label}</span></label><input type="number" value={value} disabled={disabled || !present} onChange={(event) => onChange(true, Number(event.target.value))} /></div>;
+}
+
+const policyFailureReasonKeys: Record<string, UIMessageKey> = {
+  policy_auth_scan_failed: "ui.policy_failure_auth_scan",
+  policy_auth_read_failed: "ui.policy_failure_auth_read",
+  policy_account_identity_changed: "ui.policy_failure_account_identity_changed",
+  policy_auth_source_changed: "ui.policy_failure_auth_source_changed",
+  policy_auth_filename_invalid: "ui.policy_failure_auth_filename_invalid",
+  policy_auth_projection_failed: "ui.policy_failure_auth_projection",
+  policy_auth_json_invalid: "ui.policy_failure_auth_json_invalid",
+  policy_auth_update_failed: "ui.policy_failure_auth_update",
+  policy_auth_save_failed: "ui.policy_failure_auth_save",
+  policy_model_policy_unavailable: "ui.policy_failure_model_policy_unavailable",
+  policy_model_policy_apply_failed: "ui.policy_failure_model_policy_apply",
+  policy_quota_metadata_probe_failed: "ui.policy_failure_quota_metadata",
+  policy_state_persist_failed: "ui.policy_failure_state_persist",
+};
+
+function PolicyFailureDetails({ details }: { details: OperationFailureDetail[] }) {
+  const { tx } = useI18n();
+  return <section className="policy-failure-details" aria-label={tx("ui.failure_basis")}>
+    <div className="policy-failure-heading"><ShieldAlert size={15} /><strong>{tx("ui.failure_basis")}</strong></div>
+    <ul>{details.map((detail, index) => <li key={`${detail.reason_code}-${index}`}><span>{tx(policyFailureReasonKeys[detail.reason_code] || "ui.policy_failure_unknown")}</span><b>{tx("ui.policy_failure_account_count", { count: detail.count })}</b>{detail.sample_account_ids?.length ? <code>{detail.sample_account_ids.join(", ")}</code> : null}</li>)}</ul>
+  </section>;
 }
 
 function PolicyMetric({ label, value, tone = "" }: { label: string; value: number; tone?: string }) {

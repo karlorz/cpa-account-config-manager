@@ -1,3 +1,35 @@
+export interface CredentialSummary {
+  id: string;
+  auth_id?: string;
+  name?: string;
+  provider?: string;
+  type?: string;
+  account_type?: string;
+  plan_type?: string;
+  label?: string;
+  email?: string;
+  project_id?: string;
+  account_id?: string;
+  status?: string;
+  status_message?: string;
+  disabled: boolean;
+  unavailable: boolean;
+  runtime_only: boolean;
+  editable: boolean;
+  source?: string;
+  path_available: boolean;
+  runtime_loaded: boolean;
+  runtime_error?: string;
+  success: number;
+  failed: number;
+  priority?: number;
+  websockets?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  last_refresh?: string;
+  next_retry_after?: string;
+}
+
 export interface Account {
   id: string;
   auth_id?: string;
@@ -37,6 +69,32 @@ export interface Account {
   automation?: AccountAutomationSummary;
 	model_policy?: AccountModelPolicySummary;
 	concurrency?: AccountConcurrencySummary;
+	quota_policy?: AccountQuotaPolicy;
+	credential?: CredentialSummary;
+}
+
+export interface QuotaWindowPolicy {
+	total_tokens?: number;
+	limit_percent?: number;
+}
+
+export interface AccountQuotaPolicy {
+	five_hour: QuotaWindowPolicy;
+	seven_day: QuotaWindowPolicy;
+}
+
+export interface ProviderQuotaPolicy {
+	key: string;
+	label?: string;
+	concurrency_limit?: number;
+	five_hour: QuotaWindowPolicy;
+	seven_day: QuotaWindowPolicy;
+}
+
+export interface QuotaPolicySnapshot {
+	accounts: Record<string, AccountQuotaPolicy>;
+	providers: ProviderQuotaPolicy[];
+	storage_error?: string;
 }
 
 export interface AccountConcurrencyAvailability {
@@ -44,6 +102,7 @@ export interface AccountConcurrencyAvailability {
 	host_schema_version: number;
 	required_schema_version: number;
 	reason?: "host_schema_v2_required";
+	storage_error?: string;
 }
 
 export interface AccountConcurrencySummary {
@@ -73,6 +132,8 @@ export interface AccountEditableConfig {
 	model_policy: AccountModelPolicySummary | null;
 	concurrency?: AccountConcurrencySummary;
 	account_concurrency?: AccountConcurrencyAvailability;
+	quota_policy?: AccountQuotaPolicy;
+	credential?: CredentialSummary;
 }
 
 export interface ModelPolicyPatch {
@@ -146,6 +207,7 @@ export interface UsageWindowSnapshot {
   reset_at?: string;
   window_minutes?: number;
 	overdraft_active?: boolean;
+	overdraft_status?: string;
 	overdraft_tokens?: number;
 	overdraft_requests?: number;
 	overdraft_amount_usd?: number;
@@ -241,6 +303,7 @@ export interface AccountListResponse {
   page_size: number;
   pages: number;
 	account_concurrency?: AccountConcurrencyAvailability;
+	usage_storage_error?: string;
 }
 
 export type AccountDeduplicationMatch = "account_id" | "email" | "multiple";
@@ -382,16 +445,44 @@ export interface HeaderPatch {
   remove?: string[];
 }
 
+export interface ProxyProfileView {
+	id: string;
+	name: string;
+	proxy_url_masked: string;
+	note?: string;
+	providers?: string[];
+	enabled: boolean;
+	account_count: number;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface ProxyProfileListResponse {
+	profiles: ProxyProfileView[];
+	storage_error?: string;
+}
+
+export interface ProxyProfileInput {
+	id?: string;
+	name: string;
+	proxy_url: string;
+	note?: string;
+	providers?: string[];
+	enabled?: boolean;
+}
+
 export interface BatchPatch {
   disabled?: boolean;
   priority?: number;
   note?: string;
   prefix?: string;
   proxy_url?: string;
+	proxy_profile_id?: string;
   websockets?: boolean;
   headers?: HeaderPatch;
 	model_policy?: ModelPolicyPatch;
 	concurrency_limit?: number;
+	quota_policy?: AccountQuotaPolicy;
 }
 
 export interface TargetScope {
@@ -465,6 +556,7 @@ export interface JobSnapshot {
   finished_at?: string;
   retry_available: boolean;
   persisted: boolean;
+  storage_error?: string;
   results?: JobResult[];
 }
 
@@ -476,6 +568,8 @@ export interface DefaultPolicy {
   scan_interval_seconds: number;
   priority: number | null;
   websockets: boolean | null;
+  proxy_profile_id?: string | null;
+  ai_provider_proxy_profile_id?: string | null;
   conditional_rules?: ConditionalPolicyRule[];
 }
 
@@ -498,6 +592,8 @@ export interface ConditionalPolicyActions {
   priority?: number;
   websockets?: boolean;
   model_policy?: ModelPolicyPatch;
+  proxy_profile_id?: string;
+  ai_provider_proxy_profile_id?: string;
 }
 
 export interface ConditionalPolicyRule {
@@ -521,6 +617,7 @@ export interface PolicyScanSummary {
   quota_metadata_updated?: number;
   quota_metadata_failed?: number;
   error?: string;
+  failure_details?: OperationFailureDetail[];
 }
 
 export interface PolicySnapshot {
@@ -580,6 +677,7 @@ export interface ImportPreviewItem {
   source_path?: string;
   target_name: string;
   email?: string;
+  project_id?: string;
   account_id?: string;
   label: string;
   synthetic_id_token: boolean;
@@ -606,6 +704,7 @@ export interface ImportResultItem {
   source_path?: string;
   target_name: string;
   email?: string;
+  project_id?: string;
   account_id?: string;
   label: string;
   status: "imported" | "skipped" | "failed";
@@ -1047,11 +1146,24 @@ export interface CPAServerVersionSnapshot {
   error?: "current_version_unavailable" | "latest_version_unavailable" | "version_comparison_unavailable";
 }
 
+export interface ExperimentalCodexIdentitySettings {
+  outbound_convergence_enabled: boolean;
+  ingress_gate_enabled: boolean;
+  allow_app_server_clients: boolean;
+  convergence_mode?: string;
+  min_version?: string;
+  max_version?: string;
+  whitelist?: string;
+  blacklist?: string;
+  fingerprint_signals?: string;
+}
+
 export interface ExperimentalSettings {
   weekly_overdraft_enabled: boolean;
   agent_identity_enabled: boolean;
   auto_model_whitelist_enabled: boolean;
   sub2api_credit_usage_enabled: boolean;
+  codex_identity: ExperimentalCodexIdentitySettings;
 }
 
 export interface ExperimentalSettingsSnapshot {
@@ -1111,6 +1223,7 @@ export interface OpenCodeZenAccountView {
 
 export interface OpenCodeZenAccountsResponse {
   accounts: OpenCodeZenAccountView[];
+  storage_error?: string;
 }
 
 export interface OpenCodeZenProbeResult {
@@ -1135,6 +1248,7 @@ export interface OpenCodeZenProbeAccountResponse {
 
 export interface OpenCodeAccountsResponse {
   accounts: OpenCodeAccountView[];
+  storage_error?: string;
 }
 
 export type AIProviderChannelKind =
@@ -1160,12 +1274,18 @@ export interface AIProviderChannelModel {
   input_modalities?: string[];
   output_modalities?: string[];
   thinking?: unknown;
+  /** Original host fields retained so editing known fields cannot erase newer CPA options. */
+  raw?: Record<string, unknown>;
 }
 
 export interface AIProviderAPIKeyEntry {
   api_key?: string;
   weight?: number | null;
   proxy_url?: string;
+  /** CPA runtime auth index; metadata only and never persisted back to config. */
+  auth_index?: string;
+  /** Original host credential row retained for lossless rewrites. */
+  raw?: Record<string, unknown>;
 }
 
 export interface AIProviderChannelEntry {
@@ -1184,17 +1304,69 @@ export interface AIProviderChannelEntry {
   api_key_entries?: AIProviderAPIKeyEntry[];
   support_prompt_cache_key?: boolean;
   disable_cooling?: boolean;
+  request_retry?: number | null;
+  request_scoped_errors?: unknown[];
   alpha_search?: boolean;
   websockets?: boolean;
   rebuild_mid_system_message?: boolean;
+  fingerprint_profile?: string;
   auth_index?: string;
   account_id?: string;
   workspace_id?: string;
   key_set?: boolean;
 }
 
+export interface AIProviderRuntimeModelUsage {
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  reasoning_tokens: number;
+  cached_tokens: number;
+  total_tokens: number;
+  amount_usd: number;
+  rated: boolean;
+  rated_requests: number;
+  unrated_requests: number;
+}
+
+export interface AIProviderRuntimeSnapshot {
+  provider: string;
+  auth_index?: string;
+  identity: string;
+  supported: boolean;
+  concurrency_configurable?: boolean;
+  reason?: string;
+  active: number;
+  limit: number;
+  input_tokens: number;
+  output_tokens: number;
+  reasoning_tokens: number;
+  cached_tokens: number;
+  total_tokens: number;
+  amount_usd: number;
+  rated_requests: number;
+  unrated_requests: number;
+  models?: AIProviderRuntimeModelUsage[];
+	updated_at: string;
+	quota?: {
+		five_hour_used_tokens: number;
+		seven_day_used_tokens: number;
+		five_hour_percent?: number;
+		seven_day_percent?: number;
+	};
+}
+
+export interface AIProviderRuntimeResponse {
+  snapshots: AIProviderRuntimeSnapshot[];
+  updated_at: string;
+}
+
 export interface AIProviderChannelSnapshot {
   kind: AIProviderChannelKind;
   count: number;
   entries: AIProviderChannelEntry[];
+  /** Stable, redacted issue code when this channel could not be listed. */
+  error?: string;
+  /** Stable issue code when the channel exists but its persisted state is unavailable. */
+  storage_error?: string;
 }

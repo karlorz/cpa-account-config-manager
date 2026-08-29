@@ -29,6 +29,18 @@ func zenTestServer(t *testing.T, secret string) *httptest.Server {
 	return server
 }
 
+func TestOpenCodeZenEmptyBaseURLUsesDefault(t *testing.T) {
+	service := NewOpenCodeZenService()
+	service.Configure(Config{DataDir: t.TempDir()})
+	id, err := service.SaveAccount("", "default", "", "sk-default")
+	if err != nil || id == "" {
+		t.Fatalf("save with empty base URL: id=%q err=%v", id, err)
+	}
+	views := service.ListAccounts()
+	if len(views) != 1 || views[0].BaseURL != openCodeZenDefaultBaseURL {
+		t.Fatalf("views = %+v, want default base URL", views)
+	}
+}
 func TestProbeOpenCodeZenEndpointReachable(t *testing.T) {
 	server := zenTestServer(t, "sk-zen-secret")
 	service := NewOpenCodeZenService()
@@ -189,5 +201,61 @@ func TestOpenCodeZenManagementRoutes(t *testing.T) {
 	})
 	if deleted.StatusCode != http.StatusOK {
 		t.Fatalf("delete status = %d, body = %s", deleted.StatusCode, deleted.Body)
+	}
+}
+
+func TestOpenCodeZenConfigureRetriesCorruptStoreWithoutDroppingAccounts(t *testing.T) {
+	firstDir := t.TempDir()
+	service := NewOpenCodeZenService()
+	service.Configure(Config{DataDir: firstDir})
+	if _, errSave := service.SaveAccount("", "existing", "https://opencode.ai/zen", "sk-existing"); errSave != nil {
+		t.Fatalf("SaveAccount() error = %v", errSave)
+	}
+
+	secondDir := t.TempDir()
+	storePath := openCodeZenStorePath(secondDir)
+	if errWrite := os.WriteFile(storePath, []byte(`{"version":`), 0o600); errWrite != nil {
+		t.Fatalf("write corrupt store: %v", errWrite)
+	}
+	service.Configure(Config{DataDir: secondDir})
+	if got := service.ListAccounts(); len(got) != 1 || got[0].Name != "existing" {
+		t.Fatalf("corrupt store replaced live accounts: %+v", got)
+	}
+	if got := service.StorageError(); got != "OpenCode Zen state could not be loaded" {
+		t.Fatalf("StorageError = %q", got)
+	}
+
+	persisted := openCodeZenPersisted{
+		Version:  openCodeZenStoreVersion,
+		Accounts: []OpenCodeZenAccount{{ID: "restored", Name: "restored", BaseURL: "https://opencode.ai/zen", ZenAPIKey: "sk-restored"}},
+	}
+	if errSave := savePrivateJSON(storePath, persisted); errSave != nil {
+		t.Fatalf("repair store: %v", errSave)
+	}
+	service.Configure(Config{DataDir: secondDir})
+	if got := service.ListAccounts(); len(got) != 1 || got[0].Name != "restored" {
+		t.Fatalf("recovered accounts = %+v", got)
+	}
+	if got := service.StorageError(); got != "" {
+		t.Fatalf("StorageError after recovery = %q", got)
+	}
+}
+
+func TestOpenCodeZenPersistenceFailureIsSanitized(t *testing.T) {
+	blockingPath := filepath.Join(t.TempDir(), "not-a-directory")
+	if errWrite := os.WriteFile(blockingPath, []byte("block"), 0o600); errWrite != nil {
+		t.Fatalf("write blocker: %v", errWrite)
+	}
+	service := NewOpenCodeZenService()
+	service.Configure(Config{DataDir: blockingPath})
+	_, errSave := service.SaveAccount("", "secret", "https://opencode.ai/zen", "sk-super-secret")
+	if errSave == nil {
+		t.Fatal("SaveAccount() error = nil")
+	}
+	if got := service.StorageError(); got != "OpenCode Zen state could not be persisted" {
+		t.Fatalf("StorageError = %q", got)
+	}
+	if strings.Contains(service.StorageError(), blockingPath) || strings.Contains(service.StorageError(), "sk-super-secret") {
+		t.Fatalf("StorageError leaked sensitive details: %q", service.StorageError())
 	}
 }

@@ -33,6 +33,8 @@ type AccountEditableConfig struct {
 	ModelPolicy             *AccountModelPolicySummary     `json:"model_policy"`
 	Concurrency             AccountConcurrencySummary      `json:"concurrency"`
 	ConcurrencyAvailability AccountConcurrencyAvailability `json:"account_concurrency"`
+	QuotaPolicy             *AccountQuotaPolicy            `json:"quota_policy,omitempty"`
+	Credential              *CredentialSummary             `json:"credential,omitempty"`
 }
 
 func (s *AccountService) EditableConfig(ctx context.Context, rawAccountID string) (AccountEditableConfig, error) {
@@ -55,6 +57,8 @@ func (s *AccountService) EditableConfig(ctx context.Context, rawAccountID string
 	if !account.Editable {
 		return AccountEditableConfig{}, ErrAccountConfigReadOnly
 	}
+	credential := credentialSummaryFromAccount(account)
+	s.enrichRuntimeCredential(ctx, &account, &credential)
 	return AccountEditableConfig{
 		AccountID:               account.ID,
 		Disabled:                account.Disabled,
@@ -68,6 +72,8 @@ func (s *AccountService) EditableConfig(ctx context.Context, rawAccountID string
 		ModelPolicy:             cloneAccountModelPolicySummary(account.ModelPolicy),
 		Concurrency:             account.Concurrency,
 		ConcurrencyAvailability: s.accountConcurrencyAvailability(),
+		QuotaPolicy:             quotaPolicyPointer(s.quotaPolicies, account.ID),
+		Credential:              &credential,
 	}, nil
 }
 

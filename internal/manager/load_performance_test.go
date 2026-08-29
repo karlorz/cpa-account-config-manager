@@ -149,7 +149,7 @@ func TestAccountDetailLoadingUsesBoundedConcurrency(t *testing.T) {
 	}
 }
 
-func TestOperationReconciliationRunsOnlyForOperationReads(t *testing.T) {
+func TestOperationReadsDoNotReconcileOrWrite(t *testing.T) {
 	app := NewApp(&fakeAuthHost{}, []byte("index"))
 	defer app.Close()
 	app.operations.Configure(Config{DataDir: t.TempDir()})
@@ -179,8 +179,8 @@ func TestOperationReconciliationRunsOnlyForOperationReads(t *testing.T) {
 	if listed.StatusCode != http.StatusOK {
 		t.Fatalf("operation list response = %d", listed.StatusCode)
 	}
-	if got := app.operations.List(OperationQuery{Page: 1, PageSize: operationPageSize}).Total; got != 1 {
-		t.Fatalf("operations after journal read = %d, want 1", got)
+	if got := app.operations.List(OperationQuery{Page: 1, PageSize: operationPageSize}).Total; got != 0 {
+		t.Fatalf("operations after journal read = %d, want 0", got)
 	}
 }
 
@@ -219,4 +219,24 @@ func accountDetailFixtures(count int) ([]cpaapi.HostAuthFileEntry, map[string]cp
 		}
 	}
 	return entries, details
+}
+
+func TestAccountDetailLoadingUsesShortLivedDerivedCache(t *testing.T) {
+	entries, details := accountDetailFixtures(2)
+	host := &fakeAuthHost{entries: entries, details: details}
+	service := NewAccountService(host)
+	query := ListQuery{Page: 1, PageSize: len(entries)}
+	if _, errList := service.List(context.Background(), query); errList != nil {
+		t.Fatalf("first list = %v", errList)
+	}
+	if _, errList := service.List(context.Background(), query); errList != nil {
+		t.Fatalf("second list = %v", errList)
+	}
+	host.mu.Lock()
+	defer host.mu.Unlock()
+	for _, entry := range entries {
+		if got := host.getCalls[entry.AuthIndex]; got != 1 {
+			t.Fatalf("GetAuth(%q) calls = %d, want one cached read", entry.AuthIndex, got)
+		}
+	}
 }

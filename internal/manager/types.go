@@ -13,6 +13,7 @@ type Account struct {
 	ProjectID       string                     `json:"project_id,omitempty"`
 	AccountType     string                     `json:"account_type,omitempty"`
 	PlanType        string                     `json:"plan_type,omitempty"`
+	DeviceID        string                     `json:"device_id,omitempty"`
 	Status          string                     `json:"status,omitempty"`
 	StatusMessage   string                     `json:"status_message,omitempty"`
 	Disabled        bool                       `json:"disabled"`
@@ -41,6 +42,8 @@ type Account struct {
 	Automation      *AccountAutomationSummary  `json:"automation,omitempty"`
 	ModelPolicy     *AccountModelPolicySummary `json:"model_policy,omitempty"`
 	Concurrency     AccountConcurrencySummary  `json:"concurrency"`
+	QuotaPolicy     *AccountQuotaPolicy        `json:"quota_policy,omitempty"`
+	Credential      *CredentialSummary         `json:"credential,omitempty"`
 
 	detailAuthIndex string
 	path            string
@@ -103,4 +106,5 @@ type ListResponse struct {
 	PageSize           int                            `json:"page_size"`
 	Pages              int                            `json:"pages"`
 	AccountConcurrency AccountConcurrencyAvailability `json:"account_concurrency"`
+	UsageStorageError  string                         `json:"usage_storage_error,omitempty"`
 }
