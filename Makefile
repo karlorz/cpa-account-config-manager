@@ -1,4 +1,5 @@
 PLUGIN_ID := cpa-account-config-manager
+FORK_REPOSITORY := https://github.com/karlorz/cpa-account-config-manager
 DIST_DIR := $(CURDIR)/dist
 WEB_DIR := $(CURDIR)/web
 GIT_RELEASE_TAG := $(shell git describe --tags --exact-match --match "v[0-9]*.[0-9]*.[0-9]*-[0-9]*" 2>/dev/null)
@@ -19,7 +20,7 @@ else
 PLUGIN_EXT := so
 endif
 
-.PHONY: build web plugin package test version-check verify clean
+.PHONY: build web plugin package test version-check release-version-check verify clean
 
 build: plugin
 
@@ -49,6 +50,13 @@ version-check:
 	grep -Fq 'PluginVersion    = "0.0.0-dev"' internal/manager/app.go
 	test -z "$$(grep -E '$(PLUGIN_ID)[-_]v?[0-9]+\.[0-9]+\.[0-9]+' README.md README_EN.md)"
 
+release-version-check: version-check
+	go run ./cmd/releaseverify \
+		-id $(PLUGIN_ID) \
+		-version $(VERSION) \
+		-repository $(FORK_REPOSITORY) \
+		-registry registry.json
+
 verify: version-check
 	test -z "$$(gofmt -l $$(find . -name '*.go' -not -path './web/node_modules/*'))"
 	go test ./...
@@ -57,6 +65,7 @@ verify: version-check
 	cd $(WEB_DIR) && npm run typecheck
 	cd $(WEB_DIR) && npm test -- --run --pool=forks --maxWorkers=1
 	$(MAKE) build
+	git diff --exit-code -- internal/web/dist/index.html
 
 clean:
 	rm -rf $(DIST_DIR)

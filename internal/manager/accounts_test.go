@@ -206,6 +206,47 @@ func TestAccountServiceListEnrichesDetailOnlyOnceForFilteredPages(t *testing.T) 
 	}
 }
 
+func TestAccountDetailCacheReappliesFreshQuotaPlanType(t *testing.T) {
+	tracker := NewUsageTracker()
+	defer tracker.Close()
+	tracker.persistDelay = time.Hour
+	tracker.Configure(Config{DataDir: t.TempDir()})
+	host := &fakeAuthHost{
+		entries: []cpaapi.HostAuthFileEntry{{
+			AuthIndex: "cache-account", Name: "cache-account.json", Provider: "antigravity", Type: "antigravity",
+			Source: "file", Path: "/auths/cache-account.json",
+		}},
+		details: map[string]cpaapi.HostAuthGetResponse{
+			"cache-account": {
+				AuthIndex: "cache-account", Name: "cache-account.json", Path: "/auths/cache-account.json",
+				JSON: json.RawMessage(`{"type":"antigravity","plan_type":"k12"}`),
+			},
+		},
+	}
+	service := NewAccountService(host, tracker)
+
+	first, errFirst := service.List(t.Context(), ListQuery{Page: 1, PageSize: 20})
+	if errFirst != nil || len(first.Accounts) != 1 || first.Accounts[0].PlanType != "k12" {
+		t.Fatalf("first cached-detail list = %#v error=%v", first.Accounts, errFirst)
+	}
+
+	tracker.ObserveQuotaUsage("cache-account", &QuotaUsageSnapshot{
+		Provider:           "antigravity",
+		PlanType:           "free",
+		MetadataObservedAt: time.Now().UTC(),
+	})
+	second, errSecond := service.List(t.Context(), ListQuery{Page: 1, PageSize: 20})
+	if errSecond != nil || len(second.Accounts) != 1 {
+		t.Fatalf("second cached-detail list = %#v error=%v", second.Accounts, errSecond)
+	}
+	if second.Accounts[0].PlanType != "free" {
+		t.Fatalf("second cached-detail plan = %q, want freshly observed free", second.Accounts[0].PlanType)
+	}
+	if host.getCalls["cache-account"] != 1 {
+		t.Fatalf("GetAuth(cache-account) calls = %d, want 1 cached read", host.getCalls["cache-account"])
+	}
+}
+
 func TestAccountServiceResolveTargetsDoesNotReloadDetailAfterFiltering(t *testing.T) {
 	host := &fakeAuthHost{entries: []cpaapi.HostAuthFileEntry{
 		{AuthIndex: "alpha", Name: "alpha.json", Label: "Alpha", Provider: "codex", Type: "codex", Source: "file", Path: "/auths/alpha.json"},

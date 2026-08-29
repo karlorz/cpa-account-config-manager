@@ -119,6 +119,18 @@ jobs:
             -library "dist/cpa-account-config-manager.${{ matrix.ext }}" \
             -out dist/release
 
+      - name: Verify packaged archive
+        shell: bash
+        run: |
+          archive="dist/release/cpa-account-config-manager_0.0.0-ci_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
+          go run ./cmd/releaseverify \
+            -version 0.0.0-ci \
+            -goos "${{ matrix.goos }}" \
+            -goarch "${{ matrix.goarch }}" \
+            -repository "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            -archive "${archive}" \
+            -checksum "${archive}.sha256"
+
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
