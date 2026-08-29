@@ -17,6 +17,7 @@ web/coverage/
 # Tooling
 .DS_Store
 .gocache/
+.worktrees/
 .playwright-cli/
 /.codex-tasks/
 /.mindfs/
