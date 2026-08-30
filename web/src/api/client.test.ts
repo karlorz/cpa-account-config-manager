@@ -735,6 +735,38 @@ describe("management API client", () => {
     });
   });
 
+  it("accepts inspection rows with empty Go zero-value classification strings", async () => {
+    setSession("", "management-secret");
+    const summary = {
+      actionable: 0, suggested_delete: 0, suggested_disable: 0, suggested_enable: 0,
+      reauth: 0, deletable_reauth: 0, review: 0, keep: 0, handled: 0,
+      editable_enabled: 0, editable_disabled: 0,
+    };
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        results: [{ id: "stub-1", health: "", reason_code: "", confidence: "", recommendation: "" }],
+        summary,
+        total: 1,
+        page: 1,
+        page_size: 50,
+        pages: 1,
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        policy: {},
+        last_run: {},
+        live_results: [{ id: "live-1", health: "", reason_code: "" }],
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        actions: [{ id: "act-1", account_id: "stub-1", action: "disable", status: "succeeded", reason_code: "" }],
+      })));
+
+    await expect(listInspectionResults(1, 50)).resolves.toMatchObject({ total: 1, results: [{ id: "stub-1" }] });
+    await expect(getLiveInspection()).resolves.toMatchObject({ live_results: [{ id: "live-1" }] });
+    await expect(listInspectionActions()).resolves.toEqual([
+      { id: "act-1", account_id: "stub-1", action: "disable", status: "succeeded", reason_code: "" },
+    ]);
+  });
+
   it("normalizes nullable inspection and operation lists from older backends", async () => {
     setSession("", "management-secret");
     const inspectionSummary = {

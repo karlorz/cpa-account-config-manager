@@ -698,13 +698,13 @@ function optionalNonNegativeInteger(item: Record<string, unknown>, key: string):
 }
 
 function isValidInspectionResultRecord(item: Record<string, unknown>): boolean {
-  // Older CPA builds omit fields introduced by newer inspection/remediation versions.
-  // Validate every field that is present, but do not turn a compatible legacy row into an empty result set.
+  // Go encodes unset classification strings as "" (no omitempty). Empty must not
+  // fail the whole list. Older builds also omit newer inspection fields.
   return isNonEmptyString(item.id)
-    && (!("health" in item) || isNonEmptyString(item.health))
-    && (!("reason_code" in item) || isNonEmptyString(item.reason_code))
-    && (!("confidence" in item) || isNonEmptyString(item.confidence))
-    && (!("recommendation" in item) || isNonEmptyString(item.recommendation))
+    && optionalString(item, "health")
+    && optionalString(item, "reason_code")
+    && optionalString(item, "confidence")
+    && optionalString(item, "recommendation")
     && optionalBoolean(item, "disabled")
     && optionalBoolean(item, "editable")
     && optionalBoolean(item, "auto_disable_eligible")
@@ -756,7 +756,7 @@ function isValidInspectionActionRecord(item: Record<string, unknown>): boolean {
     && isNonEmptyString(item.account_id)
     && (!("action" in item) || (typeof item.action === "string" && INSPECTION_ACTION_VALUES.has(item.action)))
     && (!("status" in item) || (typeof item.status === "string" && INSPECTION_ACTION_STATUS_VALUES.has(item.status)))
-    && (!("reason_code" in item) || isNonEmptyString(item.reason_code))
+    && optionalString(item, "reason_code")
     && optionalString(item, "created_at")
     && optionalString(item, "name")
     && optionalString(item, "provider")

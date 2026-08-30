@@ -240,10 +240,7 @@ func sanitizeInspectionRecords(records map[string]inspectionRecord) map[string]i
 	for _, key := range keys {
 		record := records[key]
 		record.Result.ID = key
-		record.Result.Health = normalizeInspectionHealth(record.Result.Health)
-		record.Result.ReasonCode = safeInspectionReason(record.Result.ReasonCode)
-		record.Result.Confidence = normalizeInspectionConfidence(record.Result.Confidence)
-		record.Result.Recommendation = normalizeInspectionRecommendation(record.Result.Recommendation)
+		record.Result = normalizeInspectionResultClassification(record.Result)
 		record.Result.AutoAction = normalizeInspectionAction(record.Result.AutoAction)
 		record.Result.AutoActionStatus = normalizeInspectionActionStatus(record.Result.AutoActionStatus)
 		record.Result.FailureStreak = boundedCounter(record.Result.FailureStreak)
@@ -367,6 +364,18 @@ func cloneInspectionResult(result InspectionResult) InspectionResult {
 	clone.RunObservedAt = cloneTimePointer(result.RunObservedAt)
 	clone.AutoDisableProbeTestedAt = cloneTimePointer(result.AutoDisableProbeTestedAt)
 	return clone
+}
+
+func normalizeInspectionResultClassification(result InspectionResult) InspectionResult {
+	result.Health = normalizeInspectionHealth(result.Health)
+	result.ReasonCode = safeInspectionReason(result.ReasonCode)
+	result.Confidence = normalizeInspectionConfidence(result.Confidence)
+	result.Recommendation = normalizeInspectionRecommendation(result.Recommendation)
+	return result
+}
+
+func inspectionResultForAPI(result InspectionResult) InspectionResult {
+	return normalizeInspectionResultClassification(cloneInspectionResult(result))
 }
 
 func normalizeInspectionQuotaWindow(value string) string {

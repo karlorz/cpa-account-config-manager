@@ -27,6 +27,38 @@ func TestInspectionEmptyCollectionsUseJSONArrays(t *testing.T) {
 	}
 }
 
+func TestListResultsNormalizesEmptyClassificationFields(t *testing.T) {
+	engine := NewInspectionEngine(nil, nil, nil)
+	engine.mu.Lock()
+	engine.records = map[string]inspectionRecord{
+		"usage-stub": {Result: InspectionResult{ID: "usage-stub"}},
+		"healthy": {Result: InspectionResult{
+			ID: "healthy", Health: InspectionHealthHealthy, ReasonCode: "healthy_recent_success",
+			Confidence: InspectionConfidenceHigh, Recommendation: InspectionRecommendationKeep,
+		}},
+	}
+	engine.mu.Unlock()
+
+	listed := engine.ListResults(InspectionResultQuery{Page: 1, PageSize: 50})
+	if listed.Total != 2 {
+		t.Fatalf("total = %d, want 2", listed.Total)
+	}
+	byID := make(map[string]InspectionResult, len(listed.Results))
+	for _, result := range listed.Results {
+		byID[result.ID] = result
+	}
+	stub := byID["usage-stub"]
+	if stub.Health != InspectionHealthUnknown || stub.ReasonCode != "no_recent_evidence" ||
+		stub.Confidence != InspectionConfidenceLow || stub.Recommendation != InspectionRecommendationReview {
+		t.Fatalf("stub classification = %#v", stub)
+	}
+	healthy := byID["healthy"]
+	if healthy.Health != InspectionHealthHealthy || healthy.ReasonCode != "healthy_recent_success" ||
+		healthy.Confidence != InspectionConfidenceHigh || healthy.Recommendation != InspectionRecommendationKeep {
+		t.Fatalf("healthy classification mutated = %#v", healthy)
+	}
+}
+
 func TestPassiveInspectionRecordsStayBoundedAndPreserveProtectedCandidates(t *testing.T) {
 	now := time.Date(2026, time.July, 21, 14, 0, 0, 0, time.UTC)
 	engine := NewInspectionEngine(nil, nil, nil)
@@ -124,6 +156,22 @@ func TestLiveInspectionResultsAreCurrentRunOnlyBoundedAndNewestFirst(t *testing.
 		if result.RunID != runID {
 			t.Fatalf("live results included another run: %#v", result)
 		}
+	}
+}
+
+func TestLiveInspectionResultsNormalizeEmptyClassificationFields(t *testing.T) {
+	runID := "inspection-live-stub"
+	now := time.Date(2026, time.August, 30, 8, 0, 0, 0, time.UTC)
+	records := map[string]inspectionRecord{
+		"live-stub": {Result: InspectionResult{ID: "live-stub", RunID: runID, RunObservedAt: timePointer(now)}},
+	}
+	results := liveInspectionResults(records, runID, maxInspectionLiveResults)
+	if len(results) != 1 {
+		t.Fatalf("live results = %#v", results)
+	}
+	if results[0].Health != InspectionHealthUnknown || results[0].ReasonCode != "no_recent_evidence" ||
+		results[0].Confidence != InspectionConfidenceLow || results[0].Recommendation != InspectionRecommendationReview {
+		t.Fatalf("live stub classification = %#v", results[0])
 	}
 }
 

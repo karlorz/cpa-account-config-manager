@@ -894,7 +894,7 @@ func (e *InspectionEngine) ListResults(query InspectionResultQuery) InspectionRe
 	e.mu.RLock()
 	results := make([]InspectionResult, 0, len(e.records))
 	for _, record := range e.records {
-		result := cloneInspectionResult(record.Result)
+		result := inspectionResultForAPI(record.Result)
 		result.ManualDeleteEligible = inspectionManualDeleteAllowed(result)
 		if query.Health != "" && result.Health != query.Health {
 			continue
@@ -2152,6 +2152,9 @@ func liveInspectionResults(records map[string]inspectionRecord, activeID string,
 	})
 	if len(results) > limit {
 		results = results[:limit]
+	}
+	for index := range results {
+		results[index] = normalizeInspectionResultClassification(results[index])
 	}
 	return results
 }
