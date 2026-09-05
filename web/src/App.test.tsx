@@ -1443,7 +1443,7 @@ describe("primary account batch flow", () => {
     await user.type(await screen.findByLabelText("Management Key"), "management-secret");
     await user.click(screen.getByRole("button", { name: "验证并进入" }));
     expect(screen.queryByRole("button", { name: "默认策略" })).not.toBeInTheDocument();
-    await user.click(await screen.findByRole("button", { name: "其他配置" }));
+    await user.click(await screen.findByRole("button", { name: "自动策略" }));
     const policyPanel = await screen.findByRole("tabpanel", { name: "自动策略" });
 
     await user.click(within(policyPanel).getByRole("checkbox", { name: "Priority" }));
