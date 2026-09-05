@@ -333,7 +333,19 @@ function isValidAccountConcurrencyAvailability(value: unknown): value is Account
 function isValidAccountConcurrencySummary(value: unknown): value is NonNullable<AccountEditableConfig["concurrency"]> {
   return isRecord(value)
     && typeof value.supported === "boolean"
-    && hasRequiredNonNegativeIntegers(value, ["active", "limit"]);
+    && hasRequiredNonNegativeIntegers(value, ["active", "limit"])
+    && (value.limit_15s === undefined || isFiniteNonNegativeInteger(value.limit_15s))
+    && (value.used_60s === undefined || isFiniteNonNegativeInteger(value.used_60s))
+    && (value.used_15s === undefined || isFiniteNonNegativeInteger(value.used_15s));
+}
+
+function normalizeAccountConcurrencySummary(value: NonNullable<AccountEditableConfig["concurrency"]>): NonNullable<AccountEditableConfig["concurrency"]> {
+  return {
+    ...value,
+    limit_15s: value.limit_15s ?? 0,
+    used_60s: value.used_60s ?? 0,
+    used_15s: value.used_15s ?? 0,
+  };
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -380,7 +392,9 @@ function normalizeAccountListResponse(response: unknown, requestedPage: number, 
     }
     return {
       ...account,
-      concurrency: account.concurrency ?? { supported: availability.supported, active: 0, limit: 0 },
+      concurrency: account.concurrency
+        ? normalizeAccountConcurrencySummary(account.concurrency)
+        : { supported: availability.supported, active: 0, limit: 0, limit_15s: 0, used_60s: 0, used_15s: 0 },
     };
   });
   return {
@@ -467,9 +481,9 @@ export async function loadAccountConfig(accountID: string): Promise<AccountEdita
 		if (!isValidAccountConcurrencySummary(source.concurrency)) {
 			throw new APIError(502, "ui.invalid_api_response");
 		}
-		concurrency = source.concurrency;
+		concurrency = normalizeAccountConcurrencySummary(source.concurrency);
 	} else {
-		concurrency = { supported: availability.supported, active: 0, limit: 0 };
+		concurrency = { supported: availability.supported, active: 0, limit: 0, limit_15s: 0, used_60s: 0, used_15s: 0 };
 	}
 	return {
 		...(source as Partial<AccountEditableConfig>),
@@ -1772,6 +1786,13 @@ function normalizeAIProviderRuntimeResponse(response: unknown): AIProviderRuntim
       || (raw.concurrency_configurable !== undefined && typeof raw.concurrency_configurable !== "boolean")
       || !isFiniteNonNegativeInteger(raw.active)
       || !isFiniteNonNegativeInteger(raw.limit)
+      || (raw.waiting !== undefined && !isFiniteNonNegativeInteger(raw.waiting))
+      || (raw.request_limit !== undefined && !isFiniteNonNegativeInteger(raw.request_limit))
+      || (raw.request_window_seconds !== undefined && !isFiniteNonNegativeInteger(raw.request_window_seconds))
+      || (raw.used_requests !== undefined && !isFiniteNonNegativeInteger(raw.used_requests))
+      || (raw.limit_15s !== undefined && !isFiniteNonNegativeInteger(raw.limit_15s))
+      || (raw.used_60s !== undefined && !isFiniteNonNegativeInteger(raw.used_60s))
+      || (raw.used_15s !== undefined && !isFiniteNonNegativeInteger(raw.used_15s))
       || !isFiniteNonNegativeNumber(raw.input_tokens)
       || !isFiniteNonNegativeNumber(raw.output_tokens)
       || !isFiniteNonNegativeNumber(raw.reasoning_tokens)
@@ -1800,7 +1821,16 @@ function normalizeAIProviderRuntimeResponse(response: unknown): AIProviderRuntim
     }))) {
       throw new APIError(502, "ui.invalid_api_response");
     }
-    return raw as unknown as AIProviderRuntimeResponse["snapshots"][number];
+    return {
+      ...raw,
+      waiting: raw.waiting ?? 0,
+      request_limit: raw.request_limit ?? raw.limit_15s ?? 0,
+      request_window_seconds: raw.request_window_seconds ?? 15,
+      used_requests: raw.used_requests ?? raw.used_15s ?? 0,
+      limit_15s: raw.limit_15s ?? raw.request_limit ?? 0,
+      used_60s: raw.used_60s ?? 0,
+      used_15s: raw.used_15s ?? raw.used_requests ?? 0,
+    } as unknown as AIProviderRuntimeResponse["snapshots"][number];
   });
   return { snapshots, updated_at: response.updated_at };
 }
@@ -2372,4 +2402,24 @@ function parseProxyProfile(value: unknown): ProxyProfileView {
 	const normalized = normalizeProxyProfilesResponse({ profiles: [value] });
 	if (normalized.profiles.length !== 1) throw new APIError(502, "ui.invalid_api_response");
 	return normalized.profiles[0];
+}
+
+
+export async function getRiskControl(signal?: AbortSignal): Promise<import("../types").RiskControlSnapshot> {
+  return requestRecord<import("../types").RiskControlSnapshot>("/risk-control", { signal });
+}
+
+export async function saveRiskControl(config: import("../types").RiskControlConfig): Promise<import("../types").RiskControlSnapshot> {
+  return requestRecord<import("../types").RiskControlSnapshot>("/risk-control", {
+    method: "PUT",
+    body: JSON.stringify(config),
+  });
+}
+
+export async function clearRiskControlEvents(): Promise<import("../types").RiskControlSnapshot> {
+  return requestRecord<import("../types").RiskControlSnapshot>("/risk-control/events", { method: "DELETE" });
+}
+
+export async function clearRiskControlHashes(): Promise<import("../types").RiskControlSnapshot> {
+  return requestRecord<import("../types").RiskControlSnapshot>("/risk-control/hashes", { method: "DELETE" });
 }

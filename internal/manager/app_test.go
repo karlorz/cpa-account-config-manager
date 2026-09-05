@@ -89,6 +89,10 @@ func TestManagementRegistrationUsesExactFixedRoutes(t *testing.T) {
 		http.MethodGet + " /plugins/cpa-account-config-manager/experiments":                               {},
 		http.MethodPut + " /plugins/cpa-account-config-manager/experiments":                               {},
 		http.MethodPost + " /plugins/cpa-account-config-manager/experiments/agent-identity/session-login": {},
+		http.MethodGet + " /plugins/cpa-account-config-manager/risk-control":                              {},
+		http.MethodPut + " /plugins/cpa-account-config-manager/risk-control":                              {},
+		http.MethodDelete + " /plugins/cpa-account-config-manager/risk-control/events":                    {},
+		http.MethodDelete + " /plugins/cpa-account-config-manager/risk-control/hashes":                    {},
 		http.MethodGet + " /plugins/cpa-account-config-manager/operations":                                {},
 		http.MethodGet + " /plugins/cpa-account-config-manager/operations/export":                         {},
 		http.MethodGet + " /plugins/cpa-account-config-manager/operations/settings":                       {},
@@ -171,6 +175,9 @@ func TestRegistrationUsesInjectedReleaseMetadata(t *testing.T) {
 	registration := app.Registration()
 	if registration.Metadata.Version != "1.2.3" || registration.Metadata.GitHubRepository != PluginRepository {
 		t.Fatalf("metadata = %#v", registration.Metadata)
+	}
+	if !strings.HasPrefix(registration.Metadata.Logo, "data:image/svg+xml;base64,") {
+		t.Fatalf("metadata logo = %q, want embedded SVG data URI", registration.Metadata.Logo)
 	}
 	if !registration.Capabilities.ManagementAPI || !registration.Capabilities.UsagePlugin || !registration.Capabilities.RequestInterceptor {
 		t.Fatalf("capabilities = %#v", registration.Capabilities)

@@ -127,6 +127,8 @@ type EditingEntry = {
   fingerprintProfile: string;
   accountID?: string;
   workspaceID?: string;
+  concurrency15sLimit: string;
+  concurrencyWindowSeconds: string;
   concurrencyLimit: string;
   fiveHourTotalTokens: string;
   fiveHourLimitPercent: string;
@@ -233,7 +235,9 @@ function parseNonNegativeInteger(value: string): number | undefined {
 
 function validateProviderQuotaInputs(editing: EditingEntry, message: (key: UIMessageKey) => string): void {
   const integerFields: Array<[string, string, number | undefined]> = [
-    [editing.concurrencyLimit, message("ui.ai_provider_limit"), 1000],
+    [editing.concurrency15sLimit, message("ui.account_concurrency_request_limit"), 1000],
+    [editing.concurrencyWindowSeconds, message("ui.ai_provider_concurrency_window_seconds"), 3600],
+    [editing.concurrencyLimit, message("ui.account_concurrency_60s_limit"), 1000],
     [editing.fiveHourTotalTokens, `${message("ui.quota_window_five_hour")} · ${message("ui.ai_provider_budget_tokens")}`, undefined],
     [editing.sevenDayTotalTokens, `${message("ui.quota_window_seven_day")} · ${message("ui.ai_provider_budget_tokens")}`, undefined],
   ];
@@ -269,7 +273,17 @@ function ProviderPolicyFields({
       <p className="ai-provider-field-note">{tx("ui.ai_provider_quota_settings_description")}</p>
       <div className="ai-provider-form-grid">
         <label className="field-block">
-          <span>{tx("ui.ai_provider_limit")}</span>
+          <span>{tx("ui.account_concurrency_15s_limit")}</span>
+          <input type="number" min="0" max="1000" step="1" value={entry.concurrency15sLimit} onChange={(event) => onEntry({ concurrency15sLimit: event.target.value })} placeholder="0" />
+          <small>{tx("ui.account_concurrency_zero_unlimited")}</small>
+        </label>
+        <label className="field-block">
+          <span>{tx("ui.ai_provider_concurrency_window_seconds")}</span>
+          <input type="number" min="1" max="3600" step="1" value={entry.concurrencyWindowSeconds} onChange={(event) => onEntry({ concurrencyWindowSeconds: event.target.value })} placeholder="15" />
+          <small>{tx("ui.account_concurrency_window_seconds_help")}</small>
+        </label>
+        <label className="field-block">
+          <span>{tx("ui.account_concurrency_60s_limit")}</span>
           <input type="number" min="0" max="1000" step="1" value={entry.concurrencyLimit} onChange={(event) => onEntry({ concurrencyLimit: event.target.value })} placeholder="0" />
           <small>{tx("ui.account_concurrency_zero_unlimited")}</small>
         </label>
@@ -290,6 +304,7 @@ function ProviderPolicyFields({
           <input type="number" min="0" max="100" step="1" value={entry.sevenDayLimitPercent} onChange={(event) => onEntry({ sevenDayLimitPercent: event.target.value })} placeholder={tx("ui.not_set")} />
         </label>
       </div>
+      <p className="ai-provider-field-note">{tx("ui.account_concurrency_window_help")}</p>
     </section>
   );
 }
@@ -641,6 +656,8 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice }: A
       fingerprintProfile: entry.fingerprint_profile ?? "",
       accountID: entry.account_id,
       workspaceID: entry.workspace_id,
+      concurrency15sLimit: policy?.concurrency_15s_limit === undefined ? "" : String(policy.concurrency_15s_limit),
+      concurrencyWindowSeconds: policy?.concurrency_window_seconds === undefined ? "15" : String(policy.concurrency_window_seconds),
       concurrencyLimit: policy?.concurrency_limit === undefined ? "" : String(policy.concurrency_limit),
       fiveHourTotalTokens: policy?.five_hour.total_tokens === undefined ? "" : String(policy.five_hour.total_tokens),
       fiveHourLimitPercent: policy?.five_hour.limit_percent === undefined ? "" : String(policy.five_hour.limit_percent),
@@ -741,6 +758,12 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice }: A
     const limit = matches.some((snapshot) => !Number.isFinite(snapshot.limit) || snapshot.limit < 0)
       ? Number.POSITIVE_INFINITY
       : matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.limit), 0);
+    const requestLimit = matches.some((snapshot) => !Number.isFinite(snapshot.request_limit) || snapshot.request_limit < 0)
+      ? Number.POSITIVE_INFINITY
+      : matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.request_limit), 0);
+    const latestRuntime = matches.reduce((latestSnapshot, snapshot) =>
+      snapshot.updated_at > latestSnapshot.updated_at ? snapshot : latestSnapshot, matches[0]);
+    const requestWindowSeconds = latestRuntime.request_window_seconds || 15;
     const quota = {
       five_hour_used_tokens: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.quota?.five_hour_used_tokens ?? 0), 0),
       seven_day_used_tokens: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.quota?.seven_day_used_tokens ?? 0), 0),
@@ -757,7 +780,14 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice }: A
       supported: matches.some((snapshot) => snapshot.supported),
       concurrency_configurable: matches.some((snapshot) => snapshot.concurrency_configurable === true),
       active: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.active), 0),
+      waiting: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.waiting), 0),
       limit,
+      request_limit: requestLimit,
+      request_window_seconds: requestWindowSeconds,
+      used_requests: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.used_requests), 0),
+      limit_15s: requestLimit,
+      used_60s: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.used_60s), 0),
+      used_15s: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.used_15s), 0),
       input_tokens: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.input_tokens), 0),
       output_tokens: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.output_tokens), 0),
       reasoning_tokens: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.reasoning_tokens), 0),
@@ -777,6 +807,16 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice }: A
     if (amount === 0) return "$0";
     if (amount < 0.000001) return "<$0.000001";
     return `$${amount.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
+  };
+  const formatConcurrencyWindow = (
+    used: number | undefined,
+    configuredLimit: number | undefined,
+    observedLimit: number | undefined,
+    runtimeAvailable: boolean,
+  ) => {
+    const effectiveLimit = configuredLimit !== undefined ? configuredLimit : observedLimit ?? 0;
+    if (!runtimeAvailable) return configuredLimit === undefined ? "-" : `0 / ${effectiveLimit > 0 ? effectiveLimit : "∞"}`;
+    return `${Math.max(0, used ?? 0)} / ${effectiveLimit > 0 ? effectiveLimit : "∞"}`;
   };
 
   const resetForm = () => {
@@ -856,6 +896,8 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice }: A
         // it here would make an otherwise empty policy undeletable because
         // the backend correctly treats non-empty labels as persisted state.
         label: "",
+        concurrency_15s_limit: parseOptionalInteger(editing.concurrency15sLimit),
+        concurrency_window_seconds: parseOptionalInteger(editing.concurrencyWindowSeconds),
         concurrency_limit: parseOptionalInteger(editing.concurrencyLimit),
         five_hour: {
           total_tokens: parseOptionalInteger(editing.fiveHourTotalTokens),
@@ -1378,7 +1420,11 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice }: A
               if (!runtime && !policy) return <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_usage")}</span><strong>{tx("ui.ai_provider_identity_unavailable")}</strong></div>;
               return (
                 <div className="ai-provider-runtime-detail">
-                  {(runtime?.supported || policy) ? <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_concurrency")}</span><strong>{runtime ? `${runtime.active}/${policy?.concurrency_limit === undefined || policy.concurrency_limit === 0 ? (runtime.limit > 0 ? runtime.limit : "∞") : policy.concurrency_limit}` : policy?.concurrency_limit === undefined || policy.concurrency_limit === 0 ? "-" : `0/${policy.concurrency_limit}`}</strong></div> : null}
+                  {(runtime?.supported || policy) ? <>
+                    <div className="ai-provider-detail-row"><span>{tx("ui.account_concurrency_active")}</span><strong>{Math.max(0, runtime?.active ?? 0)}</strong></div>
+                    <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_concurrency_request_short", { seconds: runtime?.request_window_seconds ?? policy?.concurrency_window_seconds ?? 15, value: formatConcurrencyWindow(runtime?.used_requests, policy?.concurrency_15s_limit, runtime?.request_limit, runtime?.supported === true) })}</span></div>
+                    <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_concurrency_queue_short", { value: runtime?.waiting ?? 0 })}</span></div>
+                  </> : null}
                   {policy ? <>
                     <div className="ai-provider-detail-row"><span>{tx("ui.quota_window_five_hour")}</span><strong>{budget(policy.five_hour, runtime?.quota?.five_hour_used_tokens)}</strong></div>
                     <div className="ai-provider-detail-row"><span>{tx("ui.quota_window_seven_day")}</span><strong>{budget(policy.seven_day, runtime?.quota?.seven_day_used_tokens)}</strong></div>
@@ -1508,14 +1554,8 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice }: A
                     return <>
                       {(() => {
                         const policy = providerPolicyFor(channel.kind, entry);
-                        const configuredLimit = policy?.concurrency_limit;
-                        // Prefer an explicit plugin policy (including 0 for
-                        // unlimited); otherwise surface CPA's observed limit
-                        // when the runtime reports one.
-                        const effectiveLimit = configuredLimit !== undefined ? configuredLimit : runtime?.limit ?? 0;
-                        const concurrency = runtime?.supported
-                          ? `${runtime.active}/${effectiveLimit > 0 ? effectiveLimit : "∞"}`
-                          : configuredLimit === undefined || configuredLimit === 0 ? "-" : `0/${configuredLimit}`;
+                        const configuredRequestLimit = policy?.concurrency_15s_limit;
+                        const configuredConcurrencyLimit = policy?.concurrency_limit;
                         const budget = (window: ProviderQuotaPolicy["five_hour"], usedTokens: number | undefined) => {
                           if (!window.total_tokens || window.total_tokens <= 0) return window.limit_percent === undefined ? "-" : `— / ${window.limit_percent}%`;
                           if (usedTokens === undefined) return `— / ${window.limit_percent ?? 100}%`;
@@ -1525,8 +1565,9 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice }: A
                           <td className="ai-provider-runtime-cell" title={tx("ui.ai_provider_quota_settings_description")}>
                             <div className="ai-provider-runtime-concurrency" title={runtime?.supported && runtime.concurrency_configurable === true ? (runtimeUpdatedAt ? `${tx("ui.ai_provider_updated_at")}: ${runtimeUpdatedAt}` : tx("ui.ai_provider_concurrency_observable_only")) : tx("ui.ai_provider_concurrency_observable_only")}>
                               <span>{tx("ui.ai_provider_concurrency")}</span>
-                              <strong>{concurrency}</strong>
-                              {configuredLimit !== undefined ? <small>{tx("ui.ai_provider_limit")}</small> : null}
+                              <strong>{tx("ui.ai_provider_concurrency_active_short", { value: `${Math.max(0, runtime?.active ?? 0)} / ${configuredConcurrencyLimit && configuredConcurrencyLimit > 0 ? configuredConcurrencyLimit : runtime?.limit && runtime.limit > 0 ? runtime.limit : "∞"}` })}</strong>
+                              <small>{tx("ui.ai_provider_concurrency_request_short", { seconds: runtime?.request_window_seconds ?? policy?.concurrency_window_seconds ?? 15, value: formatConcurrencyWindow(runtime?.used_requests, configuredRequestLimit, runtime?.request_limit, runtime?.supported === true) })}</small>
+                              <small>{tx("ui.ai_provider_concurrency_queue_short", { value: Math.max(0, runtime?.waiting ?? 0) })}</small>
                             </div>
                             <div className="ai-provider-runtime-usage">
                               <span>{tx("ui.ai_provider_usage")}</span>

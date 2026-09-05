@@ -41,6 +41,7 @@ type Registration struct {
 type RegistrationCapabilities struct {
 	ManagementAPI          bool     `json:"management_api"`
 	UsagePlugin            bool     `json:"usage_plugin"`
+	Scheduler              bool     `json:"scheduler"`
 	RequestInterceptor     bool     `json:"request_interceptor"`
 	RequestLifecyclePlugin bool     `json:"request_lifecycle_plugin"`
 	AuthProvider           bool     `json:"auth_provider"`
@@ -86,6 +87,7 @@ type App struct {
 	quotaPolicies          *QuotaPolicyService
 	codexIdentityOverrides *CodexIdentityOverrideService
 	globalPolicy           *GlobalPolicyService
+	riskControl            *RiskControlService
 	indexHTML              []byte
 	quiesceOnce            sync.Once
 	quotaResetLocks        [64]sync.Mutex
@@ -117,10 +119,12 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	quotaPolicies := NewQuotaPolicyService()
 	codexIdentityOverrides := NewCodexIdentityOverrideService()
 	globalPolicy := NewGlobalPolicyService()
+	riskControl := NewRiskControlService()
 	var identityTransport AgentIdentityTransport
 	if transport, ok := host.(AgentIdentityTransport); ok {
 		identityTransport = transport
 	}
+	riskControl.SetAuditTransport(identityTransport)
 	agentIdentity := NewAgentIdentityExperiment(experiments.AgentIdentityEnabled, identityTransport)
 	modelTests.SetAgentIdentityExperiment(agentIdentity)
 	imports := NewImportService(host, mutations)
@@ -139,9 +143,12 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	})
 	modelTests.SetCodexIdentityExperiment(codexIdentity)
 	providerRuntime := NewProviderRuntimeTracker(creditUsage)
-	providerRuntime.SetAccountConcurrency(concurrency)
+	providerRuntime.SetQuotaPolicies(quotaPolicies)
 	quotaGuard := NewAccountQuotaGuard(usage, quotaPolicies)
-	requestHooks := NewRequestHook(quotaGuard, providerRuntime, concurrency, weeklyOverdraft, codexIdentity)
+	// Admission must run before observational trackers. A saturated account can
+	// block in the concurrency transformer; recording it as active before that
+	// wait would skew provider runtime metrics and rolling request windows.
+	requestHooks := NewRequestHook(riskControl, quotaGuard, concurrency, providerRuntime, weeklyOverdraft, codexIdentity)
 	runtimeMarker := ""
 	if provider, ok := host.(interface{ RuntimeProcessMarker() string }); ok {
 		runtimeMarker = provider.RuntimeProcessMarker()
@@ -188,6 +195,7 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 		quotaPolicies:          quotaPolicies,
 		codexIdentityOverrides: codexIdentityOverrides,
 		globalPolicy:           globalPolicy,
+		riskControl:            riskControl,
 		indexHTML:              append([]byte(nil), indexHTML...),
 	}
 	app.previews.SetAccountConcurrency(concurrency)
@@ -259,7 +267,9 @@ func (a *App) ConfigureHost(raw []byte, hostSchema uint32) {
 	a.proxyProfiles.SetBindingApplier(a.applyProxyProfileBindings)
 	a.experiments.Configure(config)
 	a.globalPolicy.Configure(config, a.experiments.CodexIdentity())
+	a.riskControl.Configure(config)
 	a.creditUsage.Configure(config, a.experiments.Sub2APICreditUsageEnabled())
+	a.providerRuntime.Configure(config)
 	a.newAccountProbe.Configure(config)
 	a.quotaBootstrap.Start()
 	a.jobs.Configure(config)
@@ -330,6 +340,7 @@ func (a *App) quiesceRetiredInstance() {
 		a.agentIdentity.Shutdown()
 		a.agentIdentity.Clear()
 		a.concurrency.Shutdown()
+		a.riskControl.Shutdown()
 		a.providerRuntime.Shutdown()
 		a.creditUsage.Close()
 		a.usage.Close()
@@ -362,6 +373,7 @@ func (a *App) Registration() Registration {
 			Version:          PluginVersion,
 			Author:           "cpa-account-config-manager contributors",
 			GitHubRepository: PluginRepository,
+			Logo:             pluginLogoDataURI,
 			ConfigFields: []cpaapi.ConfigField{
 				{Name: "workers", Type: cpaapi.ConfigFieldTypeInteger, Description: "Optional maximum concurrent account mutations (default 6, range 1-16)."},
 				{Name: "data_dir", Type: cpaapi.ConfigFieldTypeString, Description: "Optional writable directory for sanitized job, policy, usage, inspection, update, and operation-journal state."},
@@ -369,13 +381,20 @@ func (a *App) Registration() Registration {
 			},
 		},
 		Capabilities: RegistrationCapabilities{
-			ManagementAPI: true, UsagePlugin: true, RequestInterceptor: true, RequestLifecyclePlugin: requestLifecycle,
+			ManagementAPI: true, UsagePlugin: true, Scheduler: hostSchema >= cpaapi.SchemaVersion, RequestInterceptor: true, RequestLifecyclePlugin: requestLifecycle,
 			AuthProvider: true, ModelProvider: true, Executor: true,
 			ExecutorModelScope:    "oauth",
 			ExecutorInputFormats:  []string{"codex"},
 			ExecutorOutputFormats: []string{"codex"},
 		},
 	}
+}
+
+func (a *App) HandleSchedulerPick(request cpaapi.SchedulerPickRequest) cpaapi.SchedulerPickResponse {
+	if a == nil || a.concurrency == nil || a.runtimeSuperseded() {
+		return cpaapi.SchedulerPickResponse{}
+	}
+	return a.concurrency.PickAuth(request)
 }
 
 func (a *App) HandleRequestBefore(request cpaapi.RequestInterceptRequest) cpaapi.RequestInterceptResponse {
@@ -545,6 +564,10 @@ func (a *App) ManagementRegistration() cpaapi.ManagementRegistrationResponse {
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/experiments", Description: "Read removable experimental feature settings."},
 			{Method: http.MethodPut, Path: managementRoutePrefix + "/experiments", Description: "Persist removable experimental feature settings."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/experiments/agent-identity/session-login", Description: "Convert one explicitly submitted ChatGPT Session JSON into a pending Agent Identity login credential."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/risk-control", Description: "Read the redacted plugin-native risk-control configuration, status, and events."},
+			{Method: http.MethodPut, Path: managementRoutePrefix + "/risk-control", Description: "Validate and persist plugin-native risk-control settings."},
+			{Method: http.MethodDelete, Path: managementRoutePrefix + "/risk-control/events", Description: "Clear the redacted risk-control event history."},
+			{Method: http.MethodDelete, Path: managementRoutePrefix + "/risk-control/hashes", Description: "Clear remembered risk-control input hashes."},
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/operations", Description: "List the persistent sanitized account-manager operation journal."},
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/operations/export", Description: "Export the sanitized operation journal as JSON, CSV, or JSON Lines."},
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/operations/settings", Description: "Read operation-journal retention settings."},
@@ -736,6 +759,14 @@ func (a *App) HandleManagement(ctx context.Context, req cpaapi.ManagementRequest
 		return a.handlePutExperimentalSettings(req)
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/experiments/agent-identity/session-login":
 		return a.handleAgentIdentitySessionLogin(ctx, req)
+	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/risk-control":
+		return jsonResponse(http.StatusOK, a.riskControl.Snapshot())
+	case method == http.MethodPut && path == "/v0/management"+managementRoutePrefix+"/risk-control":
+		return a.handleRiskControlUpdate(req)
+	case method == http.MethodDelete && path == "/v0/management"+managementRoutePrefix+"/risk-control/events":
+		return a.handleRiskControlClear(false)
+	case method == http.MethodDelete && path == "/v0/management"+managementRoutePrefix+"/risk-control/hashes":
+		return a.handleRiskControlClear(true)
 	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/operations":
 		return a.handleListOperations(req)
 	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/operations/export":

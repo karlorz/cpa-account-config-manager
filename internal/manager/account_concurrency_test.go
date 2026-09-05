@@ -27,38 +27,134 @@ func concurrencyRequest(requestID, authID string) cpaapi.RequestInterceptRequest
 	}
 }
 
-func TestAccountConcurrencyRejectsOnlyTheSaturatedAccount(t *testing.T) {
+func TestAccountConcurrencyWaitsForSaturatedAccountWithout429(t *testing.T) {
 	service := configuredConcurrencyService(t, cpaapi.SchemaVersion)
-	if errSet := service.SetLimit(Account{ID: "index-a", AuthID: "auth-a"}, 1); errSet != nil {
+	service.maxWait = 2 * time.Second
+	now := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	accountA := Account{ID: "index-a", AuthID: "auth-a"}
+	accountB := Account{ID: "index-b", AuthID: "auth-b"}
+	if errSet := service.SetLimit(accountA, 1); errSet != nil {
 		t.Fatalf("SetLimit(auth-a) error = %v", errSet)
 	}
-	if errSet := service.SetLimit(Account{ID: "index-b", AuthID: "auth-b"}, 1); errSet != nil {
+	if errSet := service.SetLimit(accountB, 1); errSet != nil {
 		t.Fatalf("SetLimit(auth-b) error = %v", errSet)
 	}
-
 	if response, changed := service.InterceptRequest(concurrencyRequest("request-a-1", "auth-a")); changed || response.Terminate {
 		t.Fatalf("first auth-a admission = %#v, changed %v", response, changed)
 	}
-	response, changed := service.InterceptRequest(concurrencyRequest("request-a-2", "auth-a"))
-	if !changed || !response.Terminate || response.StatusCode != http.StatusTooManyRequests || response.ResponseHeaders.Get("Retry-After") != "1" {
-		t.Fatalf("second auth-a admission = %#v, changed %v", response, changed)
+
+	type admissionResult struct {
+		response cpaapi.RequestInterceptResponse
+		changed  bool
 	}
-	if !json.Valid(response.ResponseBody) || !strings.Contains(string(response.ResponseBody), "account_concurrency_limit_reached") {
-		t.Fatalf("rejection body = %q", response.ResponseBody)
+	result := make(chan admissionResult, 1)
+	go func() {
+		response, changed := service.InterceptRequest(concurrencyRequest("request-a-2", "auth-a"))
+		result <- admissionResult{response: response, changed: changed}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for service.Summary("auth-a").Waiting != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("waiter was not registered: %#v", service.Summary("auth-a"))
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if response, changed := service.InterceptRequest(concurrencyRequest("request-b-1", "auth-b")); changed || response.Terminate {
 		t.Fatalf("auth-b admission was affected by auth-a = %#v, changed %v", response, changed)
 	}
-	if got := service.Summary("auth-a"); got.Active != 1 || got.Limit != 1 {
-		t.Fatalf("auth-a summary = %#v", got)
+	if got := service.Summary("auth-a"); got.Active != 1 || got.Waiting != 1 || got.Limit != 1 {
+		t.Fatalf("auth-a saturated summary = %#v", got)
 	}
-	if got := service.Summary("auth-b"); got.Active != 1 || got.Limit != 1 {
-		t.Fatalf("auth-b summary = %#v", got)
+
+	// Completion of the in-flight request wakes the queue and admits the waiter.
+	service.Complete(cpaapi.RequestCompletion{RequestID: "request-a-1"})
+	select {
+	case outcome := <-result:
+		if outcome.changed || outcome.response.Terminate {
+			t.Fatalf("waited admission = %#v, changed %v", outcome.response, outcome.changed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("saturated request was not admitted after the active slot was released")
+	}
+	if got := service.Summary("auth-a"); got.Active != 1 || got.Waiting != 0 {
+		t.Fatalf("auth-a admitted summary = %#v", got)
+	}
+	service.Complete(cpaapi.RequestCompletion{RequestID: "request-a-2"})
+	service.Complete(cpaapi.RequestCompletion{RequestID: "request-b-1"})
+}
+
+func TestAccountConcurrencyEnforcesConfiguredRequestWindow(t *testing.T) {
+	service := configuredConcurrencyService(t, cpaapi.SchemaVersion)
+	service.maxWait = 0
+	now := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	activeLimit, requestLimit, windowSeconds := 3, 2, 15
+	account := Account{ID: "index-a", AuthID: "auth-a"}
+	if errSet := service.SetLimits(account, &activeLimit, &requestLimit); errSet != nil {
+		t.Fatalf("SetLimits() error = %v", errSet)
+	}
+	if errSet := service.SetRequestWindowSeconds(account, windowSeconds); errSet != nil {
+		t.Fatalf("SetRequestWindowSeconds() error = %v", errSet)
+	}
+	for _, requestID := range []string{"request-1", "request-2"} {
+		if response, changed := service.InterceptRequest(concurrencyRequest(requestID, "auth-a")); changed || response.Terminate {
+			t.Fatalf("%s rejected: %#v changed=%v", requestID, response, changed)
+		}
+		service.Complete(cpaapi.RequestCompletion{RequestID: requestID})
+	}
+	if got := service.Summary("auth-a"); got.Active != 0 || got.UsedRequests != 2 || got.RequestLimit != 2 || got.RequestWindowSeconds != 15 || got.Limit != 3 || got.Waiting != 0 {
+		t.Fatalf("summary after first window = %#v", got)
+	}
+	response, changed := service.InterceptRequest(concurrencyRequest("request-3", "auth-a"))
+	if !changed || !response.Terminate || response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(response.ResponseBody), "account_concurrency_wait_timeout") {
+		t.Fatalf("request-window saturated request did not fail safely: %#v changed=%v", response, changed)
+	}
+	now = now.Add(16 * time.Second)
+	if response, changed = service.InterceptRequest(concurrencyRequest("request-3", "auth-a")); changed || response.Terminate {
+		t.Fatalf("request after configured window expiry rejected: %#v", response)
+	}
+	if got := service.Summary("auth-a"); got.UsedRequests != 1 || got.RequestWindowSeconds != 15 {
+		t.Fatalf("summary after configured window expiry = %#v", got)
+	}
+	service.Complete(cpaapi.RequestCompletion{RequestID: "request-3"})
+}
+
+func TestAccountConcurrencyUpdatingOneSettingPreservesTheOthers(t *testing.T) {
+	service := configuredConcurrencyService(t, cpaapi.SchemaVersion)
+	account := Account{ID: "index-a", AuthID: "auth-a"}
+	activeLimit, requestLimit := 10, 3
+	if errSet := service.SetLimits(account, &activeLimit, &requestLimit); errSet != nil {
+		t.Fatal(errSet)
+	}
+	if errSet := service.SetRequestWindowSeconds(account, 30); errSet != nil {
+		t.Fatal(errSet)
+	}
+	updatedActive := 8
+	if errSet := service.SetLimits(account, &updatedActive, nil); errSet != nil {
+		t.Fatal(errSet)
+	}
+	if got := service.Summary("auth-a"); got.Limit != 8 || got.RequestLimit != 3 || got.RequestWindowSeconds != 30 {
+		t.Fatalf("active update changed request settings: %#v", got)
+	}
+	clearRequestLimit := 0
+	if errSet := service.SetLimits(account, nil, &clearRequestLimit); errSet != nil {
+		t.Fatal(errSet)
+	}
+	if got := service.Summary("auth-a"); got.Limit != 8 || got.RequestLimit != 0 || got.RequestWindowSeconds != 30 {
+		t.Fatalf("request-limit clear changed active/window settings: %#v", got)
+	}
+	if errSet := service.SetRequestWindowSeconds(account, 45); errSet != nil {
+		t.Fatal(errSet)
+	}
+	if got := service.Summary("auth-a"); got.Limit != 8 || got.RequestLimit != 0 || got.RequestWindowSeconds != 45 {
+		t.Fatalf("window update changed other settings: %#v", got)
 	}
 }
 
 func TestAccountConcurrencyCompletionIsIdempotentForEveryOutcome(t *testing.T) {
 	service := configuredConcurrencyService(t, cpaapi.SchemaVersion)
+	service.maxWait = 0
 	if errSet := service.SetLimit(Account{ID: "index-a", AuthID: "auth-a"}, 1); errSet != nil {
 		t.Fatalf("SetLimit() error = %v", errSet)
 	}
@@ -142,6 +238,7 @@ func TestAccountConcurrencyTracksUnlimitedAccounts(t *testing.T) {
 
 func TestAccountConcurrencyDynamicLimitAndClear(t *testing.T) {
 	service := configuredConcurrencyService(t, cpaapi.SchemaVersion)
+	service.maxWait = 0
 	account := Account{ID: "index-a", AuthID: "auth-a"}
 	if errSet := service.SetLimit(account, 2); errSet != nil {
 		t.Fatalf("SetLimit(2) error = %v", errSet)
@@ -384,5 +481,142 @@ func TestAccountConcurrencyConfigureClearsLeasesAcrossRuntimeChange(t *testing.T
 	}
 	if _, changed := service.InterceptRequest(concurrencyRequest("request-b", "auth-a")); changed {
 		t.Fatal("stale lease from previous store rejected a request")
+	}
+}
+
+func schedulerCandidates(authIDs ...string) []cpaapi.SchedulerAuthCandidate {
+	candidates := make([]cpaapi.SchedulerAuthCandidate, 0, len(authIDs))
+	for _, authID := range authIDs {
+		candidates = append(candidates, cpaapi.SchedulerAuthCandidate{ID: authID, Provider: "codex"})
+	}
+	return candidates
+}
+
+func configureSchedulerLimit(t *testing.T, service *AccountConcurrencyService, authID string, concurrency, request int) {
+	t.Helper()
+	if errSet := service.SetLimits(Account{ID: authID, AuthID: authID}, &concurrency, &request); errSet != nil {
+		t.Fatalf("SetLimits(%s) error = %v", authID, errSet)
+	}
+}
+
+func TestAccountConcurrencySchedulerMovesPressureToIdleAccount(t *testing.T) {
+	service := configuredConcurrencyService(t, cpaapi.SchemaVersion)
+	configureSchedulerLimit(t, service, "auth-idle", 10, 3)
+	configureSchedulerLimit(t, service, "auth-busy", 10, 3)
+
+	now := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	service.mu.Lock()
+	service.active["auth-busy"] = 1
+	service.waiting["auth-busy"] = 8
+	service.events["auth-busy"] = []time.Time{now.Add(-3 * time.Second), now.Add(-2 * time.Second), now.Add(-time.Second)}
+	service.mu.Unlock()
+
+	response := service.PickAuth(cpaapi.SchedulerPickRequest{Provider: "codex", Candidates: schedulerCandidates("auth-busy", "auth-idle")})
+	if !response.Handled || response.AuthID != "auth-idle" {
+		t.Fatalf("scheduler response = %#v, want idle auth", response)
+	}
+}
+
+func TestAccountConcurrencySchedulerBalancesBurstBeforeAnyAdmission(t *testing.T) {
+	service := configuredConcurrencyService(t, cpaapi.SchemaVersion)
+	configureSchedulerLimit(t, service, "auth-a", 10, 3)
+	configureSchedulerLimit(t, service, "auth-b", 10, 3)
+
+	counts := map[string]int{}
+	for range 10 {
+		response := service.PickAuth(cpaapi.SchedulerPickRequest{Candidates: schedulerCandidates("auth-a", "auth-b")})
+		if !response.Handled || response.AuthID == "" {
+			t.Fatalf("idle burst scheduler response = %#v, want a handled account", response)
+		}
+		counts[response.AuthID]++
+	}
+	if counts["auth-a"] != 5 || counts["auth-b"] != 5 {
+		t.Fatalf("idle burst distribution = %#v, want 5 picks per account", counts)
+	}
+}
+
+func TestAccountConcurrencySchedulerUsesRoundRobinForEqualPressure(t *testing.T) {
+	service := configuredConcurrencyService(t, cpaapi.SchemaVersion)
+	configureSchedulerLimit(t, service, "auth-a", 10, 3)
+	configureSchedulerLimit(t, service, "auth-b", 10, 3)
+	service.mu.Lock()
+	service.active["auth-a"] = 1
+	service.active["auth-b"] = 1
+	service.mu.Unlock()
+
+	first := service.PickAuth(cpaapi.SchedulerPickRequest{Candidates: schedulerCandidates("auth-a", "auth-b")})
+	second := service.PickAuth(cpaapi.SchedulerPickRequest{Candidates: schedulerCandidates("auth-a", "auth-b")})
+	if !first.Handled || !second.Handled || first.AuthID == second.AuthID {
+		t.Fatalf("equal-pressure picks = %#v, %#v; want alternating accounts", first, second)
+	}
+}
+
+func TestAccountConcurrencySchedulerReservationIsConsumedAfterAuth(t *testing.T) {
+	service := configuredConcurrencyService(t, cpaapi.SchemaVersion)
+	configureSchedulerLimit(t, service, "auth-a", 10, 3)
+	configureSchedulerLimit(t, service, "auth-b", 10, 3)
+	if response, changed := service.InterceptRequest(concurrencyRequest("busy", "auth-b")); changed || response.Terminate {
+		t.Fatalf("busy admission terminated: %#v", response)
+	}
+
+	response := service.PickAuth(cpaapi.SchedulerPickRequest{Candidates: schedulerCandidates("auth-a", "auth-b")})
+	if !response.Handled || response.AuthID != "auth-a" {
+		t.Fatalf("scheduler response = %#v, want auth-a", response)
+	}
+	if got := len(service.reservations["auth-a"]); got != 1 {
+		t.Fatalf("reservation count before after-auth = %d, want 1", got)
+	}
+	if admission, changed := service.InterceptRequest(concurrencyRequest("selected", "auth-a")); changed || admission.Terminate {
+		t.Fatalf("selected admission = %#v, changed %v", admission, changed)
+	}
+	if got := len(service.reservations["auth-a"]); got != 0 {
+		t.Fatalf("reservation count after after-auth = %d, want 0", got)
+	}
+}
+
+func TestAccountConcurrencySchedulerFallsBackForUnmanagedOrSingleCandidate(t *testing.T) {
+	service := configuredConcurrencyService(t, cpaapi.SchemaVersion)
+	configureSchedulerLimit(t, service, "auth-managed", 10, 3)
+	service.mu.Lock()
+	service.active["auth-managed"] = 1
+	service.mu.Unlock()
+
+	if response := service.PickAuth(cpaapi.SchedulerPickRequest{Candidates: schedulerCandidates("auth-managed")}); response.Handled {
+		t.Fatalf("single-candidate scheduler response = %#v, want unhandled", response)
+	}
+	if response := service.PickAuth(cpaapi.SchedulerPickRequest{Candidates: schedulerCandidates("auth-managed", "auth-unmanaged")}); response.Handled {
+		t.Fatalf("mixed managed scheduler response = %#v, want unhandled", response)
+	}
+}
+
+func TestAccountConcurrencySchedulerReservationExpiryAndReconfigure(t *testing.T) {
+	service := configuredConcurrencyService(t, cpaapi.SchemaVersion)
+	configureSchedulerLimit(t, service, "auth-a", 10, 3)
+	configureSchedulerLimit(t, service, "auth-b", 10, 3)
+	clock := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return clock }
+	service.mu.Lock()
+	service.active["auth-b"] = 1
+	service.mu.Unlock()
+	if response := service.PickAuth(cpaapi.SchedulerPickRequest{Candidates: schedulerCandidates("auth-a", "auth-b")}); !response.Handled {
+		t.Fatalf("scheduler did not create reservation: %#v", response)
+	}
+	clock = clock.Add(accountConcurrencySchedulerReserveTTL + time.Second)
+	service.mu.Lock()
+	service.pruneSchedulerReservationsLocked(clock)
+	if len(service.reservations) != 0 {
+		t.Fatalf("expired reservations = %#v", service.reservations)
+	}
+	service.mu.Unlock()
+
+	if response := service.PickAuth(cpaapi.SchedulerPickRequest{Candidates: schedulerCandidates("auth-a", "auth-b")}); !response.Handled {
+		t.Fatalf("scheduler did not create second reservation: %#v", response)
+	}
+	service.Configure(Config{DataDir: service.store}, cpaapi.SchemaVersion)
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if len(service.reservations) != 0 {
+		t.Fatalf("reservations survived reconfigure: %#v", service.reservations)
 	}
 }

@@ -12,6 +12,7 @@ const globalPolicy = {
     disabled: null,
     priority: null,
     concurrency_limit: null,
+    concurrency_15s_limit: null,
     quota_policy: null,
     note: null,
     prefix: null,
@@ -83,6 +84,86 @@ describe("AutomationPolicySettings", () => {
     await waitFor(() => expect(within(scannedMetric).getByText("99")).toBeInTheDocument());
     expect(within(scannedMetric).queryByText("1")).not.toBeInTheDocument();
   });
+
+  it("keeps global configuration and automation defaults in separate, labeled sections", async () => {
+    vi.spyOn(api, "getDefaultPolicy").mockResolvedValue(snapshot);
+
+    render(<AutomationPolicySettings refreshRevision={0} forceLoading={false} onAPIError={vi.fn()} onNotice={vi.fn()} onForcePreview={vi.fn()} />);
+
+    expect(await screen.findByRole("region", { name: "全局配置覆盖" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "全局配置覆盖" })).toHaveTextContent("账号基础配置");
+    expect(screen.getByRole("region", { name: "全局配置覆盖" })).toHaveTextContent("路由与传输");
+    expect(screen.getByRole("region", { name: "全局配置覆盖" })).toHaveTextContent("额度限制");
+    expect(screen.getByRole("region", { name: "全局配置覆盖" })).toHaveTextContent("请求与模型策略");
+    expect(screen.getByRole("region", { name: "全局配置覆盖" })).toHaveTextContent("Codex 身份兼容");
+    expect(screen.getByRole("region", { name: "全局配置覆盖" })).not.toHaveTextContent("代理 URL");
+    expect(screen.getByRole("region", { name: "全局配置覆盖" })).not.toHaveTextContent("手动代理地址");
+    expect(screen.getByRole("region", { name: "自动策略默认设置" })).toHaveTextContent("自动化运行");
+    expect(screen.getByRole("button", { name: "保存全局配置" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存默认策略" })).toBeInTheDocument();
+  });
+
+  it("saves active concurrency, request-window limit, and request-window seconds in global, default, and conditional policies", async () => {
+    const user = userEvent.setup();
+    const saveGlobal = vi.spyOn(api, "saveGlobalPolicy").mockImplementation(async (policy) => ({ ...globalPolicy, policy }));
+    const saveDefault = vi.spyOn(api, "saveDefaultPolicy").mockImplementation(async (policy) => ({ ...snapshot, policy }));
+    vi.spyOn(api, "getDefaultPolicy").mockResolvedValue(snapshot);
+
+    render(<AutomationPolicySettings refreshRevision={0} forceLoading={false} onAPIError={vi.fn()} onNotice={vi.fn()} onForcePreview={vi.fn()} />);
+
+    const globalRegion = await screen.findByRole("region", { name: "全局配置覆盖" });
+    await user.click(within(globalRegion).getByRole("checkbox", { name: "请求窗口限制" }));
+    await user.clear(within(globalRegion).getByRole("spinbutton", { name: "请求窗口限制" }));
+    await user.type(within(globalRegion).getByRole("spinbutton", { name: "请求窗口限制" }), "3");
+    await user.click(within(globalRegion).getByRole("checkbox", { name: "同时在途并发限制" }));
+    await user.clear(within(globalRegion).getByRole("spinbutton", { name: "同时在途并发限制" }));
+    await user.type(within(globalRegion).getByRole("spinbutton", { name: "同时在途并发限制" }), "10");
+    await user.click(within(globalRegion).getByRole("checkbox", { name: "请求窗口秒数" }));
+    await user.clear(within(globalRegion).getByRole("spinbutton", { name: "请求窗口秒数" }));
+    await user.type(within(globalRegion).getByRole("spinbutton", { name: "请求窗口秒数" }), "15");
+    await user.click(within(globalRegion).getByRole("button", { name: "保存全局配置" }));
+    await waitFor(() => expect(saveGlobal).toHaveBeenCalledTimes(1));
+    expect(saveGlobal.mock.calls[0][0]).toMatchObject({ concurrency_15s_limit: 3, concurrency_limit: 10, concurrency_window_seconds: 15 });
+
+    const defaults = screen.getByRole("region", { name: "自动策略默认设置" });
+    await user.click(within(defaults).getByRole("checkbox", { name: "请求窗口限制" }));
+    await user.clear(within(defaults).getByRole("spinbutton", { name: "请求窗口限制" }));
+    await user.type(within(defaults).getByRole("spinbutton", { name: "请求窗口限制" }), "4");
+    await user.click(within(defaults).getByRole("checkbox", { name: "同时在途并发限制" }));
+    await user.clear(within(defaults).getByRole("spinbutton", { name: "同时在途并发限制" }));
+    await user.type(within(defaults).getByRole("spinbutton", { name: "同时在途并发限制" }), "12");
+    await user.click(within(defaults).getByRole("checkbox", { name: "请求窗口秒数" }));
+    await user.clear(within(defaults).getByRole("spinbutton", { name: "请求窗口秒数" }));
+    await user.type(within(defaults).getByRole("spinbutton", { name: "请求窗口秒数" }), "15");
+
+    const panel = screen.getByRole("tabpanel", { name: "自动策略" });
+    await user.click(within(panel).getByRole("button", { name: "添加策略" }));
+    const rule = within(panel).getByRole("article");
+    await user.click(within(rule).getByRole("checkbox", { name: "请求窗口限制" }));
+    await user.click(within(rule).getByRole("checkbox", { name: "同时在途并发限制" }));
+    await user.click(within(rule).getByRole("checkbox", { name: "请求窗口秒数" }));
+    const requestLimitInput = within(rule).getByText("请求窗口限制").closest(".conditional-action")?.querySelector<HTMLInputElement>('input[type="number"]');
+    const activeLimitInput = within(rule).getByText("同时在途并发限制").closest(".conditional-action")?.querySelector<HTMLInputElement>('input[type="number"]');
+    const windowSecondsInput = within(rule).getByText("请求窗口秒数").closest(".conditional-action")?.querySelector<HTMLInputElement>('input[type="number"]');
+    expect(requestLimitInput).not.toBeNull();
+    expect(activeLimitInput).not.toBeNull();
+    expect(windowSecondsInput).not.toBeNull();
+    await user.clear(requestLimitInput!);
+    await user.type(requestLimitInput!, "2");
+    await user.clear(activeLimitInput!);
+    await user.type(activeLimitInput!, "8");
+    await user.clear(windowSecondsInput!);
+    await user.type(windowSecondsInput!, "15");
+
+    await user.click(within(panel).getByRole("button", { name: "保存策略" }));
+    await waitFor(() => expect(saveDefault).toHaveBeenCalledTimes(1));
+    expect(saveDefault.mock.calls[0][0]).toMatchObject({
+      concurrency_15s_limit: 4,
+      concurrency_limit: 12,
+      concurrency_window_seconds: 15,
+      conditional_rules: [{ actions: { concurrency_15s_limit: 2, concurrency_limit: 8, concurrency_window_seconds: 15 } }],
+    });
+  }, 15_000);
 
   it("builds multiple prioritized policies with nested conditions and model routing", async () => {
     const user = userEvent.setup();
@@ -196,6 +277,23 @@ describe("AutomationPolicySettings", () => {
       ai_provider_proxy_profile_id: "proxy-provider",
       conditional_rules: [{ actions: { proxy_profile_id: "proxy-provider", ai_provider_proxy_profile_id: "proxy-account" } }],
     });
+  });
+
+  it("explains when conditional proxy actions cannot be enabled without a profile", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, "getDefaultPolicy").mockResolvedValue(snapshot);
+
+    render(<AutomationPolicySettings refreshRevision={0} forceLoading={false} onAPIError={vi.fn()} onNotice={vi.fn()} onForcePreview={vi.fn()} />);
+    await screen.findByRole("checkbox", { name: "启用新账号模型探测" });
+    const panel = screen.getByRole("tabpanel", { name: "自动策略" });
+    await user.click(within(panel).getByRole("button", { name: "添加策略" }));
+    const rule = within(panel).getByRole("article");
+    const accountProxy = within(rule).getByRole("checkbox", { name: "账号代理档案" });
+    const providerProxy = within(rule).getByRole("checkbox", { name: "AI 供应商代理档案" });
+
+    expect(accountProxy).toBeDisabled();
+    expect(providerProxy).toBeDisabled();
+    expect(within(rule).getAllByText("请先创建并启用代理档案")).toHaveLength(2);
   });
 
   it("saves without running until the user explicitly starts the asynchronous scan", async () => {

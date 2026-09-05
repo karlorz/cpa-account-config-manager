@@ -1172,6 +1172,45 @@ describe("primary account batch flow", () => {
 		expect(JSON.parse(String(requests.find(({ url }) => url.includes("/quota-metadata/refresh"))?.init.body))).toEqual({ account_id: "kimi-1" });
 	});
 
+	it("renders supported concurrency without unresolved placeholders and hides zero timestamps", async () => {
+		const user = userEvent.setup();
+		vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+			const url = String(input);
+			if (url.includes("/batch/status")) {
+				return jsonResponse({ state: "idle", running: false, total: 0, eligible: 0, done: 0, succeeded: 0, failed: 0, conflicts: 0, skipped: 0, workers: 0, patch: { fields: [], proxy_mutation: false }, retry_available: false, persisted: false });
+			}
+			return jsonResponse({
+				accounts: [{
+					...account,
+					created_at: "0001-01-01T00:00:00Z",
+					concurrency: { supported: true, active: 0, request_limit: 3, request_window_seconds: 15, used_requests: 0, waiting: 0, limit: 10 },
+					usage: { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, cached_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_tokens: 0, codex: { active_reset_count: 0, metadata_observed_at: "0001-01-01T00:00:00Z" } },
+				}],
+				total: 1, page: 1, page_size: 50, pages: 1,
+			});
+		}));
+
+		render(<App />);
+		await user.type(await screen.findByLabelText("Management Key"), "management-secret");
+		await user.click(screen.getByRole("button", { name: "验证并进入" }));
+		const row = (await screen.findByText("operator@example.com")).closest("tr") as HTMLTableRowElement;
+		const concurrency = row.querySelector(".concurrency-cell") as HTMLElement;
+		const metrics = concurrency.querySelectorAll(".concurrency-metric");
+		expect(metrics).toHaveLength(3);
+		expect(metrics[0]).toHaveTextContent("并发");
+		expect(metrics[0].querySelector("strong")).toHaveTextContent("0 / 10");
+		expect(metrics[1]).toHaveTextContent("15s 请求");
+		expect(metrics[1].querySelector("strong")).toHaveTextContent("0 / 3");
+		expect(metrics[2]).toHaveTextContent("队列");
+		expect(metrics[2].querySelector("strong")).toHaveTextContent("0");
+		expect(Array.from(metrics).every((metric) => metric.querySelectorAll(":scope > span, :scope > strong").length === 2)).toBe(true);
+		expect(concurrency).not.toHaveTextContent(/\{(?:active|value|shortWindow|minuteWindow)\}/);
+		expect(concurrency).toHaveAttribute("title", "并发: 0/10 · 15s 请求: 0/3 · 队列: 0");
+		expect(within(row).getByText("尚未采集")).toBeInTheDocument();
+		expect(row.querySelector(".account-time-empty")).toHaveTextContent("-");
+		expect(row).not.toHaveTextContent("1/01/01");
+	});
+
   it("keeps the newest account result when an older filter request finishes later", async () => {
     const user = userEvent.setup();
     let resolveCodex: ((response: Response) => void) | undefined;
