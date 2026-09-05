@@ -1881,10 +1881,23 @@ describe("primary navigation order", () => {
 
     const nav = await screen.findByRole("navigation", { name: "账号管理视图" });
     const tabs = within(nav).getAllByRole("button").map((button) => button.textContent);
-    expect(tabs).toEqual(["概览", "账号", "巡检与自动化", "AI 提供商", "操作日志", "其他配置"]);
+    expect(tabs).toEqual(["概览", "账号", "巡检与自动化", "AI 提供商", "操作日志", "风控中心", "自动策略", "代理档案", "外部通知", "其他配置"]);
 
     await user.click(within(nav).getByRole("button", { name: "AI 提供商" }));
     expect(await screen.findByRole("tabpanel", { name: "AI 提供商" })).toBeInTheDocument();
     expect(within(screen.getByRole("tabpanel", { name: "AI 提供商" })).getByText("OpenCode Go")).toBeInTheDocument();
+
+    await user.click(within(nav).getByRole("button", { name: "自动策略" }));
+    expect(await screen.findByRole("tabpanel", { name: "自动策略" })).toBeInTheDocument();
+
+    await user.click(within(nav).getByRole("button", { name: "代理档案" }));
+    expect(await screen.findByRole("region", { name: "代理档案" })).toBeInTheDocument();
+
+    await user.click(within(nav).getByRole("button", { name: "外部通知" }));
+    expect(await screen.findByRole("tabpanel", { name: "外部通知" })).toBeInTheDocument();
+
+    await user.click(within(nav).getByRole("button", { name: "其他配置" }));
+    const otherSettings = await screen.findByRole("region", { name: "其他配置" });
+    expect(within(otherSettings).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["插件配置与版本", "实验性功能"]);
   });
 });
