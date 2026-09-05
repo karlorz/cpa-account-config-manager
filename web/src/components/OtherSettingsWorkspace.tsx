@@ -1,7 +1,6 @@
 import {
   AlertTriangle,
   BellRing,
-  CircleDollarSign,
   ExternalLink,
   FlaskConical,
   KeyRound,
@@ -35,24 +34,29 @@ import { AutomationPolicySettings } from "./AutomationPolicySettings";
 import { announcePluginUpdateStatus, subscribePluginUpdateStatus } from "./PluginUpdateAutomation";
 import { readPluginDensity, readPluginTheme, readPluginThemeEnabled, resetPluginTheme, setPluginDensity, setPluginTheme, setPluginThemeEnabled, type PluginDensity, type PluginThemePreset } from "../store/pluginTheme";
 
+export type OtherSettingsSection = "automation" | "proxy_profiles" | "notifications" | "updates" | "experimental";
+
 interface OtherSettingsWorkspaceProps {
   onAPIError: (error: unknown) => void;
   onNotice: (message: string) => void;
   forceLoading?: boolean;
   onForcePreview?: () => void;
   onExperimentalSettingsChange?: (settings: ExperimentalSettings) => void;
-  initialSection?: "automation" | "proxy_profiles" | "notifications" | "updates" | "experimental";
+  initialSection?: OtherSettingsSection;
+  /** Restrict the embedded tabs without changing the legacy default workspace. */
+  visibleSections?: OtherSettingsSection[];
   standalone?: boolean;
 }
 
 const ignoreExperimentalSettingsChange = (_settings: ExperimentalSettings) => undefined;
 
-export function OtherSettingsWorkspace({ onAPIError, onNotice, forceLoading = false, onForcePreview = () => undefined, onExperimentalSettingsChange = ignoreExperimentalSettingsChange, initialSection = "automation", standalone = false }: OtherSettingsWorkspaceProps) {
+export function OtherSettingsWorkspace({ onAPIError, onNotice, forceLoading = false, onForcePreview = () => undefined, onExperimentalSettingsChange = ignoreExperimentalSettingsChange, initialSection = "automation", visibleSections, standalone = false }: OtherSettingsWorkspaceProps) {
   const { locale, tx, formatDateTime } = useI18n();
   const [updates, setUpdates] = useState<UpdateSnapshot | null>(null);
   const [server, setServer] = useState<CPAServerVersionSnapshot | null>(null);
   const [experiments, setExperiments] = useState<ExperimentalSettingsSnapshot | null>(null);
-  const [activeSection, setActiveSection] = useState<"automation" | "proxy_profiles" | "notifications" | "updates" | "experimental">(initialSection);
+  const [activeSection, setActiveSection] = useState<OtherSettingsSection>(initialSection);
+  const sections = visibleSections ?? ["automation", "proxy_profiles", "notifications", "updates", "experimental"];
   const [fontSize, setFontSize] = useState<FontSizePreset>(readFontSize);
   const [typographyDistinction, setTypographyDistinction] = useState(readTypographyDistinction);
   const [pluginTheme, setPluginThemeState] = useState<PluginThemePreset>(readPluginTheme);
@@ -73,7 +77,6 @@ export function OtherSettingsWorkspace({ onAPIError, onNotice, forceLoading = fa
   const [confirmAutoUpdate, setConfirmAutoUpdate] = useState(false);
   const [weeklyOverdraftEnabled, setWeeklyOverdraftEnabled] = useState(false);
   const [agentIdentityEnabled, setAgentIdentityEnabled] = useState(false);
-  const [sub2APICreditUsageEnabled, setSub2APICreditUsageEnabled] = useState(false);
   const [error, setError] = useState("");
   const refreshSequence = useRef(0);
   const handleError = useCallback((caught: unknown) => {
@@ -142,7 +145,6 @@ export function OtherSettingsWorkspace({ onAPIError, onNotice, forceLoading = fa
     if (!experiments?.settings) return;
     setWeeklyOverdraftEnabled(experiments.settings.weekly_overdraft_enabled === true);
     setAgentIdentityEnabled(experiments.settings.agent_identity_enabled === true);
-    setSub2APICreditUsageEnabled(experiments.settings.sub2api_credit_usage_enabled === true);
   }, [experiments]);
 
   const installUpdate = useCallback(async () => {
@@ -229,7 +231,9 @@ export function OtherSettingsWorkspace({ onAPIError, onNotice, forceLoading = fa
         weekly_overdraft_enabled: weeklyOverdraftEnabled,
         agent_identity_enabled: agentIdentityEnabled,
         auto_model_whitelist_enabled: true,
-        sub2api_credit_usage_enabled: sub2APICreditUsageEnabled,
+        // Kept in the request for older runtimes; credit pricing is now a
+        // permanent built-in behavior and is always normalized to true.
+        sub2api_credit_usage_enabled: true,
         // Keep the legacy field intact for older CPA plugin runtimes. The
         // editable source of truth now lives in the permanent global policy.
         codex_identity: experiments?.settings.codex_identity ?? {
@@ -284,22 +288,22 @@ export function OtherSettingsWorkspace({ onAPIError, onNotice, forceLoading = fa
         </button>
       </header>
 
-      {!standalone ? <div className="other-settings-tabs" role="tablist" aria-label={tx("ui.other_settings_sections")}>
-        <button type="button" role="tab" aria-selected={activeSection === "automation"} className={activeSection === "automation" ? "active" : ""} onClick={() => setActiveSection("automation")}>
+      {!standalone ? <div className={`other-settings-tabs other-settings-tabs-${sections.length}`} role="tablist" aria-label={tx("ui.other_settings_sections")}>
+        {sections.includes("automation") ? <button type="button" role="tab" aria-selected={activeSection === "automation"} className={activeSection === "automation" ? "active" : ""} onClick={() => setActiveSection("automation")}>
           <Workflow size={15} />{tx("ui.automation_policy")}
-        </button>
-        <button type="button" role="tab" aria-selected={activeSection === "proxy_profiles"} className={activeSection === "proxy_profiles" ? "active" : ""} onClick={() => setActiveSection("proxy_profiles")}>
+        </button> : null}
+        {sections.includes("proxy_profiles") ? <button type="button" role="tab" aria-selected={activeSection === "proxy_profiles"} className={activeSection === "proxy_profiles" ? "active" : ""} onClick={() => setActiveSection("proxy_profiles")}>
           <Network size={15} />{tx("ui.proxy_profiles")}
-        </button>
-        <button type="button" role="tab" aria-selected={activeSection === "notifications"} className={activeSection === "notifications" ? "active" : ""} onClick={() => setActiveSection("notifications")}>
+        </button> : null}
+        {sections.includes("notifications") ? <button type="button" role="tab" aria-selected={activeSection === "notifications"} className={activeSection === "notifications" ? "active" : ""} onClick={() => setActiveSection("notifications")}>
           <BellRing size={15} />{tx("ui.external_notifications")}
-        </button>
-        <button type="button" role="tab" aria-selected={activeSection === "updates"} className={activeSection === "updates" ? "active" : ""} onClick={() => setActiveSection("updates")}>
+        </button> : null}
+        {sections.includes("updates") ? <button type="button" role="tab" aria-selected={activeSection === "updates"} className={activeSection === "updates" ? "active" : ""} onClick={() => setActiveSection("updates")}>
           <Server size={15} />{tx("ui.plugin_configuration_and_version")}
-        </button>
-        <button type="button" role="tab" aria-selected={activeSection === "experimental"} className={activeSection === "experimental" ? "active" : ""} onClick={() => setActiveSection("experimental")}>
+        </button> : null}
+        {sections.includes("experimental") ? <button type="button" role="tab" aria-selected={activeSection === "experimental"} className={activeSection === "experimental" ? "active" : ""} onClick={() => setActiveSection("experimental")}>
           <FlaskConical size={15} />{tx("ui.experimental_features")}
-        </button>
+        </button> : null}
       </div> : null}
 
       {error ? <div className="automation-error" role="alert"><AlertTriangle size={16} /><span>{error}</span><button type="button" onClick={() => setError("")}>{tx("ui.close")}</button></div> : null}
@@ -422,32 +426,6 @@ export function OtherSettingsWorkspace({ onAPIError, onNotice, forceLoading = fa
               <div><strong>{tx("ui.request_behavior")}</strong><span>{tx("ui.weekly_overdraft_request_behavior")}</span></div>
               <div><strong>{tx("ui.automation_behavior")}</strong><span>{tx("ui.weekly_overdraft_automation_behavior")}</span></div>
               <div><strong>{tx("ui.availability_notice")}</strong><span>{tx("ui.weekly_overdraft_availability_notice")}</span></div>
-            </div>
-          </div>
-          <div className="experimental-feature-block">
-            <div className="experimental-feature-row">
-              <div className="experimental-feature-copy">
-                <span className="experimental-feature-icon"><CircleDollarSign size={18} /></span>
-                <div>
-                  <strong>{tx("ui.sub2api_credit_usage")}</strong>
-                  <span>{tx("ui.sub2api_credit_usage_description")}</span>
-                </div>
-              </div>
-              <label className="switch-control experimental-feature-switch">
-                <input
-                  type="checkbox"
-                  checked={sub2APICreditUsageEnabled}
-                  disabled={loading || savingExperiment || !experiments}
-                  onChange={(event) => setSub2APICreditUsageEnabled(event.target.checked)}
-                  aria-label={tx("ui.sub2api_credit_usage")}
-                />
-                <b>{tx(sub2APICreditUsageEnabled ? "ui.on_2" : "ui.off_2")}</b>
-              </label>
-            </div>
-            <div className="experimental-behavior-list">
-              <div><strong>{tx("ui.credit_pricing_source")}</strong><span>{tx("ui.credit_pricing_source_description")}</span></div>
-              <div><strong>{tx("ui.credit_pricing_sync_behavior")}</strong><span>{tx("ui.credit_pricing_sync_behavior_description")}</span></div>
-              <div><strong>{tx("ui.credit_usage_history_boundary")}</strong><span>{tx("ui.credit_usage_history_boundary_description")}</span></div>
             </div>
           </div>
           <div className="experimental-feature-block">

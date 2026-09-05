@@ -100,7 +100,7 @@ export function AutomationPolicySettings({ refreshRevision, forceLoading, onAPIE
   useEffect(() => {
     const controller = new AbortController();
     void api.listProxyProfiles(controller.signal).then((response) => {
-      if (!controller.signal.aborted) setProxyProfiles(response.profiles.filter((profile) => profile.enabled));
+      if (!controller.signal.aborted) setProxyProfiles(response.profiles.filter((profile) => profile.enabled !== false));
     }).catch(() => undefined);
     return () => controller.abort();
   }, [refreshRevision]);
@@ -215,26 +215,35 @@ export function AutomationPolicySettings({ refreshRevision, forceLoading, onAPIE
 
       <GlobalPolicyEditor policy={globalDraft} profiles={proxyProfiles} disabled={controlsLocked} storageError={globalSnapshot?.storage_error} onChange={updateGlobalDraft} onSave={() => void saveGlobal()} />
 
-      <section className="automation-policy-section" aria-label={tx("ui.default_policy")}>
-        <header><div><strong>{tx("ui.default_policy")}</strong><span>{tx("ui.global_default_policy_description")}</span></div><button className="button button-primary" type="button" disabled={controlsLocked || !dirty} onClick={() => void save()}><Save size={15} />{tx("ui.save_default_policy")}</button></header>
-        <p className="policy-section-help">{tx("ui.global_default_policy_help")}</p>
-        <div className="policy-form automation-global-form">
-          <label className={`policy-row policy-master ${draft.enabled ? "is-enabled" : ""}`}>
-            <span><strong>{tx("ui.auto_apply")}</strong><small>{tx("ui.auth_files")}</small></span>
-            <span className="switch-control"><input type="checkbox" checked={draft.enabled} disabled={controlsLocked} onChange={(event) => updateDraft({ enabled: event.target.checked })} aria-label={tx("ui.enable_default_policy")} /><b>{tx(draft.enabled ? "ui.on_2" : "ui.off_2")}</b></span>
-          </label>
-          <label className={`policy-row ${draft.new_account_model_probe_enabled ? "is-enabled" : ""}`}>
-            <span><strong>{tx("ui.new_account_model_probe")}</strong><small>{tx("ui.new_account_model_probe_description")}</small></span>
-            <span className="switch-control"><input type="checkbox" checked={draft.new_account_model_probe_enabled} disabled={controlsLocked} onChange={(event) => updateDraft({ new_account_model_probe_enabled: event.target.checked })} aria-label={tx("ui.enable_new_account_model_probe")} /><b>{tx(draft.new_account_model_probe_enabled ? "ui.on_2" : "ui.off_2")}</b></span>
-          </label>
-          <OptionalNumberRow label="Priority" ariaLabel={tx("ui.default_priority")} value={draft.priority} disabled={controlsLocked} onChange={(priority) => updateDraft({ priority })} />
-          <OptionalBooleanRow label="WebSockets" ariaLabel={tx("ui.default_websockets")} value={draft.websockets} disabled={controlsLocked} onChange={(websockets) => updateDraft({ websockets })} />
-          <div className="policy-proxy-group">
-            <div className="policy-subsection-heading"><strong>{tx("ui.proxy_profiles")}</strong><span>{tx("ui.global_proxy_profile_help")}</span></div>
-            <ProxyProfileRow label={tx("ui.default_account_proxy")} value={draft.proxy_profile_id ?? null} profiles={proxyProfiles} disabled={controlsLocked} onChange={(proxy_profile_id) => updateDraft({ proxy_profile_id })} />
-            <ProxyProfileRow label={tx("ui.default_ai_provider_proxy")} value={draft.ai_provider_proxy_profile_id ?? null} profiles={proxyProfiles} disabled={controlsLocked} onChange={(ai_provider_proxy_profile_id) => updateDraft({ ai_provider_proxy_profile_id })} />
+      <section className="automation-policy-section default-automation-policy-section" aria-label={tx("ui.default_policy_heading")}>
+        <header><div><strong>{tx("ui.default_policy_heading")}</strong><span>{tx("ui.default_policy_description")}</span></div><button className="button button-primary" type="button" disabled={controlsLocked || !dirty} onClick={() => void save()}><Save size={15} />{tx("ui.save_default_policy")}</button></header>
+        <p className="policy-section-help">{tx("ui.default_policy_help")}</p>
+        <div className="policy-form global-policy-form">
+          <div className="global-policy-group global-policy-group-primary">
+            <div className="global-policy-group-heading"><strong>{tx("ui.automation_runtime_group")}</strong><span>{tx("ui.automation_runtime_group_help")}</span></div>
+            <div className="global-policy-fields">
+              <label className={`policy-row policy-master ${draft.enabled ? "is-enabled" : ""}`}>
+                <span><strong>{tx("ui.auto_apply")}</strong><small>{tx("ui.auth_files")}</small></span>
+                <span className="switch-control"><input type="checkbox" checked={draft.enabled} disabled={controlsLocked} onChange={(event) => updateDraft({ enabled: event.target.checked })} aria-label={tx("ui.enable_default_policy")} /><b>{tx(draft.enabled ? "ui.on_2" : "ui.off_2")}</b></span>
+              </label>
+              <label className={`policy-row ${draft.new_account_model_probe_enabled ? "is-enabled" : ""}`}>
+                <span><strong>{tx("ui.new_account_model_probe")}</strong><small>{tx("ui.new_account_model_probe_description")}</small></span>
+                <span className="switch-control"><input type="checkbox" checked={draft.new_account_model_probe_enabled} disabled={controlsLocked} onChange={(event) => updateDraft({ new_account_model_probe_enabled: event.target.checked })} aria-label={tx("ui.enable_new_account_model_probe")} /><b>{tx(draft.new_account_model_probe_enabled ? "ui.on_2" : "ui.off_2")}</b></span>
+              </label>
+              <OptionalNumberRow label="Priority" ariaLabel={tx("ui.default_priority")} value={draft.priority} disabled={controlsLocked} onChange={(priority) => updateDraft({ priority })} />
+              <OptionalNumberRow label={tx("ui.account_concurrency_active_limit_setting")} ariaLabel={tx("ui.account_concurrency_active_limit_setting")} value={draft.concurrency_limit ?? null} disabled={controlsLocked} onChange={(concurrency_limit) => updateDraft({ concurrency_limit })} />
+              <OptionalNumberRow label={tx("ui.account_concurrency_request_limit")} ariaLabel={tx("ui.account_concurrency_request_limit")} value={draft.concurrency_15s_limit ?? null} disabled={controlsLocked} onChange={(concurrency_15s_limit) => updateDraft({ concurrency_15s_limit })} />
+              <OptionalNumberRow label={tx("ui.account_concurrency_window_seconds")} ariaLabel={tx("ui.account_concurrency_window_seconds")} value={draft.concurrency_window_seconds ?? null} disabled={controlsLocked} onChange={(concurrency_window_seconds) => updateDraft({ concurrency_window_seconds })} />
+              <label className="policy-row policy-interval"><span className="edit-optin">{tx("ui.scan_interval")}</span><span className="number-suffix"><input type="number" min="5" max="300" value={draft.scan_interval_seconds} disabled={controlsLocked} onChange={(event) => updateDraft({ scan_interval_seconds: Number(event.target.value) })} aria-label={tx("ui.scan_interval")} /><b>{tx("ui.seconds")}</b></span></label>
+            </div>
           </div>
-          <label className="policy-row policy-interval"><span className="edit-optin">{tx("ui.scan_interval")}</span><span className="number-suffix"><input type="number" min="5" max="300" value={draft.scan_interval_seconds} disabled={controlsLocked} onChange={(event) => updateDraft({ scan_interval_seconds: Number(event.target.value) })} aria-label={tx("ui.scan_interval")} /><b>{tx("ui.seconds")}</b></span></label>
+          <div className="global-policy-group">
+            <div className="global-policy-group-heading"><strong>{tx("ui.routing_group")}</strong><span>{tx("ui.routing_group_help")}</span></div>
+            <div className="global-policy-fields">
+              <OptionalBooleanRow label="WebSockets" ariaLabel={tx("ui.default_websockets")} value={draft.websockets} disabled={controlsLocked} onChange={(websockets) => updateDraft({ websockets })} />
+              <div className="policy-proxy-group"><div className="policy-subsection-heading"><strong>{tx("ui.proxy_profiles")}</strong><span>{tx("ui.global_proxy_profile_help")}</span></div><ProxyProfileRow label={tx("ui.default_account_proxy")} value={draft.proxy_profile_id ?? null} profiles={proxyProfiles} disabled={controlsLocked} onChange={(proxy_profile_id) => updateDraft({ proxy_profile_id })} /><ProxyProfileRow label={tx("ui.default_ai_provider_proxy")} value={draft.ai_provider_proxy_profile_id ?? null} profiles={proxyProfiles} disabled={controlsLocked} onChange={(ai_provider_proxy_profile_id) => updateDraft({ ai_provider_proxy_profile_id })} /></div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -302,24 +311,44 @@ function GlobalPolicyEditor({ policy, profiles, disabled, storageError, onChange
     const empty = !next.five_hour.total_tokens && next.five_hour.limit_percent === undefined && !next.seven_day.total_tokens && next.seven_day.limit_percent === undefined;
     onChange({ quota_policy: empty ? null : next });
   };
-  return <section className="automation-policy-section global-policy-section" aria-label={tx("ui.global_default_policy")}>
-    <header><div><strong>{tx("ui.global_default_policy")}</strong><span>{tx("ui.global_default_policy_description")}</span></div><button className="button button-primary" type="button" disabled={disabled} onClick={onSave}><Save size={15} />{tx("ui.save_default_policy")}</button></header>
-    <p className="policy-section-help">{tx("ui.global_default_policy_help")}</p>
+  return <section className="automation-policy-section global-policy-section" aria-label={tx("ui.global_policy_heading")}>
+    <header><div><strong>{tx("ui.global_policy_heading")}</strong><span>{tx("ui.global_policy_description")}</span></div><button className="button button-primary" type="button" disabled={disabled} onClick={onSave}><Save size={15} />{tx("ui.save_global_policy")}</button></header>
+    <p className="policy-section-help">{tx("ui.global_policy_help")}</p>
     {storageError ? <div className="automation-error" role="alert"><AlertCircle size={16} /><span>{storageError}</span></div> : null}
-    <div className="policy-form automation-global-form">
-      <label className={`policy-row policy-master ${policy.enabled ? "is-enabled" : ""}`}><span><strong>{tx("ui.enabled")}</strong><small>{tx("ui.global_default_policy")}</small></span><span className="switch-control"><input type="checkbox" checked={policy.enabled} disabled={disabled} onChange={(event) => onChange({ enabled: event.target.checked })} /><b>{tx(policy.enabled ? "ui.on_2" : "ui.off_2")}</b></span></label>
-      <OptionalBooleanRow label={tx("ui.disabled")} ariaLabel={tx("ui.disabled")} value={policy.disabled ?? null} disabled={disabled} onChange={(value) => onChange({ disabled: value })} />
-      <OptionalNumberRow label={tx("ui.policy_priority")} ariaLabel={tx("ui.policy_priority")} value={policy.priority ?? null} disabled={disabled} onChange={(value) => onChange({ priority: value })} />
-      <OptionalNumberRow label={tx("ui.account_concurrency")} ariaLabel={tx("ui.account_concurrency")} value={policy.concurrency_limit ?? null} disabled={disabled} onChange={(value) => onChange({ concurrency_limit: value })} />
-      <label className="policy-row"><span className="edit-optin">{tx("ui.note")}</span><input value={policy.note ?? ""} disabled={disabled} placeholder={tx("ui.not_set")} onChange={(event) => onChange({ note: event.target.value || null })} /></label>
-      <label className="policy-row"><span className="edit-optin">{tx("ui.route_prefix")}</span><input value={policy.prefix ?? ""} disabled={disabled} placeholder={tx("ui.not_set")} onChange={(event) => onChange({ prefix: event.target.value || null })} /></label>
-      <label className="policy-row"><span className="edit-optin">{tx("ui.proxy_url")}</span><input value={policy.proxy_url ?? ""} disabled={disabled} placeholder={tx("ui.manual_proxy_url")} onChange={(event) => onChange({ proxy_url: event.target.value || null })} /></label>
-      <div className="policy-proxy-group"><div className="policy-subsection-heading"><strong>{tx("ui.proxy_profiles")}</strong><span>{tx("ui.global_proxy_profile_help")}</span></div><ProxyProfileRow label={tx("ui.default_account_proxy")} value={policy.proxy_profile_id ?? null} profiles={profiles} disabled={disabled} onChange={(value) => onChange({ proxy_profile_id: value })} /><ProxyProfileRow label={tx("ui.default_ai_provider_proxy")} value={policy.ai_provider_proxy_profile_id ?? null} profiles={profiles} disabled={disabled} onChange={(value) => onChange({ ai_provider_proxy_profile_id: value })} /></div>
-      <OptionalBooleanRow label="WebSockets" ariaLabel="WebSockets" value={policy.websockets ?? null} disabled={disabled} onChange={(value) => onChange({ websockets: value })} />
-      <GlobalQuotaEditor policy={policy.quota_policy ?? null} disabled={disabled} onChange={updateQuota} />
-      <GlobalHeadersEditor value={policy.headers ?? null} disabled={disabled} onChange={(headers) => onChange({ headers })} />
-      <GlobalModelPolicyEditor value={policy.model_policy ?? null} disabled={disabled} onChange={(model_policy) => onChange({ model_policy })} />
-      <GlobalCodexIdentityEditor value={identity} disabled={disabled} onChange={updateIdentity} />
+    <div className="policy-form global-policy-form">
+      <div className="global-policy-group global-policy-group-primary">
+        <div className="global-policy-group-heading"><strong>{tx("ui.global_basics_group")}</strong><span>{tx("ui.global_basics_group_help")}</span></div>
+        <div className="global-policy-fields">
+          <label className={`policy-row policy-master ${policy.enabled ? "is-enabled" : ""}`}><span><strong>{tx("ui.enabled")}</strong><small>{tx("ui.global_policy_override_status")}</small></span><span className="switch-control"><input type="checkbox" checked={policy.enabled} disabled={disabled} onChange={(event) => onChange({ enabled: event.target.checked })} /><b>{tx(policy.enabled ? "ui.on_2" : "ui.off_2")}</b></span></label>
+          <OptionalBooleanRow label={tx("ui.disabled")} ariaLabel={tx("ui.disabled")} value={policy.disabled ?? null} disabled={disabled} onChange={(value) => onChange({ disabled: value })} />
+          <OptionalNumberRow label={tx("ui.policy_priority")} ariaLabel={tx("ui.policy_priority")} value={policy.priority ?? null} disabled={disabled} onChange={(value) => onChange({ priority: value })} />
+          <OptionalNumberRow label={tx("ui.account_concurrency_active_limit_setting")} ariaLabel={tx("ui.account_concurrency_active_limit_setting")} value={policy.concurrency_limit ?? null} disabled={disabled} onChange={(value) => onChange({ concurrency_limit: value })} />
+          <OptionalNumberRow label={tx("ui.account_concurrency_request_limit")} ariaLabel={tx("ui.account_concurrency_request_limit")} value={policy.concurrency_15s_limit ?? null} disabled={disabled} onChange={(value) => onChange({ concurrency_15s_limit: value })} />
+          <OptionalNumberRow label={tx("ui.account_concurrency_window_seconds")} ariaLabel={tx("ui.account_concurrency_window_seconds")} value={policy.concurrency_window_seconds ?? null} disabled={disabled} onChange={(value) => onChange({ concurrency_window_seconds: value })} />
+          <label className="policy-row"><span className="edit-optin">{tx("ui.note")}</span><input value={policy.note ?? ""} disabled={disabled} placeholder={tx("ui.not_set")} onChange={(event) => onChange({ note: event.target.value || null })} /></label>
+          <label className="policy-row"><span className="edit-optin">{tx("ui.route_prefix")}</span><input value={policy.prefix ?? ""} disabled={disabled} placeholder={tx("ui.not_set")} onChange={(event) => onChange({ prefix: event.target.value || null })} /></label>
+        </div>
+      </div>
+      <div className="global-policy-group">
+        <div className="global-policy-group-heading"><strong>{tx("ui.routing_group")}</strong><span>{tx("ui.routing_group_help")}</span></div>
+        <div className="global-policy-fields">
+          <div className="policy-proxy-group"><div className="policy-subsection-heading"><strong>{tx("ui.proxy_profiles")}</strong><span>{tx("ui.global_proxy_profile_help")}</span></div><ProxyProfileRow label={tx("ui.default_account_proxy")} value={policy.proxy_profile_id ?? null} profiles={profiles} disabled={disabled} onChange={(value) => onChange({ proxy_profile_id: value })} /><ProxyProfileRow label={tx("ui.default_ai_provider_proxy")} value={policy.ai_provider_proxy_profile_id ?? null} profiles={profiles} disabled={disabled} onChange={(value) => onChange({ ai_provider_proxy_profile_id: value })} /></div>
+          <OptionalBooleanRow label="WebSockets" ariaLabel="WebSockets" value={policy.websockets ?? null} disabled={disabled} onChange={(value) => onChange({ websockets: value })} />
+        </div>
+      </div>
+      <div className="global-policy-group global-policy-wide">
+        <div className="global-policy-group-heading"><strong>{tx("ui.quota_group")}</strong><span>{tx("ui.quota_group_help")}</span></div>
+        <GlobalQuotaEditor policy={policy.quota_policy ?? null} disabled={disabled} onChange={updateQuota} />
+      </div>
+      <div className="global-policy-group global-policy-wide">
+        <div className="global-policy-group-heading"><strong>{tx("ui.request_policy_group")}</strong><span>{tx("ui.request_policy_group_help")}</span></div>
+        <GlobalHeadersEditor value={policy.headers ?? null} disabled={disabled} onChange={(headers) => onChange({ headers })} />
+        <GlobalModelPolicyEditor value={policy.model_policy ?? null} disabled={disabled} onChange={(model_policy) => onChange({ model_policy })} />
+      </div>
+      <div className="global-policy-group global-policy-wide">
+        <div className="global-policy-group-heading"><strong>{tx("ui.codex_identity_group")}</strong><span>{tx("ui.codex_identity_group_help")}</span></div>
+        <GlobalCodexIdentityEditor value={identity} disabled={disabled} onChange={updateIdentity} />
+      </div>
     </div>
   </section>;
 }
@@ -356,7 +385,24 @@ function GlobalModelPolicyEditor({ value, disabled, onChange }: { value: ModelPo
 
 function GlobalCodexIdentityEditor({ value, disabled, onChange }: { value: ExperimentalCodexIdentitySettings; disabled: boolean; onChange: (patch: Partial<ExperimentalCodexIdentitySettings>) => void }) {
   const { tx } = useI18n();
-  return <div className="policy-subsection codex-identity-global-editor"><div className="policy-subsection-heading"><strong>{tx("ui.codex_identity_target_policy")}</strong><span>{tx("ui.codex_identity_convergence_description")}</span></div><div className="settings-inline-grid codex-policy-grid"><label className="switch-control"><input type="checkbox" checked={value.outbound_convergence_enabled} disabled={disabled} onChange={(event) => onChange({ outbound_convergence_enabled: event.target.checked })} /><b>{tx(value.outbound_convergence_enabled ? "ui.on_2" : "ui.off_2")} · {tx("ui.codex_outbound_convergence")}</b></label><label className="switch-control"><input type="checkbox" checked={value.ingress_gate_enabled} disabled={disabled} onChange={(event) => onChange({ ingress_gate_enabled: event.target.checked })} /><b>{tx(value.ingress_gate_enabled ? "ui.on_2" : "ui.off_2")} · {tx("ui.codex_ingress_gate")}</b></label><label className="switch-control"><input type="checkbox" checked={value.allow_app_server_clients} disabled={disabled} onChange={(event) => onChange({ allow_app_server_clients: event.target.checked })} /><b>{tx(value.allow_app_server_clients ? "ui.on_2" : "ui.off_2")} · {tx("ui.codex_allow_app_server")}</b></label><label className="filter-control"><span>{tx("ui.codex_convergence_mode")}</span><select value={value.convergence_mode ?? ""} disabled={disabled} onChange={(event) => onChange({ convergence_mode: event.target.value })}><option value="">{tx("ui.codex_convergence_legacy_full")}</option><option value="off">{tx("ui.codex_convergence_off")}</option><option value="device">{tx("ui.codex_convergence_device")}</option><option value="session">{tx("ui.codex_convergence_session")}</option><option value="full">{tx("ui.codex_convergence_full")}</option></select></label><label className="filter-control"><span>{tx("ui.codex_min_version")}</span><input value={value.min_version ?? ""} disabled={disabled} onChange={(event) => onChange({ min_version: event.target.value })} /></label><label className="filter-control"><span>{tx("ui.codex_max_version")}</span><input value={value.max_version ?? ""} disabled={disabled} onChange={(event) => onChange({ max_version: event.target.value })} /></label></div><label className="codex-policy-field"><span>{tx("ui.codex_whitelist_json")}</span><textarea rows={2} disabled={disabled} value={value.whitelist ?? ""} onChange={(event) => onChange({ whitelist: event.target.value })} /></label><label className="codex-policy-field"><span>{tx("ui.codex_blacklist_json")}</span><textarea rows={2} disabled={disabled} value={value.blacklist ?? ""} onChange={(event) => onChange({ blacklist: event.target.value })} /></label><label className="codex-policy-field"><span>{tx("ui.codex_fingerprint_json")}</span><textarea rows={2} disabled={disabled} value={value.fingerprint_signals ?? ""} onChange={(event) => onChange({ fingerprint_signals: event.target.value })} /></label></div>;
+  return <div className="policy-subsection codex-identity-global-editor">
+    <div className="policy-subsection-heading"><strong>{tx("ui.codex_identity_target_policy")}</strong><span>{tx("ui.codex_identity_convergence_description")}</span></div>
+    <div className="codex-identity-toggle-grid">
+      <label className="switch-control"><input type="checkbox" checked={value.outbound_convergence_enabled} disabled={disabled} onChange={(event) => onChange({ outbound_convergence_enabled: event.target.checked })} /><span><b>{tx(value.outbound_convergence_enabled ? "ui.on_2" : "ui.off_2")}</b><small>{tx("ui.codex_outbound_convergence")}</small></span></label>
+      <label className="switch-control"><input type="checkbox" checked={value.ingress_gate_enabled} disabled={disabled} onChange={(event) => onChange({ ingress_gate_enabled: event.target.checked })} /><span><b>{tx(value.ingress_gate_enabled ? "ui.on_2" : "ui.off_2")}</b><small>{tx("ui.codex_ingress_gate")}</small></span></label>
+      <label className="switch-control"><input type="checkbox" checked={value.allow_app_server_clients} disabled={disabled} onChange={(event) => onChange({ allow_app_server_clients: event.target.checked })} /><span><b>{tx(value.allow_app_server_clients ? "ui.on_2" : "ui.off_2")}</b><small>{tx("ui.codex_allow_app_server")}</small></span></label>
+    </div>
+    <div className="codex-identity-runtime-grid">
+      <label className="filter-control"><span>{tx("ui.codex_convergence_mode")}</span><select value={value.convergence_mode ?? ""} disabled={disabled} onChange={(event) => onChange({ convergence_mode: event.target.value })}><option value="">{tx("ui.codex_convergence_legacy_full")}</option><option value="off">{tx("ui.codex_convergence_off")}</option><option value="device">{tx("ui.codex_convergence_device")}</option><option value="session">{tx("ui.codex_convergence_session")}</option><option value="full">{tx("ui.codex_convergence_full")}</option></select></label>
+      <label className="filter-control"><span>{tx("ui.codex_min_version")}</span><input value={value.min_version ?? ""} disabled={disabled} onChange={(event) => onChange({ min_version: event.target.value })} /></label>
+      <label className="filter-control"><span>{tx("ui.codex_max_version")}</span><input value={value.max_version ?? ""} disabled={disabled} onChange={(event) => onChange({ max_version: event.target.value })} /></label>
+    </div>
+    <div className="codex-identity-json-grid">
+      <label className="codex-policy-field"><span>{tx("ui.codex_whitelist_json")}</span><textarea rows={2} disabled={disabled} value={value.whitelist ?? ""} onChange={(event) => onChange({ whitelist: event.target.value })} /></label>
+      <label className="codex-policy-field"><span>{tx("ui.codex_blacklist_json")}</span><textarea rows={2} disabled={disabled} value={value.blacklist ?? ""} onChange={(event) => onChange({ blacklist: event.target.value })} /></label>
+      <label className="codex-policy-field"><span>{tx("ui.codex_fingerprint_json")}</span><textarea rows={2} disabled={disabled} value={value.fingerprint_signals ?? ""} onChange={(event) => onChange({ fingerprint_signals: event.target.value })} /></label>
+    </div>
+  </div>;
 }
 
 function headersToRows(value: HeaderPatch | null): Array<{ id: number; action: "set" | "remove"; name: string; value: string }> {
@@ -390,6 +436,9 @@ function ConditionalRuleEditor({ rule, index, total, disabled, profiles, onChang
         <section className="conditional-rule-actions"><h4>{tx("ui.automation_actions")}</h4><p className="policy-action-help">{tx("ui.conditional_proxy_profile_help")}</p>
           <OptionalBooleanAction label={tx("ui.new_account_model_probe")} present={hasOwn(rule.actions, "new_account_model_probe")} value={rule.actions.new_account_model_probe ?? false} disabled={disabled} onChange={(present, value) => updateActions(updateOptionalAction(rule.actions, "new_account_model_probe", present, value))} />
           <OptionalNumberAction label="Priority" present={hasOwn(rule.actions, "priority")} value={rule.actions.priority ?? 0} disabled={disabled} onChange={(present, value) => updateActions(updateOptionalAction(rule.actions, "priority", present, value))} />
+          <OptionalNumberAction label={tx("ui.account_concurrency_active_limit_setting")} present={hasOwn(rule.actions, "concurrency_limit")} value={rule.actions.concurrency_limit ?? 0} disabled={disabled} onChange={(present, value) => updateActions(updateOptionalAction(rule.actions, "concurrency_limit", present, value))} />
+          <OptionalNumberAction label={tx("ui.account_concurrency_request_limit")} present={hasOwn(rule.actions, "concurrency_15s_limit")} value={rule.actions.concurrency_15s_limit ?? 0} disabled={disabled} onChange={(present, value) => updateActions(updateOptionalAction(rule.actions, "concurrency_15s_limit", present, value))} />
+          <OptionalNumberAction label={tx("ui.account_concurrency_window_seconds")} present={hasOwn(rule.actions, "concurrency_window_seconds")} value={rule.actions.concurrency_window_seconds ?? 15} disabled={disabled} onChange={(present, value) => updateActions(updateOptionalAction(rule.actions, "concurrency_window_seconds", present, value))} />
           <OptionalBooleanAction label="WebSockets" present={hasOwn(rule.actions, "websockets")} value={rule.actions.websockets ?? false} disabled={disabled} onChange={(present, value) => updateActions(updateOptionalAction(rule.actions, "websockets", present, value))} />
           <OptionalProxyProfileAction label={tx("ui.account_proxy_profile")} value={rule.actions.proxy_profile_id ?? null} profiles={profiles} disabled={disabled} onChange={(value) => updateActions(updateOptionalAction(rule.actions, "proxy_profile_id", value !== null, value ?? undefined))} />
           <OptionalProxyProfileAction label={tx("ui.ai_provider_proxy_profile")} value={rule.actions.ai_provider_proxy_profile_id ?? null} profiles={profiles} disabled={disabled} onChange={(value) => updateActions(updateOptionalAction(rule.actions, "ai_provider_proxy_profile_id", value !== null, value ?? undefined))} />
@@ -406,8 +455,22 @@ function ProxyProfileRow({ label, value, profiles, disabled, onChange }: { label
 }
 
 function OptionalProxyProfileAction({ label, value, profiles, disabled, onChange }: { label: string; value: string | null; profiles: ProxyProfileView[]; disabled: boolean; onChange: (value: string | null) => void }) {
+  const { tx } = useI18n();
   const present = value !== null;
-  return <div className={`conditional-action ${present ? "is-managed" : ""}`}><label><input type="checkbox" checked={present} disabled={disabled} onChange={(event) => onChange(event.target.checked ? (profiles[0]?.id ?? null) : null)} /><span>{label}</span></label>{present ? <select value={value ?? ""} disabled={disabled} onChange={(event) => onChange(event.target.value || null)}>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.proxy_url_masked}</option>)}</select> : null}</div>;
+  const hasProfiles = profiles.length > 0;
+  return <div className={`conditional-action conditional-proxy-action ${present ? "is-managed" : ""} ${!hasProfiles ? "is-unavailable" : ""}`}>
+    <label title={!hasProfiles ? tx("ui.proxy_profile_create_hint") : undefined}>
+      <input type="checkbox" checked={present} disabled={disabled || (!hasProfiles && !present)} onChange={(event) => {
+        if (!event.target.checked) onChange(null);
+        else if (profiles[0]) onChange(profiles[0].id);
+      }} />
+      <span>{label}</span>
+    </label>
+    {present ? <select value={value ?? ""} disabled={disabled || !hasProfiles} onChange={(event) => onChange(event.target.value || null)}>
+      <option value="">{tx("ui.select_proxy_profile")}</option>
+      {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.proxy_url_masked}</option>)}
+    </select> : <small className="conditional-action-hint">{tx(hasProfiles ? "ui.proxy_profile_select_hint" : "ui.proxy_profile_create_hint")}</small>}
+  </div>;
 }
 
 function ModelPolicyAction({ actions, disabled, onChange }: { actions: ConditionalPolicyActions; disabled: boolean; onChange: (actions: ConditionalPolicyActions) => void }) {
@@ -475,7 +538,7 @@ function clonePolicy(policy: DefaultPolicy): DefaultPolicy {
 }
 
 function emptyGlobalPolicy(): GlobalPolicy {
-  return { enabled: false, disabled: null, priority: null, concurrency_limit: null, quota_policy: null, note: null, prefix: null, proxy_url: null, proxy_profile_id: null, ai_provider_proxy_profile_id: null, websockets: null, headers: null, model_policy: null, codex_identity: emptyGlobalIdentity() };
+  return { enabled: false, disabled: null, priority: null, concurrency_limit: null, concurrency_15s_limit: null, concurrency_window_seconds: null, quota_policy: null, note: null, prefix: null, proxy_url: null, proxy_profile_id: null, ai_provider_proxy_profile_id: null, websockets: null, headers: null, model_policy: null, codex_identity: emptyGlobalIdentity() };
 }
 
 function cloneGlobalPolicy(policy: GlobalPolicy): GlobalPolicy {

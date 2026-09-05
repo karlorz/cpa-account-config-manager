@@ -3,6 +3,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  BellRing,
   Boxes,
   ChevronLeft,
   ChevronRight,
@@ -15,6 +16,7 @@ import {
   CircleHelp,
   LoaderCircle,
   LockKeyhole,
+  Network,
   Power,
   PowerOff,
   Pencil,
@@ -24,15 +26,18 @@ import {
   ScrollText,
   Settings2,
   ShieldCheck,
+  ShieldAlert,
   SlidersHorizontal,
   Trash2,
   UserPlus,
   Wifi,
   WifiOff,
+  Workflow,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api/client";
+import pluginLogo from "./assets/cpama.svg";
 import { AccountDetailsDialog } from "./components/AccountDetailsDialog";
 import { AccountActionsMenu } from "./components/AccountActionsMenu";
 import { AccountDeduplicationDialog } from "./components/AccountDeduplicationDialog";
@@ -46,6 +51,10 @@ import { ImportDialog } from "./components/ImportDialog";
 import { InspectionWorkspace } from "./components/InspectionWorkspace";
 import { AIProvidersSettings } from "./components/AIProvidersSettings";
 import { OperationLogWorkspace } from "./components/OperationLogWorkspace";
+import { AutomationPolicySettings } from "./components/AutomationPolicySettings";
+import { ProxyProfilesSettings } from "./components/ProxyProfilesSettings";
+import { ExternalNotificationSettings } from "./components/ExternalNotificationSettings";
+import { RiskControlWorkspace } from "./components/RiskControlWorkspace";
 import { OtherSettingsWorkspace } from "./components/OtherSettingsWorkspace";
 import { PluginUpdateAutomation } from "./components/PluginUpdateAutomation";
 import { JobPanel, jobStateLabel } from "./components/JobPanel";
@@ -104,7 +113,7 @@ import type {
   ResultExportFormat,
   TargetScope,
 } from "./types";
-import { accountConcurrencyLimitLabel } from "./accountConcurrency";
+import { accountConcurrencyLimitLabel, accountConcurrencyRequestLimitLabel, accountConcurrencySaturated, accountConcurrencyUsedRequests, accountConcurrencyWindowSeconds } from "./accountConcurrency";
 
 const exportFormatLabels: Record<ExportFormat, string> = {
   cpa: "CPA",
@@ -135,7 +144,17 @@ function applyCompletedAccountPatch(current: AccountListResponse, job: JobSnapsh
         ...account,
         ...(patch.disabled !== undefined ? { disabled: patch.disabled } : {}),
         ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
-				...(patch.concurrency_limit !== undefined ? { concurrency: { supported: account.concurrency?.supported ?? current.account_concurrency?.supported ?? false, active: account.concurrency?.active ?? 0, limit: patch.concurrency_limit } } : {}),
+        ...((patch.concurrency_limit !== undefined || patch.concurrency_15s_limit !== undefined || patch.concurrency_window_seconds !== undefined) ? {
+          concurrency: {
+            supported: account.concurrency?.supported ?? current.account_concurrency?.supported ?? false,
+            active: account.concurrency?.active ?? 0,
+            limit: patch.concurrency_limit ?? account.concurrency?.limit ?? 0,
+            request_limit: patch.concurrency_15s_limit ?? account.concurrency?.request_limit ?? account.concurrency?.limit_15s ?? 0,
+            request_window_seconds: patch.concurrency_window_seconds ?? account.concurrency?.request_window_seconds ?? 15,
+            used_requests: account.concurrency?.used_requests ?? account.concurrency?.used_15s ?? account.concurrency?.used_60s ?? 0,
+            waiting: account.concurrency?.waiting ?? 0,
+          },
+        } : {}),
         ...(patch.note !== undefined ? { note: patch.note } : {}),
         ...(patch.prefix !== undefined ? { prefix: patch.prefix } : {}),
         ...(patch.proxy_url !== undefined ? { proxy_configured: patch.proxy_url.trim() !== "" } : {}),
@@ -213,7 +232,7 @@ export default function App() {
 function AccountManagerApp() {
   const { locale, tx, formatDateTime } = useI18n();
   const [authState, setAuthState] = useState<"booting" | "login" | "ready">("booting");
-  const [activeView, setActiveView] = useState<"dashboard" | "accounts" | "inspection" | "providers" | "operations" | "settings">("accounts");
+  const [activeView, setActiveView] = useState<"dashboard" | "accounts" | "inspection" | "providers" | "operations" | "risk" | "automation" | "proxy_profiles" | "notifications" | "settings">("accounts");
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState("");
   const [filters, setFilters] = useState<FilterState>(readAccountFilters);
@@ -236,7 +255,6 @@ function AccountManagerApp() {
   const [modelTestError, setModelTestError] = useState("");
   const [modelTestExperimentalAvailable, setModelTestExperimentalAvailable] = useState(false);
   const [weeklyOverdraftEnabled, setWeeklyOverdraftEnabled] = useState(false);
-  const [sub2APICreditUsageEnabled, setSub2APICreditUsageEnabled] = useState(false);
   const modelTestExperimentRequest = useRef(0);
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
   const [deletePreview, setDeletePreview] = useState<AccountDeletePreview | null>(null);
@@ -358,13 +376,11 @@ function AccountManagerApp() {
 
   const handleExperimentalSettingsChange = useCallback((settings: ExperimentalSettings) => {
     setWeeklyOverdraftEnabled(settings.weekly_overdraft_enabled === true);
-    setSub2APICreditUsageEnabled(settings.sub2api_credit_usage_enabled === true);
   }, []);
 
   useEffect(() => {
     if (authState !== "ready") {
       setWeeklyOverdraftEnabled(false);
-      setSub2APICreditUsageEnabled(false);
     }
   }, [authState]);
 
@@ -1116,7 +1132,7 @@ function AccountManagerApp() {
       {authState === "ready" ? <PluginUpdateAutomation onAPIError={handleAPIError} onNotice={setNotice} /> : null}
       <aside className="app-sidebar">
         <div className="sidebar-brand">
-          <span className="brand-icon"><FileCog size={21} /></span>
+          <span className="brand-icon"><img src={pluginLogo} alt="" aria-hidden="true" /></span>
           <div>
             <strong>CPA</strong>
             <span>Account Config Manager</span>
@@ -1129,6 +1145,10 @@ function AccountManagerApp() {
           <button type="button" className={activeView === "inspection" ? "active" : ""} aria-current={activeView === "inspection" ? "page" : undefined} onClick={() => setActiveView("inspection")}><Activity size={16} /><span>{tx("ui.inspection_and_automation")}</span></button>
           <button type="button" className={activeView === "providers" ? "active" : ""} aria-current={activeView === "providers" ? "page" : undefined} onClick={() => setActiveView("providers")}><Boxes size={16} /><span>{tx("ui.ai_providers")}</span></button>
           <button type="button" className={activeView === "operations" ? "active" : ""} aria-current={activeView === "operations" ? "page" : undefined} onClick={() => setActiveView("operations")}><ScrollText size={16} /><span>{tx("ui.operation_log")}</span></button>
+          <button type="button" className={activeView === "risk" ? "active" : ""} aria-current={activeView === "risk" ? "page" : undefined} onClick={() => setActiveView("risk")}><ShieldAlert size={16} /><span>{tx("ui.risk_control_center")}</span></button>
+          <button type="button" className={activeView === "automation" ? "active" : ""} aria-current={activeView === "automation" ? "page" : undefined} onClick={() => setActiveView("automation")}><Workflow size={16} /><span>{tx("ui.automation_policy")}</span></button>
+          <button type="button" className={activeView === "proxy_profiles" ? "active" : ""} aria-current={activeView === "proxy_profiles" ? "page" : undefined} onClick={() => setActiveView("proxy_profiles")}><Network size={16} /><span>{tx("ui.proxy_profiles")}</span></button>
+          <button type="button" className={activeView === "notifications" ? "active" : ""} aria-current={activeView === "notifications" ? "page" : undefined} onClick={() => setActiveView("notifications")}><BellRing size={16} /><span>{tx("ui.external_notifications")}</span></button>
           <button type="button" className={activeView === "settings" ? "active" : ""} aria-current={activeView === "settings" ? "page" : undefined} onClick={() => setActiveView("settings")}><Settings2 size={16} /><span>{tx("ui.other_settings")}</span></button>
         </nav>
         <div className="sidebar-telemetry" aria-live="polite">
@@ -1152,7 +1172,15 @@ function AccountManagerApp() {
                     ? tx("ui.ai_providers")
                     : activeView === "operations"
                       ? tx("ui.operation_log")
-                      : tx("ui.other_settings")} · CPA Account Config Manager</p>
+                      : activeView === "risk"
+                        ? tx("ui.risk_control_center")
+                        : activeView === "automation"
+                          ? tx("ui.automation_policy")
+                          : activeView === "proxy_profiles"
+                            ? tx("ui.proxy_profiles")
+                            : activeView === "notifications"
+                              ? tx("ui.external_notifications")
+                              : tx("ui.other_settings")} · CPA Account Config Manager</p>
           </div>
           <div className="workspace-controls">
             <div className="header-status">
@@ -1286,7 +1314,7 @@ function AccountManagerApp() {
                   </td>
                   <td><span className="provider-tag">{technicalLabel(account.provider || account.type)}</span></td>
                   <td><AccountTypeCell account={account} /></td>
-                  <td><AccountUsageCell account={account} weeklyOverdraftEnabled={weeklyOverdraftEnabled} creditUsageEnabled={sub2APICreditUsageEnabled} /></td>
+                  <td><AccountUsageCell account={account} weeklyOverdraftEnabled={weeklyOverdraftEnabled} creditUsageEnabled /></td>
 									<td><AccountQuotaMetadataCell account={account} busy={quotaMetadataBusy[account.id]} onRefresh={() => void refreshQuotaMetadata(account)} onReset={() => setQuotaResetTarget(account)} /></td>
 									<td><AccountConcurrencyCell account={account} /></td>
 									<td><AccountLifecycleTime value={account.created_at} /></td>
@@ -1366,6 +1394,14 @@ function AccountManagerApp() {
               }
             }}
           />
+        ) : activeView === "risk" ? (
+          <RiskControlWorkspace onAPIError={handleAPIError} onNotice={setNotice} />
+        ) : activeView === "automation" ? (
+          <AutomationPolicySettings refreshRevision={0} forceLoading={forcePreviewLoading} onAPIError={handleAPIError} onNotice={setNotice} onForcePreview={() => void previewForceSync()} />
+        ) : activeView === "proxy_profiles" ? (
+          <ProxyProfilesSettings refreshRevision={0} onAPIError={handleAPIError} onNotice={setNotice} />
+        ) : activeView === "notifications" ? (
+          <ExternalNotificationSettings refreshRevision={0} onAPIError={handleAPIError} onNotice={setNotice} />
         ) : (
           <OtherSettingsWorkspace
             onAPIError={handleAPIError}
@@ -1373,6 +1409,8 @@ function AccountManagerApp() {
             forceLoading={forcePreviewLoading}
             onForcePreview={() => void previewForceSync()}
             onExperimentalSettingsChange={handleExperimentalSettingsChange}
+            initialSection="updates"
+            visibleSections={["updates", "experimental"]}
           />
         )}
       </div>
@@ -1409,7 +1447,7 @@ function AccountManagerApp() {
       {authState === "booting" ? <div className="auth-loading"><LoaderCircle className="spin" size={24} /></div> : null}
       {authState === "login" ? <LoginDialog loading={authLoading} error={authError} onSubmit={login} /> : null}
       {editorContext ? <BatchEditor title={editorContext.title} scopeLabel={editorContext.scopeLabel} accountConcurrency={data.account_concurrency} loadModels={() => api.loadAccountModels(editorContext.scope)} loadCurrentConfig={editorContext.accountID ? () => api.loadAccountConfig(editorContext.accountID || "") : undefined} onLoadError={(error) => { if (error instanceof api.APIError && error.status === 401) { setEditorContext(null); handleAPIError(error); } }} onClose={() => setEditorContext(null)} onSubmit={(patch) => { const scope = editorContext.scope; setEditorContext(null); void beginPreview(patch, scope); }} /> : null}
-      {detailAccount ? <AccountDetailsDialog account={detailAccount} creditUsageEnabled={sub2APICreditUsageEnabled} weeklyOverdraftEnabled={weeklyOverdraftEnabled} onClose={() => setDetailAccount(null)} onEdit={() => openAccountEditor(detailAccount)} /> : null}
+      {detailAccount ? <AccountDetailsDialog account={detailAccount} creditUsageEnabled weeklyOverdraftEnabled={weeklyOverdraftEnabled} onClose={() => setDetailAccount(null)} onEdit={() => openAccountEditor(detailAccount)} /> : null}
 			{quotaResetTarget ? (
 				<Modal
 					title={tx("ui.confirm_active_reset")}
@@ -1482,6 +1520,7 @@ function AccountLifecycleTime({ value }: { value?: string }) {
 	const { formatDateTime } = useI18n();
 	if (!value) return <span className="account-time-empty">-</span>;
 	const formatted = formatDateTime(value);
+	if (formatted === "-") return <span className="account-time-empty">-</span>;
 	return <time className="account-lifecycle-time" dateTime={value} title={formatted}>{formatted}</time>;
 }
 
@@ -1495,12 +1534,13 @@ function AccountQuotaMetadataCell({ account, busy, onRefresh, onReset }: { accou
 	const observedAt = quotaProvider ? account.usage?.quota?.metadata_observed_at : account.usage?.codex?.metadata_observed_at;
 	const planType = account.usage?.quota?.plan_type || account.plan_type;
 	const accountLabel = account.label || account.email || account.name || account.id;
+	const observedAtLabel = formatDateTime(observedAt);
 	if (!supported) return <span className="quota-metadata-unsupported">-</span>;
 	return (
 		<div className="quota-metadata-cell">
 			<div className="quota-metadata-value"><strong>{quotaProvider ? (planType || "-") : known ? formatNumber(count) : "-"}</strong><IconButton label={tx(quotaProvider ? "ui.refresh_quota_for_account" : "ui.refresh_plan_and_active_reset", { account: accountLabel })} disabled={Boolean(busy)} onClick={onRefresh}>{busy === "refresh" ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}</IconButton></div>
 			{!quotaProvider && known && count > 0 ? <button className="quota-reset-button" type="button" disabled={Boolean(busy)} onClick={onReset}>{busy === "reset" ? <LoaderCircle className="spin" size={12} /> : <RotateCcw size={12} />}{tx("ui.use_active_reset")}</button> : null}
-			<small>{observedAt ? tx("ui.quota_metadata_collected_at", { time: formatDateTime(observedAt) }) : tx("ui.not_collected")}</small>
+			<small>{observedAtLabel !== "-" ? tx("ui.quota_metadata_collected_at", { time: observedAtLabel }) : tx("ui.not_collected")}</small>
 		</div>
 	);
 }
@@ -1511,11 +1551,16 @@ function AccountConcurrencyCell({ account }: { account: Account }) {
 		const explanation = tx("ui.account_concurrency_unavailable_old_cpa");
 		return <span className="concurrency-unavailable" title={explanation} aria-label={`${tx("ui.unavailable")}: ${explanation}`} tabIndex={0}>{tx("ui.unavailable")}<CircleHelp size={12} aria-hidden="true" /></span>;
 	}
-	const limit = accountConcurrencyLimitLabel(account.concurrency);
-	const saturated = account.concurrency.limit > 0 && account.concurrency.active >= account.concurrency.limit;
+	const activeLimit = accountConcurrencyLimitLabel(account.concurrency);
+	const requestLimit = accountConcurrencyRequestLimitLabel(account.concurrency);
+	const usedRequests = accountConcurrencyUsedRequests(account.concurrency);
+	const windowSeconds = accountConcurrencyWindowSeconds(account.concurrency);
+	const saturated = accountConcurrencySaturated(account.concurrency);
 	return (
-		<div className={`concurrency-cell ${saturated ? "is-saturated" : ""}`} title={tx("ui.account_concurrency_active_limit", { active: account.concurrency.active, limit })}>
-			<strong>{account.concurrency.active}</strong><span>/</span><strong>{limit}</strong>
+		<div className={`concurrency-cell ${saturated ? "is-saturated" : ""}`} title={`${tx("ui.account_concurrency_active")}: ${account.concurrency.active}/${activeLimit} · ${windowSeconds}s ${tx("ui.account_concurrency_request")}: ${usedRequests}/${requestLimit} · ${tx("ui.account_concurrency_queue")}: ${account.concurrency.waiting ?? 0}`}>
+			<span className="concurrency-metric"><span>{tx("ui.account_concurrency_active")}</span><strong>{account.concurrency.active} / {activeLimit}</strong></span>
+			<span className="concurrency-metric"><span>{windowSeconds}s {tx("ui.account_concurrency_request")}</span><strong>{usedRequests} / {requestLimit}</strong></span>
+			<span className="concurrency-metric"><span>{tx("ui.account_concurrency_queue")}</span><strong>{account.concurrency.waiting ?? 0}</strong></span>
 		</div>
 	);
 }
