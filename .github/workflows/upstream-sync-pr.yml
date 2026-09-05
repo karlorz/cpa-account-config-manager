@@ -1,0 +1,295 @@
+name: upstream-sync-pr
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync-pr
+  cancel-in-progress: false
+
+env:
+  BASE_BRANCH: main
+  UPSTREAM_BRANCH: main
+  UPSTREAM_REPO_OWNER: Mxucc
+  UPSTREAM_REMOTE_URL: https://github.com/Mxucc/cpa-account-config-manager.git
+
+jobs:
+  sync-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Configure upstream remote
+        run: |
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream "${UPSTREAM_REMOTE_URL}"
+          else
+            git remote add upstream "${UPSTREAM_REMOTE_URL}"
+          fi
+
+      - name: Fetch origin and upstream
+        run: |
+          git fetch --force origin "${BASE_BRANCH}"
+          git fetch --force --tags upstream "${UPSTREAM_BRANCH}"
+
+      - id: compare
+        name: Detect upstream changes
+        run: |
+          set -euo pipefail
+
+          origin_ref="origin/${BASE_BRANCH}"
+          upstream_ref="upstream/${UPSTREAM_BRANCH}"
+          ahead_count="$(git rev-list --count "${origin_ref}..${upstream_ref}")"
+          behind_count="$(git rev-list --count "${upstream_ref}..${origin_ref}")"
+          latest_upstream_tag="$(
+            git tag --merged "${upstream_ref}" --list 'v*' \
+              | grep -E '^v[0-9]+(\.[0-9]+)+$' \
+              | sort -V \
+              | tail -n 1 || true
+          )"
+
+          {
+            echo "ahead_count=${ahead_count}"
+            echo "behind_count=${behind_count}"
+            echo "latest_upstream_tag=${latest_upstream_tag}"
+          } >> "${GITHUB_OUTPUT}"
+
+          if [ "${ahead_count}" -eq 0 ]; then
+            echo "has_changes=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "has_changes=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: No upstream changes
+        if: steps.compare.outputs.has_changes == 'false'
+        run: |
+          {
+            echo "No upstream commits need syncing."
+            echo
+            echo "- Base branch: ${BASE_BRANCH}"
+            echo "- Upstream branch: upstream/${UPSTREAM_BRANCH}"
+            echo "- Fork-only commits on base: ${{ steps.compare.outputs.behind_count }}"
+            echo "- Latest upstream tag: ${{ steps.compare.outputs.latest_upstream_tag || 'none' }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - id: sync_upstream
+        name: Try automatic fork sync
+        if: steps.compare.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          sync_error_file="$(mktemp)"
+
+          set +e
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/merge-upstream" \
+            -f branch="${BASE_BRANCH}" \
+            > sync-response.json 2>"${sync_error_file}"
+          sync_status=$?
+          set -e
+
+          if [ "${sync_status}" -eq 0 ]; then
+            echo "sync_outcome=synced" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # merge-upstream returns 409 when upstream and fork have diverged
+          # conflicts, and 422 when upstream includes workflow file changes
+          # (GITHUB_TOKEN cannot modify workflows via the merge-upstream API).
+          # Both cases require manual review via a conflict review PR.
+          if grep -qE 'HTTP (409|422)' "${sync_error_file}"; then
+            echo "sync_outcome=conflict" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          cat "${sync_error_file}" >&2
+          exit "${sync_status}"
+
+
+      - name: Close obsolete conflict review PR
+        if: steps.compare.outputs.has_changes == 'false' || steps.sync_upstream.outputs.sync_outcome == 'synced'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          retry_gh() {
+            local attempt=1
+            local max_attempts=5
+
+            while true; do
+              if "$@"; then
+                return 0
+              fi
+
+              if [ "${attempt}" -ge "${max_attempts}" ]; then
+                return 1
+              fi
+
+              sleep $((attempt * 3))
+              attempt=$((attempt + 1))
+            done
+          }
+
+          head_ref="${UPSTREAM_REPO_OWNER}:${UPSTREAM_BRANCH}"
+          pr_number="$({
+            retry_gh gh api \
+              --method GET \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=${BASE_BRANCH}&head=${head_ref}" \
+              --jq '.[0].number // empty'
+          })"
+
+          if [ -n "${pr_number}" ]; then
+            retry_gh gh pr close "${pr_number}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --comment "Closing upstream sync review PR because manual conflict resolution is no longer needed."
+          fi
+
+      - name: Summarize automatic sync
+        if: steps.sync_upstream.outputs.sync_outcome == 'synced'
+        run: |
+          {
+            echo "Upstream sync completed automatically."
+            echo
+            echo "- Base branch updated: ${BASE_BRANCH}"
+            echo "- Upstream branch: upstream/${UPSTREAM_BRANCH}"
+            echo "- Upstream commits synced: ${{ steps.compare.outputs.ahead_count }}"
+            echo "- Latest upstream tag: ${{ steps.compare.outputs.latest_upstream_tag || 'none' }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - id: review_pr
+        name: Create or update conflict review PR
+        if: steps.sync_upstream.outputs.sync_outcome == 'conflict'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          retry_gh() {
+            local attempt=1
+            local max_attempts=5
+
+            while true; do
+              if "$@"; then
+                return 0
+              fi
+
+              if [ "${attempt}" -ge "${max_attempts}" ]; then
+                return 1
+              fi
+
+              sleep $((attempt * 3))
+              attempt=$((attempt + 1))
+            done
+          }
+
+          pr_title="chore: sync upstream ${UPSTREAM_BRANCH}"
+          if [ -n "${{ steps.compare.outputs.latest_upstream_tag }}" ]; then
+            pr_title="${pr_title} (${{ steps.compare.outputs.latest_upstream_tag }})"
+          fi
+
+          cat <<'EOF' > pr-body.md
+          ## Summary
+
+          Automatic fork sync from `Mxucc/cpa-account-config-manager@main` into this fork's `main` branch reported merge conflicts.
+
+          - Latest upstream tag in merged history: `${{ steps.compare.outputs.latest_upstream_tag || 'none' }}`
+          - Upstream commits not yet in `main` when generated: `${{ steps.compare.outputs.ahead_count }}`
+          - Fork-only commits currently on `main`: `${{ steps.compare.outputs.behind_count }}`
+
+          ## Review Notes
+
+          - Review and resolve conflicts before merging.
+          - Merge using **Create a merge commit**.
+          - Do **not** squash or rebase this PR, or upstream tag ancestry used by fork releases will be lost.
+
+          ## Upstream Commits Pending In Base
+
+          ```text
+          EOF
+
+          git log --oneline --no-decorate --max-count=60 "origin/${BASE_BRANCH}..upstream/${UPSTREAM_BRANCH}" >> pr-body.md
+
+          cat <<'EOF' >> pr-body.md
+          ```
+
+          _Automatically generated by `upstream-sync-pr.yml`._
+          EOF
+
+          head_ref="${UPSTREAM_REPO_OWNER}:${UPSTREAM_BRANCH}"
+          existing_pr_json="$({
+            retry_gh gh api \
+              --method GET \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=${BASE_BRANCH}&head=${head_ref}"
+          })"
+
+          existing_pr="$(printf '%s' "${existing_pr_json}" | jq -r '.[0].number // empty')"
+
+          if [ -n "${existing_pr}" ]; then
+            pr_response="$({
+              retry_gh gh api \
+                --method PATCH \
+                -H "Accept: application/vnd.github+json" \
+                "/repos/${GITHUB_REPOSITORY}/pulls/${existing_pr}" \
+                -f title="${pr_title}" \
+                -f body="$(cat pr-body.md)"
+            })"
+
+            {
+              echo "pr_number=${existing_pr}"
+              echo "pr_url=$(printf '%s' "${pr_response}" | jq -r '.html_url')"
+              echo "pr_action=updated"
+            } >> "${GITHUB_OUTPUT}"
+          else
+            pr_response="$({
+              retry_gh gh api \
+                --method POST \
+                -H "Accept: application/vnd.github+json" \
+                "/repos/${GITHUB_REPOSITORY}/pulls" \
+                -f title="${pr_title}" \
+                -f head="${head_ref}" \
+                -f base="${BASE_BRANCH}" \
+                -f body="$(cat pr-body.md)" \
+                -F maintainer_can_modify=false
+            })"
+
+            {
+              echo "pr_number=$(printf '%s' "${pr_response}" | jq -r '.number')"
+              echo "pr_url=$(printf '%s' "${pr_response}" | jq -r '.html_url')"
+              echo "pr_action=created"
+            } >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Summarize conflict PR
+        if: steps.review_pr.outputs.pr_url != ''
+        run: |
+          {
+            echo "Automatic upstream sync hit conflicts, so a review PR was ${{
+              steps.review_pr.outputs.pr_action
+            }}."
+            echo
+            echo "- PR: ${{ steps.review_pr.outputs.pr_url }}"
+            echo "- Base branch: ${BASE_BRANCH}"
+            echo "- Upstream branch: ${UPSTREAM_REPO_OWNER}:${UPSTREAM_BRANCH}"
+            echo "- Latest upstream tag: ${{ steps.compare.outputs.latest_upstream_tag || 'none' }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
