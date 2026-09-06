@@ -966,6 +966,7 @@ func (e *InspectionEngine) ReconcileAccountStates(ctx context.Context) error {
 			current[id] = account
 		}
 	}
+	now := e.currentTime()
 	e.mu.Lock()
 	changed := false
 	for id, record := range e.records {
@@ -975,8 +976,9 @@ func (e *InspectionEngine) ReconcileAccountStates(ctx context.Context) error {
 			changed = true
 			continue
 		}
-		if record.Result.Disabled != account.Disabled {
-			record.Result.Disabled = account.Disabled
+		if inspectionRecordNeedsLiveDisabledReconcile(record, account) {
+			decision := decideInspection(account, record, now)
+			updateInspectionRecord(&record, account, decision, now)
 			changed = true
 		}
 		if record.Result.OwnedDisable && !account.Disabled {
@@ -996,6 +998,16 @@ func (e *InspectionEngine) ReconcileAccountStates(ctx context.Context) error {
 		e.requestPersist()
 	}
 	return nil
+}
+
+func inspectionRecordNeedsLiveDisabledReconcile(record inspectionRecord, account Account) bool {
+	if record.Result.Disabled != account.Disabled {
+		return true
+	}
+	if !account.Disabled && (record.Result.Health == InspectionHealthDisabled || record.Result.ReasonCode == "manual_disabled") {
+		return true
+	}
+	return account.Disabled && !record.Result.OwnedDisable && record.Result.Health != InspectionHealthDisabled
 }
 
 func summarizeInspectionRemediation(results []InspectionResult) InspectionRemediationSummary {

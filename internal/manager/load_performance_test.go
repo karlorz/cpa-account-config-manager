@@ -184,7 +184,7 @@ func TestOperationReadsDoNotReconcileOrWrite(t *testing.T) {
 	}
 }
 
-func TestInspectionResultReadsDoNotReloadCPAAccounts(t *testing.T) {
+func TestInspectionResultReadsReconcileLiveCPAAccounts(t *testing.T) {
 	host := &fakeAuthHost{}
 	app := NewApp(host, []byte("index"))
 	defer app.Close()
@@ -199,8 +199,8 @@ func TestInspectionResultReadsDoNotReloadCPAAccounts(t *testing.T) {
 	host.mu.Lock()
 	listCalls := host.listCalls
 	host.mu.Unlock()
-	if listCalls != 0 {
-		t.Fatalf("CPA account list calls = %d, want 0 for a cached inspection read", listCalls)
+	if listCalls < 1 {
+		t.Fatalf("CPA account list calls = %d, want at least 1 so Refresh follows live disabled state", listCalls)
 	}
 }
 

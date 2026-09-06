@@ -99,6 +99,7 @@ type JobEngine struct {
 	quotaPolicies     *QuotaPolicyService
 	codexIdentity     *CodexIdentityOverrideService
 	proxyProfiles     ProxyProfileResolver
+	inspection        *InspectionEngine
 	mutations         *MutationCoordinator
 	backgroundOwner   BackgroundWorkOwner
 	config            Config
@@ -152,6 +153,15 @@ func (e *JobEngine) SetCodexIdentityOverrides(overrides *CodexIdentityOverrideSe
 	}
 	e.mu.Lock()
 	e.codexIdentity = overrides
+	e.mu.Unlock()
+}
+
+func (e *JobEngine) SetInspection(inspection *InspectionEngine) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.inspection = inspection
 	e.mu.Unlock()
 }
 
@@ -559,6 +569,12 @@ func (e *JobEngine) applyAccount(ctx context.Context, account Account, operation
 			return JobResult{Status: ResultFailed, Error: message, AppliedFields: applied, Retryable: true}
 		}
 		applied = append(applied, "disabled")
+		e.mu.Lock()
+		inspection := e.inspection
+		e.mu.Unlock()
+		if inspection != nil {
+			_ = inspection.ReconcileAccountStates(ctx)
+		}
 	}
 	if patch.ConcurrencyLimit != nil || patch.Concurrency15sLimit != nil || patch.ConcurrencyWindowSeconds != nil {
 		e.mu.Lock()

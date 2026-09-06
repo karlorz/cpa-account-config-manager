@@ -206,6 +206,7 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	jobs.SetProxyProfiles(proxyProfiles)
 	jobs.SetQuotaPolicies(quotaPolicies)
 	jobs.SetCodexIdentityOverrides(codexIdentityOverrides)
+	jobs.SetInspection(inspection)
 	accounts.SetQuotaPolicies(quotaPolicies)
 	accounts.SetCodexIdentityOverrides(codexIdentityOverrides)
 	accounts.SetObserver(accountObserverGroup{newAccountProbe, quotaBootstrap})
@@ -764,7 +765,7 @@ func (a *App) HandleManagement(ctx context.Context, req cpaapi.ManagementRequest
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/inspection/stop":
 		return jsonResponse(http.StatusAccepted, a.inspection.StopRun())
 	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/inspection/results":
-		return a.handleListInspectionResults(req)
+		return a.handleListInspectionResults(ctx, req)
 	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/inspection/export":
 		return a.handleExportInspection(req)
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/inspection/review":
@@ -1631,12 +1632,15 @@ func (a *App) handleInspectionNotificationTest(ctx context.Context, req cpaapi.M
 	return jsonResponse(http.StatusOK, result)
 }
 
-func (a *App) handleListInspectionResults(req cpaapi.ManagementRequest) cpaapi.ManagementResponse {
+func (a *App) handleListInspectionResults(ctx context.Context, req cpaapi.ManagementRequest) cpaapi.ManagementResponse {
 	query := InspectionResultQuery{
 		Page:     intQuery(req.Query, "page", 1),
 		PageSize: intQuery(req.Query, "page_size", 50),
 		Health:   firstQuery(req.Query, "health"),
 		Search:   firstQuery(req.Query, "search"),
+	}
+	if a.inspection != nil {
+		_ = a.inspection.ReconcileAccountStates(ctx)
 	}
 	return jsonResponse(http.StatusOK, a.inspection.ListResults(query))
 }
