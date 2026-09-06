@@ -29,6 +29,12 @@ export const zhCNUI: Record<UIMessageKey, string> = {
   "ui.account_management": "账号管理",
   "ui.observability_console": "观测控制台",
   "ui.system_status": "系统状态",
+  "ui.sidebar_enabled_accounts": "账号已启用",
+  "ui.sidebar_account_concurrency": "账号总并发",
+  "ui.sidebar_account_cost": "今日账号消耗额度",
+  "ui.sidebar_enabled_providers": "AI 供应商已启用",
+  "ui.sidebar_provider_concurrency": "AI 供应商总并发",
+  "ui.sidebar_provider_cost": "今日 AI 供应商消耗额度",
   "ui.accounts": "账号",
   "ui.dashboard": "概览",
   "ui.dashboard_description": "汇总账号健康、用量、成本与实时运行状态。",
@@ -1425,6 +1431,10 @@ export const zhCNUI: Record<UIMessageKey, string> = {
   "ui.ai_provider_field_is_compat": "兼容模式",
   "ui.ai_provider_field_image": "图片模型",
   "ui.ai_provider_field_add_model": "+ 添加模型",
+  "ui.ai_provider_fetch_models": "快速获取模型",
+  "ui.ai_provider_fetching_models": "正在获取模型…",
+  "ui.ai_provider_models_fetched": "已获取 {count} 个模型",
+  "ui.ai_provider_fetch_models_failed": "获取模型失败，已保留现有模型",
   "ui.ai_provider_field_api_key_entries": "API 密钥",
   "ui.ai_provider_field_add_api_key": "添加 API 密钥",
   "ui.ai_provider_field_support_prompt_cache_key": "支持 prompt cache key",
@@ -1516,8 +1526,8 @@ export const zhCNUI: Record<UIMessageKey, string> = {
   "ui.list_metadata_fallback": "使用列表元数据（当前 CPA 不支持运行时详情）",
   "ui.credential_account_id": "凭据账号 ID"
   ,"ui.ai_provider_quota_settings": "供应商额度与并发策略"
-  ,"ui.ai_provider_quota_settings_description": "CPA 不提供 AI 供应商级官方 5 小时/7 天总额度；这里使用插件观察到的 Token 与手工预算计算百分比。并发上限同样是插件侧配置，当前 CPA 版本可能只能观测。"
-  ,"ui.ai_provider_budget_tokens": "预算 Token"
+  ,"ui.ai_provider_quota_settings_description": "CPA 不提供 AI 供应商级官方 5 小时/7 天总额度；这里使用插件估算的 USD 费用与手工预算额度计算百分比。并发上限同样是插件侧配置，当前 CPA 版本可能只能观测。"
+  ,"ui.ai_provider_budget_amount": "预算额度 (USD)"
   ,"ui.ai_provider_limit_percent": "限制百分比"
   ,"ui.account_quota_limit": "账号额度限制"
   ,"ui.account_quota_limit_description": "按 CPA 返回的 5 小时/7 天官方用量百分比限制该账号；留空表示不限制。"
@@ -1624,5 +1634,32 @@ export const zhCNUI: Record<UIMessageKey, string> = {
   "ui.risk_audit_credential_missing": "不可用",
   "ui.risk_audit_credential_unset": "未配置",
   "ui.risk_audit_status_unavailable": "模块状态不可用",
+
+  "ui.risk_control": "风控中心",
+  "ui.risk_audit": "提示词审计",
+  "ui.risk_events_cleared": "风控事件已清空",
+  "ui.risk_hashes_cleared": "记忆哈希已清空",
+  "ui.risk_control_action_failed": "风控操作失败。",
+  "ui.risk_audit_api_key": "API Key",
+  "ui.risk_audit_api_key_hint": "直接填写审核服务 API Key；插件只在当前运行进程中使用，不读取环境变量。",
+  "ui.risk_audit_api_key_configured_hint": "API Key 已配置；页面不会回显原值。留空保存可继续使用当前 Key。",
+  "ui.risk_audit_api_key_placeholder": "已配置，输入新值可替换",
+  "ui.risk_audit_api_key_clear": "清除 API Key",
+  "ui.risk_audit_api_key_ready": "可用",
+  "ui.risk_audit_api_key_unavailable": "已配置但当前不可用",
+  "ui.risk_audit_api_key_unset": "未配置",
+  "ui.risk_prompt_list": "系统提示词列表",
+  "ui.risk_prompt_add": "新增提示词",
+  "ui.risk_prompt_delete": "删除提示词",
+  "ui.risk_prompt_name": "提示词名称",
+  "ui.risk_prompt_content": "系统提示词",
+  "ui.risk_prompt_default": "默认",
+  "ui.risk_prompt_default_locked": "默认提示词不可编辑或删除。",
+  "ui.risk_new_prompt": "新提示词",
+  "ui.risk_current_prompt": "当前提示词",
+  "ui.risk_action_audit_observe": "审计观察",
+  "ui.risk_action_audit_block": "审计阻断",
+  "ui.risk_action_error_block": "审计错误阻断",
+  "ui.risk_action_audit_pass": "审计通过",
 
 };
