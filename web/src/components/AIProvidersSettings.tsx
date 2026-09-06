@@ -125,14 +125,15 @@ type EditingEntry = {
   websockets: boolean;
   rebuildMidSystemMessage: boolean;
   fingerprintProfile: string;
+  authIndex?: string;
   accountID?: string;
   workspaceID?: string;
   concurrency15sLimit: string;
   concurrencyWindowSeconds: string;
   concurrencyLimit: string;
-  fiveHourTotalTokens: string;
+  fiveHourBudgetAmount: string;
   fiveHourLimitPercent: string;
-  sevenDayTotalTokens: string;
+  sevenDayBudgetAmount: string;
   sevenDayLimitPercent: string;
 };
 
@@ -226,6 +227,13 @@ function providerStableIdentity(entry: ProviderIdentitySource): string {
   return `index:${entry.index}`;
 }
 
+function parseNonNegativeAmount(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
 function parseNonNegativeInteger(value: string): number | undefined {
   const trimmed = value.trim();
   if (!trimmed || !/^\d+$/.test(trimmed)) return undefined;
@@ -238,8 +246,7 @@ function validateProviderQuotaInputs(editing: EditingEntry, message: (key: UIMes
     [editing.concurrency15sLimit, message("ui.account_concurrency_request_limit"), 1000],
     [editing.concurrencyWindowSeconds, message("ui.ai_provider_concurrency_window_seconds"), 3600],
     [editing.concurrencyLimit, message("ui.account_concurrency_60s_limit"), 1000],
-    [editing.fiveHourTotalTokens, `${message("ui.quota_window_five_hour")} · ${message("ui.ai_provider_budget_tokens")}`, undefined],
-    [editing.sevenDayTotalTokens, `${message("ui.quota_window_seven_day")} · ${message("ui.ai_provider_budget_tokens")}`, undefined],
+
   ];
   for (const [value, label, maximum] of integerFields) {
     if (!value.trim()) continue;
@@ -247,6 +254,14 @@ function validateProviderQuotaInputs(editing: EditingEntry, message: (key: UIMes
     if (parsed === undefined || (maximum !== undefined && parsed > maximum)) {
       throw new Error(`${label}: ${maximum === undefined ? "0+" : `0-${maximum}`}`);
     }
+  }
+  const amountFields: Array<[string, string]> = [
+    [editing.fiveHourBudgetAmount, `${message("ui.quota_window_five_hour")} · ${message("ui.ai_provider_budget_amount")}`],
+    [editing.sevenDayBudgetAmount, `${message("ui.quota_window_seven_day")} · ${message("ui.ai_provider_budget_amount")}`],
+  ];
+  for (const [value, label] of amountFields) {
+    if (!value.trim()) continue;
+    if (parseNonNegativeAmount(value) === undefined) throw new Error(`${label}: 0+`);
   }
   const percentFields: Array<[string, string]> = [
     [editing.fiveHourLimitPercent, `${message("ui.quota_window_five_hour")} · ${message("ui.ai_provider_limit_percent")}`],
@@ -288,16 +303,16 @@ function ProviderPolicyFields({
           <small>{tx("ui.account_concurrency_zero_unlimited")}</small>
         </label>
         <label className="field-block">
-          <span>{tx("ui.quota_window_five_hour")} · {tx("ui.ai_provider_budget_tokens")}</span>
-          <input type="number" min="0" step="1" value={entry.fiveHourTotalTokens} onChange={(event) => onEntry({ fiveHourTotalTokens: event.target.value })} placeholder={tx("ui.not_set")} />
+          <span>{tx("ui.quota_window_five_hour")} · {tx("ui.ai_provider_budget_amount")}</span>
+          <input type="number" min="0" step="0.01" value={entry.fiveHourBudgetAmount} onChange={(event) => onEntry({ fiveHourBudgetAmount: event.target.value })} placeholder={tx("ui.not_set")} />
         </label>
         <label className="field-block">
           <span>{tx("ui.quota_window_five_hour")} · {tx("ui.ai_provider_limit_percent")}</span>
           <input type="number" min="0" max="100" step="1" value={entry.fiveHourLimitPercent} onChange={(event) => onEntry({ fiveHourLimitPercent: event.target.value })} placeholder={tx("ui.not_set")} />
         </label>
         <label className="field-block">
-          <span>{tx("ui.quota_window_seven_day")} · {tx("ui.ai_provider_budget_tokens")}</span>
-          <input type="number" min="0" step="1" value={entry.sevenDayTotalTokens} onChange={(event) => onEntry({ sevenDayTotalTokens: event.target.value })} placeholder={tx("ui.not_set")} />
+          <span>{tx("ui.quota_window_seven_day")} · {tx("ui.ai_provider_budget_amount")}</span>
+          <input type="number" min="0" step="0.01" value={entry.sevenDayBudgetAmount} onChange={(event) => onEntry({ sevenDayBudgetAmount: event.target.value })} placeholder={tx("ui.not_set")} />
         </label>
         <label className="field-block">
           <span>{tx("ui.quota_window_seven_day")} · {tx("ui.ai_provider_limit_percent")}</span>
@@ -370,6 +385,8 @@ function RichChannelFields({
 }) {
   const { tx } = useI18n();
   const set = (patch: Partial<EditingEntry>) => onEntry(patch);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [modelCatalogMessage, setModelCatalogMessage] = useState("");
 
   const setModelsRow = (index: number, patch: Partial<AIProviderChannelModel>) => {
     const models = entry.models.map((model, i) => (i === index ? { ...model, ...patch } : model));
@@ -377,6 +394,59 @@ function RichChannelFields({
   };
   const addModelsRow = () => set({ models: [...entry.models, { name: "" }] });
   const removeModelsRow = (index: number) => set({ models: entry.models.filter((_, i) => i !== index) });
+  const fetchModels = async () => {
+    if (fetchingModels) return;
+    if (kind === "vertex-api-key" || kind === "api-keys") {
+      setModelCatalogMessage(tx("ui.ai_provider_model_catalog_unavailable"));
+      return;
+    }
+
+    const apiKey = entry.apiKey.trim() || entry.apiKeyEntries[0]?.apiKey.trim() || "";
+    setFetchingModels(true);
+    setModelCatalogMessage("");
+    try {
+      const result = await api.testAIProviderChannelForKind(
+        kind,
+        entry.baseURL.trim(),
+        apiKey,
+        15,
+        headersToMap(entry.headersText),
+        entry.authIndex || entry.accountID,
+        undefined,
+        entry.quotaPolicyKey || undefined,
+      );
+      const discovered = (result.models ?? [])
+        .map((model) => ({
+          name: String(model.id ?? "").trim(),
+          ...(model.display_name?.trim() ? { display_name: model.display_name.trim() } : {}),
+        }))
+        .filter((model) => model.name);
+      if (discovered.length === 0) {
+        setModelCatalogMessage(tx("ui.ai_provider_model_catalog_unavailable"));
+        return;
+      }
+
+      const existingByName = new Map<string, AIProviderChannelModel>();
+      for (const model of entry.models) {
+        const name = model.name.trim();
+        if (name && !existingByName.has(name)) existingByName.set(name, model);
+      }
+      const merged = [...entry.models];
+      for (const model of discovered) {
+        if (existingByName.has(model.name)) continue;
+        merged.push(model);
+        existingByName.set(model.name, model);
+      }
+      set({ models: merged });
+      setModelCatalogMessage(tx("ui.ai_provider_models_fetched", { count: discovered.length }));
+    } catch {
+      // Do not expose request details here: they may contain a provider URL or
+      // credential-related data. Existing hand-configured models remain intact.
+      setModelCatalogMessage(tx("ui.ai_provider_fetch_models_failed"));
+    } finally {
+      setFetchingModels(false);
+    }
+  };
   const setKeyRow = (index: number, patch: { apiKey?: string; weight?: string; proxyURL?: string }) => {
     const apiKeyEntries = entry.apiKeyEntries.map((keyEntry, i) => (i === index ? { ...keyEntry, ...patch } : keyEntry));
     set({ apiKeyEntries, apiKeyEntriesDirty: true });
@@ -455,7 +525,14 @@ function RichChannelFields({
       </label>
       {hasModelEditor(kind) ? (
         <div className="ai-provider-models-editor">
-          <span className="ai-provider-models-title">{tx("ui.ai_provider_field_models")}</span>
+          <div className="ai-provider-models-heading">
+            <span className="ai-provider-models-title">{tx("ui.ai_provider_field_models")}</span>
+            <button className="button" type="button" onClick={() => void fetchModels()} disabled={fetchingModels}>
+              {fetchingModels ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
+              {fetchingModels ? tx("ui.ai_provider_fetching_models") : tx("ui.ai_provider_fetch_models")}
+            </button>
+          </div>
+          {modelCatalogMessage ? <p className="ai-provider-field-note">{modelCatalogMessage}</p> : null}
           {entry.models.map((model, index) => (
             <div className="ai-provider-model-row" key={index}>
               <input value={model.name} onChange={(event) => setModelsRow(index, { name: event.target.value })} placeholder={tx("ui.ai_provider_field_model_name")} autoComplete="off" />
@@ -654,14 +731,15 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice }: A
       websockets: entry.websockets === true,
       rebuildMidSystemMessage: entry.rebuild_mid_system_message === true,
       fingerprintProfile: entry.fingerprint_profile ?? "",
+      authIndex: entry.auth_index,
       accountID: entry.account_id,
       workspaceID: entry.workspace_id,
       concurrency15sLimit: policy?.concurrency_15s_limit === undefined ? "" : String(policy.concurrency_15s_limit),
       concurrencyWindowSeconds: policy?.concurrency_window_seconds === undefined ? "15" : String(policy.concurrency_window_seconds),
       concurrencyLimit: policy?.concurrency_limit === undefined ? "" : String(policy.concurrency_limit),
-      fiveHourTotalTokens: policy?.five_hour.total_tokens === undefined ? "" : String(policy.five_hour.total_tokens),
+      fiveHourBudgetAmount: policy?.five_hour.budget_amount_usd === undefined ? "" : String(policy.five_hour.budget_amount_usd),
       fiveHourLimitPercent: policy?.five_hour.limit_percent === undefined ? "" : String(policy.five_hour.limit_percent),
-      sevenDayTotalTokens: policy?.seven_day.total_tokens === undefined ? "" : String(policy.seven_day.total_tokens),
+      sevenDayBudgetAmount: policy?.seven_day.budget_amount_usd === undefined ? "" : String(policy.seven_day.budget_amount_usd),
       sevenDayLimitPercent: policy?.seven_day.limit_percent === undefined ? "" : String(policy.seven_day.limit_percent),
     });
   };
@@ -765,8 +843,8 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice }: A
       snapshot.updated_at > latestSnapshot.updated_at ? snapshot : latestSnapshot, matches[0]);
     const requestWindowSeconds = latestRuntime.request_window_seconds || 15;
     const quota = {
-      five_hour_used_tokens: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.quota?.five_hour_used_tokens ?? 0), 0),
-      seven_day_used_tokens: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.quota?.seven_day_used_tokens ?? 0), 0),
+      five_hour_amount_usd: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.quota?.five_hour_amount_usd ?? 0), 0),
+      seven_day_amount_usd: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.quota?.seven_day_amount_usd ?? 0), 0),
       five_hour_percent: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.quota?.five_hour_percent ?? 0), 0),
       seven_day_percent: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.quota?.seven_day_percent ?? 0), 0),
     };
@@ -900,11 +978,11 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice }: A
         concurrency_window_seconds: parseOptionalInteger(editing.concurrencyWindowSeconds),
         concurrency_limit: parseOptionalInteger(editing.concurrencyLimit),
         five_hour: {
-          total_tokens: parseOptionalInteger(editing.fiveHourTotalTokens),
+          budget_amount_usd: parseNonNegativeAmount(editing.fiveHourBudgetAmount),
           limit_percent: parseOptionalPercent(editing.fiveHourLimitPercent),
         },
         seven_day: {
-          total_tokens: parseOptionalInteger(editing.sevenDayTotalTokens),
+          budget_amount_usd: parseNonNegativeAmount(editing.sevenDayBudgetAmount),
           limit_percent: parseOptionalPercent(editing.sevenDayLimitPercent),
         },
       };
@@ -1412,10 +1490,10 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice }: A
             {(() => {
               const runtime = runtimeForEntry(viewing.entry);
               const policy = providerPolicyFor(viewing.kind, viewing.entry);
-              const budget = (window: ProviderQuotaPolicy["five_hour"], usedTokens: number | undefined) => {
-                if (!window.total_tokens || window.total_tokens <= 0) return window.limit_percent === undefined ? "-" : `— / ${window.limit_percent}%`;
-                if (usedTokens === undefined) return `— / ${window.limit_percent ?? 100}%`;
-                return `${Math.min(999, usedTokens / window.total_tokens * 100).toFixed(1)}% / ${window.limit_percent ?? 100}%`;
+              const budget = (window: ProviderQuotaPolicy["five_hour"], usedAmount: number | undefined) => {
+                if (!window.budget_amount_usd || window.budget_amount_usd <= 0) return window.limit_percent === undefined ? "-" : `— / ${window.limit_percent}%`;
+                if (usedAmount === undefined) return `— / ${window.limit_percent ?? 100}%`;
+                return `${Math.min(999, usedAmount / window.budget_amount_usd * 100).toFixed(1)}% / ${window.limit_percent ?? 100}%`;
               };
               if (!runtime && !policy) return <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_usage")}</span><strong>{tx("ui.ai_provider_identity_unavailable")}</strong></div>;
               return (
@@ -1426,8 +1504,8 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice }: A
                     <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_concurrency_queue_short", { value: runtime?.waiting ?? 0 })}</span></div>
                   </> : null}
                   {policy ? <>
-                    <div className="ai-provider-detail-row"><span>{tx("ui.quota_window_five_hour")}</span><strong>{budget(policy.five_hour, runtime?.quota?.five_hour_used_tokens)}</strong></div>
-                    <div className="ai-provider-detail-row"><span>{tx("ui.quota_window_seven_day")}</span><strong>{budget(policy.seven_day, runtime?.quota?.seven_day_used_tokens)}</strong></div>
+                    <div className="ai-provider-detail-row"><span>{tx("ui.quota_window_five_hour")}</span><strong>{budget(policy.five_hour, runtime?.quota?.five_hour_amount_usd)}</strong></div>
+                    <div className="ai-provider-detail-row"><span>{tx("ui.quota_window_seven_day")}</span><strong>{budget(policy.seven_day, runtime?.quota?.seven_day_amount_usd)}</strong></div>
                   </> : null}
                   {runtime ? <>
                     <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_total_tokens")}</span><strong>{formatTokens(runtime.total_tokens)}</strong></div>
@@ -1556,10 +1634,10 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice }: A
                         const policy = providerPolicyFor(channel.kind, entry);
                         const configuredRequestLimit = policy?.concurrency_15s_limit;
                         const configuredConcurrencyLimit = policy?.concurrency_limit;
-                        const budget = (window: ProviderQuotaPolicy["five_hour"], usedTokens: number | undefined) => {
-                          if (!window.total_tokens || window.total_tokens <= 0) return window.limit_percent === undefined ? "-" : `— / ${window.limit_percent}%`;
-                          if (usedTokens === undefined) return `— / ${window.limit_percent ?? 100}%`;
-                          return `${Math.min(999, usedTokens / window.total_tokens * 100).toFixed(1)}% / ${window.limit_percent ?? 100}%`;
+                        const budget = (window: ProviderQuotaPolicy["five_hour"], usedAmount: number | undefined) => {
+                          if (!window.budget_amount_usd || window.budget_amount_usd <= 0) return window.limit_percent === undefined ? "-" : `— / ${window.limit_percent}%`;
+                          if (usedAmount === undefined) return `— / ${window.limit_percent ?? 100}%`;
+                          return `${Math.min(999, usedAmount / window.budget_amount_usd * 100).toFixed(1)}% / ${window.limit_percent ?? 100}%`;
                         };
                         return <>
                           <td className="ai-provider-runtime-cell" title={tx("ui.ai_provider_quota_settings_description")}>
@@ -1571,7 +1649,7 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice }: A
                             </div>
                             <div className="ai-provider-runtime-usage">
                               <span>{tx("ui.ai_provider_usage")}</span>
-                              {runtime ? <><strong>{formatTokens(runtime.total_tokens)}</strong><small>{formatAmount(runtime.amount_usd)} · {tx("ui.quota_window_five_hour")} {budget(policy?.five_hour ?? {}, runtime.quota?.five_hour_used_tokens)} · {tx("ui.quota_window_seven_day")} {budget(policy?.seven_day ?? {}, runtime.quota?.seven_day_used_tokens)}</small></> : <strong title={runtimeError || tx("ui.ai_provider_identity_unavailable")}>{tx("ui.ai_provider_no_usage")}</strong>}
+                              {runtime ? <><strong>{formatTokens(runtime.total_tokens)}</strong><small>{formatAmount(runtime.amount_usd)} · {tx("ui.quota_window_five_hour")} {budget(policy?.five_hour ?? {}, runtime.quota?.five_hour_amount_usd)} · {tx("ui.quota_window_seven_day")} {budget(policy?.seven_day ?? {}, runtime.quota?.seven_day_amount_usd)}</small></> : <strong title={runtimeError || tx("ui.ai_provider_identity_unavailable")}>{tx("ui.ai_provider_no_usage")}</strong>}
                             </div>
                           </td>
                         </>;

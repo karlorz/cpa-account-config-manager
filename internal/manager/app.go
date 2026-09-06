@@ -75,6 +75,7 @@ type App struct {
 	quotaBootstrap         *accountQuotaMetadataBootstrap
 	managementDoer         HTTPDoer
 	requestHooks           *RequestHook
+	quotaGuard             *AccountQuotaGuard
 	concurrency            *AccountConcurrencyService
 	providerRuntime        *ProviderRuntimeTracker
 	hostSchema             uint32
@@ -144,6 +145,7 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	modelTests.SetCodexIdentityExperiment(codexIdentity)
 	providerRuntime := NewProviderRuntimeTracker(creditUsage)
 	providerRuntime.SetQuotaPolicies(quotaPolicies)
+	accounts.AddUsageStorageDiscoverer(providerRuntime)
 	quotaGuard := NewAccountQuotaGuard(usage, quotaPolicies)
 	// Admission must run before observational trackers. A saturated account can
 	// block in the concurrency transformer; recording it as active before that
@@ -183,6 +185,7 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 		newAccountProbe:        newAccountProbe,
 		quotaBootstrap:         quotaBootstrap,
 		requestHooks:           requestHooks,
+		quotaGuard:             quotaGuard,
 		concurrency:            concurrency,
 		providerRuntime:        providerRuntime,
 		hostSchema:             cpaapi.SchemaVersion,
@@ -393,6 +396,28 @@ func (a *App) Registration() Registration {
 func (a *App) HandleSchedulerPick(request cpaapi.SchedulerPickRequest) cpaapi.SchedulerPickResponse {
 	if a == nil || a.concurrency == nil || a.runtimeSuperseded() {
 		return cpaapi.SchedulerPickResponse{}
+	}
+	if a.quotaGuard != nil {
+		// Scheduler admission can precede the first account-list request. Prime
+		// credential-ID/auth-index aliases so a quota policy is not bypassed when
+		// CPA sends the credential ID as candidate.ID. A short bounded lookup is
+		// preferable to silently scheduling an account already over its limit.
+		if a.accounts != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			a.accounts.EnsureUsageStorageBindings(ctx)
+			cancel()
+		}
+		filtered, changed := a.quotaGuard.FilterSchedulerCandidates(request)
+		if changed {
+			// The scheduler protocol only returns one selected AuthID; it does not
+			// let a plugin return a rewritten candidate list. When quota filtering
+			// leaves exactly one account, select it explicitly so CPA cannot fall
+			// back to the original, quota-limited sticky candidate.
+			if len(filtered) == 1 {
+				return cpaapi.SchedulerPickResponse{AuthID: filtered[0].ID, Handled: true}
+			}
+			request.Candidates = filtered
+		}
 	}
 	return a.concurrency.PickAuth(request)
 }
@@ -629,6 +654,9 @@ func (a *App) HandleManagement(ctx context.Context, req cpaapi.ManagementRequest
 	}
 	if strings.HasPrefix(path, "/v0/management"+managementRoutePrefix) {
 		managementKey := resolveManagementKey(req.Headers)
+		if a.riskControl != nil {
+			a.riskControl.SetManagementCredentials(resolveManagementBaseURL(a.configSnapshot().ManagementBaseURL), managementKey, a.managementDoer)
+		}
 		a.policies.Arm(managementKey)
 		if a.policies.Snapshot().Policy.ManagesNewAccountProbe() {
 			a.newAccountProbe.SetManagementKey(managementKey, req.HostCallbackID)
