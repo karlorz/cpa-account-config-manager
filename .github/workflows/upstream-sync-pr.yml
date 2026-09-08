@@ -221,6 +221,7 @@ jobs:
           - Review and resolve conflicts before merging.
           - Merge using **Create a merge commit**.
           - Do **not** squash or rebase this PR, or upstream tag ancestry used by fork releases will be lost.
+          - After this PR is merged with a merge commit, the next `upstream-sync-pr` run cuts the next unused annotated fork tag `vX.Y.Z-N` and dispatches Release Plugin. It never creates a plain `vX.Y.Z` tag and never deploys.
 
           ## Upstream Commits Pending In Base
 
@@ -292,4 +293,79 @@ jobs:
             echo "- Base branch: ${BASE_BRANCH}"
             echo "- Upstream branch: ${UPSTREAM_REPO_OWNER}:${UPSTREAM_BRANCH}"
             echo "- Latest upstream tag: ${{ steps.compare.outputs.latest_upstream_tag || 'none' }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - id: fork_release
+        name: Cut next unused fork release tag
+        if: steps.compare.outputs.latest_upstream_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST_UPSTREAM_TAG: ${{ steps.compare.outputs.latest_upstream_tag }}
+        run: |
+          set -euo pipefail
+
+          git fetch --force origin "${BASE_BRANCH}"
+          git fetch --force --tags origin
+
+          if ! git merge-base --is-ancestor "${LATEST_UPSTREAM_TAG}" "origin/${BASE_BRANCH}"; then
+            echo "Upstream tag ${LATEST_UPSTREAM_TAG} is not in ${BASE_BRANCH}; skip fork release until the sync is merged."
+            echo "released=false" >> "${GITHUB_OUTPUT}"
+            echo "reason=upstream-not-merged" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [[ ! "${LATEST_UPSTREAM_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "refusing to derive a fork tag from non-plain upstream tag ${LATEST_UPSTREAM_TAG}" >&2
+            exit 1
+          fi
+
+          existing="$(git tag --list "${LATEST_UPSTREAM_TAG}-*" | grep -E "^${LATEST_UPSTREAM_TAG}-[0-9]+$" || true)"
+          if [ -n "${existing}" ]; then
+            echo "Fork release already exists for ${LATEST_UPSTREAM_TAG}; not creating another."
+            printf '%s\n' "${existing}"
+            echo "released=false" >> "${GITHUB_OUTPUT}"
+            echo "reason=already-tagged" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          fork_tag="${LATEST_UPSTREAM_TAG}-0"
+          version="${fork_tag#v}"
+          export FORK_VERSION="${version}"
+
+          git checkout -B "${BASE_BRANCH}" "origin/${BASE_BRANCH}"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          version = os.environ["FORK_VERSION"]
+          path = Path("registry.json")
+          data = json.loads(path.read_text())
+          data["plugins"][0]["version"] = version
+          path.write_text(json.dumps(data, indent=2) + "\n")
+          PY
+
+          if ! git diff --quiet -- registry.json; then
+            git add registry.json
+            git commit -m "chore: bump fork registry to ${version}"
+            git push origin "HEAD:${BASE_BRANCH}"
+          fi
+
+          git tag -a "${fork_tag}" -m "Fork release ${fork_tag} (upstream ${LATEST_UPSTREAM_TAG} + fork sync)"
+          git push origin "${fork_tag}"
+
+          gh workflow run "Release Plugin" --ref "${BASE_BRANCH}" -f "tag=${fork_tag}"
+
+          {
+            echo "released=true"
+            echo "fork_tag=${fork_tag}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Summarize fork release
+        if: steps.fork_release.outputs.released == 'true'
+        run: |
+          {
+            echo "Fork release tag created and Release Plugin dispatched."
+            echo
+            echo "- Tag: ${{ steps.fork_release.outputs.fork_tag }}"
+            echo "- Policy: annotated vX.Y.Z-N only; plain upstream tags are never created"
+            echo "- Deploy: not performed"
           } >> "${GITHUB_STEP_SUMMARY}"
