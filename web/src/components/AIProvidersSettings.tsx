@@ -228,6 +228,10 @@ function providerStableIdentity(entry: ProviderIdentitySource): string {
   return `index:${entry.index}`;
 }
 
+function providerDisplayName(entry: Pick<AIProviderChannelEntry, "index" | "name" | "workspace_id">): string {
+  return (entry.name ?? "").trim() || (entry.workspace_id ?? "").trim() || `#${entry.index + 1}`;
+}
+
 function parseNonNegativeAmount(value: string): number | undefined {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
@@ -295,7 +299,7 @@ function ProviderPolicyFields({
         </label>
         <label className="field-block">
           <span>{tx("ui.ai_provider_concurrency_window_seconds")}</span>
-          <input type="number" min="1" max="3600" step="1" value={entry.concurrencyWindowSeconds} onChange={(event) => onEntry({ concurrencyWindowSeconds: event.target.value })} placeholder="15" />
+          <input type="number" min="1" max="3600" step="1" value={entry.concurrencyWindowSeconds} onChange={(event) => onEntry({ concurrencyWindowSeconds: event.target.value })} placeholder="1-3600" />
           <small>{tx("ui.account_concurrency_window_seconds_help")}</small>
         </label>
         <label className="field-block">
@@ -457,7 +461,7 @@ function RichChannelFields({
 
   return (
     <>
-      {kind === "openai-compatibility" ? (
+      {kind !== "opencode-go" && kind !== "api-keys" ? (
         <label className="field-block">
           <span>{tx("ui.ai_provider_name")}</span>
           <input value={entry.name} onChange={(event) => set({ name: event.target.value })} autoComplete="off" />
@@ -745,7 +749,7 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
       accountID: entry.account_id,
       workspaceID: entry.workspace_id,
       concurrency15sLimit: policy?.concurrency_15s_limit === undefined ? "" : String(policy.concurrency_15s_limit),
-      concurrencyWindowSeconds: policy?.concurrency_window_seconds === undefined ? "15" : String(policy.concurrency_window_seconds),
+      concurrencyWindowSeconds: policy?.concurrency_window_seconds === undefined ? "" : String(policy.concurrency_window_seconds),
       concurrencyLimit: policy?.concurrency_limit === undefined ? "" : String(policy.concurrency_limit),
       fiveHourBudgetAmount: policy?.five_hour.budget_amount_usd === undefined ? "" : String(policy.five_hour.budget_amount_usd),
       fiveHourLimitPercent: policy?.five_hour.limit_percent === undefined ? "" : String(policy.five_hour.limit_percent),
@@ -853,7 +857,7 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
       : matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.request_limit), 0);
     const latestRuntime = matches.reduce((latestSnapshot, snapshot) =>
       snapshot.updated_at > latestSnapshot.updated_at ? snapshot : latestSnapshot, matches[0]);
-    const requestWindowSeconds = latestRuntime.request_window_seconds || 15;
+    const requestWindowSeconds = latestRuntime.request_window_seconds ?? 0;
     const quota = {
       five_hour_amount_usd: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.quota?.five_hour_amount_usd ?? 0), 0),
       seven_day_amount_usd: matches.reduce((sum, snapshot) => sum + Math.max(0, snapshot.quota?.seven_day_amount_usd ?? 0), 0),
@@ -898,6 +902,15 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
     if (amount < 0.000001) return "<$0.000001";
     return `$${amount.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
   };
+  const providerRequestWindowSeconds = (
+    policyWindow: number | undefined,
+    runtimeWindow: number | undefined,
+  ) => {
+    if (policyWindow !== undefined && policyWindow > 0) return policyWindow;
+    if (runtimeWindow !== undefined && runtimeWindow > 0) return runtimeWindow;
+    return "∞";
+  };
+
   const formatConcurrencyWindow = (
     used: number | undefined,
     configuredLimit: number | undefined,
@@ -953,7 +966,7 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
       } else if (addKind === "openai-compatibility") {
         await api.addAIProviderChannel("openai-compatibility", { name: newName, base_url: newBaseURL, api_key: newAPIKey });
       } else {
-        await api.addAIProviderChannel(addKind, { api_key: newAPIKey, base_url: newBaseURL || undefined });
+        await api.addAIProviderChannel(addKind, { name: addKind === "api-keys" ? undefined : newName, api_key: newAPIKey, base_url: newBaseURL || undefined });
       }
       onNotice(tx("ui.ai_provider_added"));
       resetForm();
@@ -1142,7 +1155,7 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
       : "";
     if (unsupported) {
       setError(unsupported);
-      setTesting({ kind, index: entry.index, label: entry.name || entry.base_url || `#${entry.index + 1}` });
+      setTesting({ kind, index: entry.index, label: providerDisplayName(entry) });
       setTestResult({
         reachable: false,
         status: "unsupported",
@@ -1158,7 +1171,7 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
     setTestResult(null);
     setTestModels([]);
     setTestModel("");
-    setTesting({ kind, index: entry.index, label: entry.name || entry.base_url || `#${entry.index + 1}` });
+    setTesting({ kind, index: entry.index, label: providerDisplayName(entry) });
     try {
       if (kind === "opencode-zen") {
         setTestResult((await api.probeOpenCodeZenAccount(entry.account_id as string)).result);
@@ -1356,6 +1369,12 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
               </>
             ) : (
               <>
+                {addKind !== "api-keys" ? (
+                  <label className="field-block">
+                    <span>{tx("ui.ai_provider_name")}</span>
+                    <input value={newName} onChange={(event) => setNewName(event.target.value)} autoFocus autoComplete="off" />
+                  </label>
+                ) : null}
                 <label className="field-block">
                   <span>{tx("ui.ai_provider_api_key")}</span>
                   <div className="secret-input">
@@ -1364,7 +1383,6 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
                       onChange={(event) => setNewAPIKey(event.target.value)}
                       type={showSecret ? "text" : "password"}
                       placeholder="sk-..."
-                      autoFocus
                       autoComplete="off"
                     />
                     <button type="button" aria-label={tx(showSecret ? "ui.hide_key" : "ui.show_key")} title={tx(showSecret ? "ui.hide_key" : "ui.show_key")} onClick={() => setShowSecret((value) => !value)}>
@@ -1478,12 +1496,12 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
       ) : null}
 
       {viewing ? (
-        <Modal title={tx("ui.view_ai_provider", { name: viewing.entry.name || viewing.entry.workspace_id || `#${viewing.entry.index + 1}` })} onClose={() => setViewing(null)} footer={(
+        <Modal title={tx("ui.view_ai_provider", { name: providerDisplayName(viewing.entry) })} onClose={() => setViewing(null)} footer={(
           <button className="button" type="button" onClick={() => setViewing(null)}>{tx("ui.close")}</button>
         )}>
           <div className="ai-provider-detail">
             <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_type")}</span><strong>{tx(channelLabelKey(viewing.kind))}</strong></div>
-            <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_name")}</span><strong>{viewing.entry.name || viewing.entry.workspace_id || "-"}</strong></div>
+            <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_name")}</span><strong>{providerDisplayName(viewing.entry)}</strong></div>
             <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_base_url")}</span><code>{viewing.entry.base_url || viewing.entry.workspace_id || "-"}</code></div>
             <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_api_key")}</span><code className="ai-provider-table-secret">{maskSecret(viewing.entry.api_key) || "-"}</code></div>
             {viewing.entry.prefix ? <div className="ai-provider-detail-row"><span>{tx("ui.prefix")}</span><strong>{viewing.entry.prefix}</strong></div> : null}
@@ -1512,7 +1530,7 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
                 <div className="ai-provider-runtime-detail">
                   {(runtime?.supported || policy) ? <>
                     <div className="ai-provider-detail-row"><span>{tx("ui.account_concurrency_active")}</span><strong>{Math.max(0, runtime?.active ?? 0)}</strong></div>
-                    <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_concurrency_request_short", { seconds: policy?.concurrency_window_seconds ?? runtime?.request_window_seconds ?? 15, value: formatConcurrencyWindow(runtime?.used_requests, policy?.concurrency_15s_limit, runtime?.request_limit, runtime?.supported === true) })}</span></div>
+                    <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_concurrency_request_short", { seconds: providerRequestWindowSeconds(policy?.concurrency_window_seconds, runtime?.request_window_seconds), value: formatConcurrencyWindow(runtime?.used_requests, policy?.concurrency_15s_limit, runtime?.request_limit, runtime?.supported === true) })}</span></div>
                     <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_concurrency_queue_short", { value: runtime?.waiting ?? 0 })}</span></div>
                   </> : null}
                   {policy ? <>
@@ -1608,7 +1626,8 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
               <col className="col-provider-name" />
               <col className="col-provider-status" />
               <col className="col-provider-models" />
-              <col className="col-provider-runtime" />
+              <col className="col-provider-concurrency" />
+              <col className="col-provider-usage" />
               <col className="col-provider-base-url" />
               <col className="col-provider-api-key" />
               <col className="col-provider-actions" />
@@ -1618,7 +1637,8 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
               <th>{tx("ui.ai_provider_name")}</th>
               <th>{tx("ui.status")}</th>
               <th>{tx("ui.ai_provider_model_count")}</th>
-              <th>{tx("ui.ai_provider_concurrency_usage")}</th>
+              <th>{tx("ui.ai_provider_concurrency")}</th>
+              <th>{tx("ui.ai_provider_usage")}</th>
               <th>{tx("ui.ai_provider_base_url")}</th>
               <th>{tx("ui.ai_provider_api_key")}</th>
               <th className="actions-header">{tx("ui.actions")}</th>
@@ -1627,7 +1647,7 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
               {channels.flatMap((channel) => [
                 ...(channel.error || channel.storage_error ? [
                   <tr key={`${channel.kind}-issue`} className="ai-provider-channel-issue">
-                    <td colSpan={8}>
+                    <td colSpan={9}>
                       <strong>{tx(channelLabelKey(channel.kind))}</strong>{" "}
                       <span>{tx(channel.storage_error ? "ui.ai_provider_storage_unavailable" : channel.error === "provider_channel_response_invalid" ? "ui.ai_provider_response_invalid" : "ui.ai_provider_channel_unavailable")}</span>
                     </td>
@@ -1636,7 +1656,7 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
                 ...channel.entries.map((entry) => (
                 <tr key={`${channel.kind}-${entry.index}`}>
                   <td><span className="provider-tag">{tx(channelLabelKey(channel.kind))}</span></td>
-                  <td><div className="identity-cell"><strong>{entry.name || entry.workspace_id || maskSecret(entry.api_key) || `#${entry.index + 1}`}</strong></div></td>
+                  <td><div className="identity-cell"><strong>{providerDisplayName(entry)}</strong></div></td>
                   <td>{entry.disabled ? <span className="ai-provider-entry-badge is-disabled">{tx("ui.disabled")}</span> : <span className="ai-provider-entry-badge">{tx("ui.enabled")}</span>}</td>
                   <td><strong className="ai-provider-model-count">{entry.models?.length ?? 0}</strong></td>
                   {(() => {
@@ -1654,13 +1674,13 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
                         return <>
                           <td className="ai-provider-runtime-cell" title={tx("ui.ai_provider_quota_settings_description")}>
                             <div className="ai-provider-runtime-concurrency" title={runtime?.supported && runtime.concurrency_configurable === true ? (runtimeUpdatedAt ? `${tx("ui.ai_provider_updated_at")}: ${runtimeUpdatedAt}` : tx("ui.ai_provider_concurrency_observable_only")) : tx("ui.ai_provider_concurrency_observable_only")}>
-                              <span>{tx("ui.ai_provider_concurrency")}</span>
-                              <strong>{tx("ui.ai_provider_concurrency_active_short", { value: `${Math.max(0, runtime?.active ?? 0)} / ${configuredConcurrencyLimit && configuredConcurrencyLimit > 0 ? configuredConcurrencyLimit : runtime?.limit && runtime.limit > 0 ? runtime.limit : "∞"}` })}</strong>
-                              <small>{tx("ui.ai_provider_concurrency_request_short", { seconds: policy?.concurrency_window_seconds ?? runtime?.request_window_seconds ?? 15, value: formatConcurrencyWindow(runtime?.used_requests, configuredRequestLimit, runtime?.request_limit, runtime?.supported === true) })}</small>
+                              <small>{tx("ui.ai_provider_concurrency_active_short", { value: `${Math.max(0, runtime?.active ?? 0)} / ${configuredConcurrencyLimit && configuredConcurrencyLimit > 0 ? configuredConcurrencyLimit : runtime?.limit && runtime.limit > 0 ? runtime.limit : "∞"}` })}</small>
+                              <small>{tx("ui.ai_provider_concurrency_request_short", { seconds: providerRequestWindowSeconds(policy?.concurrency_window_seconds, runtime?.request_window_seconds), value: formatConcurrencyWindow(runtime?.used_requests, configuredRequestLimit, runtime?.request_limit, runtime?.supported === true) })}</small>
                               <small>{tx("ui.ai_provider_concurrency_queue_short", { value: Math.max(0, runtime?.waiting ?? 0) })}</small>
                             </div>
+                          </td>
+                          <td className="ai-provider-runtime-cell" title={tx("ui.ai_provider_quota_settings_description")}>
                             <div className="ai-provider-runtime-usage">
-                              <span>{tx("ui.ai_provider_usage")}</span>
                               {runtime ? <><strong>{formatTokens(runtime.total_tokens)}</strong><small>{formatAmount(runtime.amount_usd)} · {tx("ui.quota_window_five_hour")} {budget(policy?.five_hour ?? {}, runtime.quota?.five_hour_amount_usd)} · {tx("ui.quota_window_seven_day")} {budget(policy?.seven_day ?? {}, runtime.quota?.seven_day_amount_usd)}</small></> : <strong title={runtimeError || tx("ui.ai_provider_identity_unavailable")}>{tx("ui.ai_provider_no_usage")}</strong>}
                             </div>
                           </td>
@@ -1672,8 +1692,8 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
                   <td className="ai-provider-table-secret">{maskSecret(entry.api_key) || (channel.kind === "opencode-go" ? tx("ui.opencode_auth_cookie") : channel.kind === "opencode-zen" ? (entry.key_set ? "••••" : "-") : "-")}</td>
                   <td className="actions-cell ai-provider-table-actions">
                     <div className="row-actions">
-                      <IconButton label={tx("ui.view_ai_provider", { name: entry.name || entry.workspace_id || `#${entry.index + 1}` })} onClick={() => { setError(""); setViewing({ kind: channel.kind, entry }); }}><Eye size={15} /></IconButton>
-                      <IconButton label={tx("ui.test_ai_provider", { name: entry.name || entry.workspace_id || `#${entry.index + 1}` })} disabled={channel.kind === "opencode-go" || busy} onClick={() => void testChannel(entry, channel.kind)}><Activity size={15} /></IconButton>
+                      <IconButton label={tx("ui.view_ai_provider", { name: providerDisplayName(entry) })} onClick={() => { setError(""); setViewing({ kind: channel.kind, entry }); }}><Eye size={15} /></IconButton>
+                      <IconButton label={tx("ui.test_ai_provider", { name: providerDisplayName(entry) })} disabled={channel.kind === "opencode-go" || busy} onClick={() => void testChannel(entry, channel.kind)}><Activity size={15} /></IconButton>
                       <IconButton label={tx("ui.edit_ai_provider")} onClick={() => openEditor(channel.kind, entry)}><Save size={15} /></IconButton>
                       {channel.kind !== "opencode-go" && channel.kind !== "opencode-zen" ? (
                         <>
@@ -1695,3 +1715,4 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
     </section>
   );
 }
+
