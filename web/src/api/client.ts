@@ -528,6 +528,82 @@ export async function loadAccountConfig(accountID: string): Promise<AccountEdita
 	} as AccountEditableConfig;
 }
 
+export type UsageResetTarget =
+  | { scope: "account"; account_id: string }
+  | { scope: "provider"; provider: string; identity: string };
+
+export async function resetUsage(target: UsageResetTarget): Promise<void> {
+  await request("/usage/reset", {
+    method: "POST",
+    body: JSON.stringify({ ...target, confirm: true }),
+  });
+}
+
+export interface AIProviderNameAssignment {
+  kind: AIProviderChannelKind;
+  index: number;
+  base_url?: string;
+  name: string;
+}
+
+export interface AIProviderNameSnapshot {
+  names: AIProviderNameAssignment[];
+  storage_error?: string;
+}
+
+/**
+ * Read plugin-stored AI provider display names. CPA returns every channel kind
+ * as one positional array and drops an unknown `name` field, so the plugin
+ * stores the label under a salted digest of the channel base URL and
+ * credential, and re-resolves it against the live channel list on every read.
+ * `index` and `base_url` let the caller verify the label before rendering it.
+ */
+export async function getAIProviderNames(signal?: AbortSignal): Promise<AIProviderNameSnapshot> {
+  const response = await requestRecord<AIProviderNameSnapshot>("/ai-provider-names", { signal });
+  const names: AIProviderNameAssignment[] = [];
+  if (Array.isArray(response.names)) {
+    for (const item of response.names) {
+      if (!isRecord(item)) continue;
+      const kind = typeof item.kind === "string" ? item.kind : "";
+      const index = Number(item.index);
+      const name = typeof item.name === "string" ? item.name.trim() : "";
+      if (!kind || !Number.isSafeInteger(index) || index < 0 || !name) continue;
+      names.push({
+        kind: kind as AIProviderChannelKind,
+        index,
+        ...(typeof item.base_url === "string" ? { base_url: item.base_url } : {}),
+        name,
+      });
+    }
+  }
+  return {
+    names,
+    ...(typeof response.storage_error === "string" && response.storage_error ? { storage_error: response.storage_error } : {}),
+  };
+}
+
+/**
+ * Save (or, with an empty name, clear) the label for one channel entry. The
+ * base URL is submitted only for staleness checking; credentials never leave
+ * CPA because the plugin recomputes the digest from its own channel read.
+ */
+export async function saveAIProviderName(assignment: {
+  kind: AIProviderChannelKind;
+  index: number;
+  base_url?: string;
+  name: string;
+}): Promise<void> {
+  await request("/ai-provider-names", {
+    method: "PUT",
+    body: JSON.stringify({
+      kind: assignment.kind,
+      index: assignment.index,
+      base_url: assignment.base_url ?? "",
+      name: assignment.name,
+    }),
+  });
+}
+
 export async function getCodexIdentityOverrides(signal?: AbortSignal): Promise<CodexIdentityOverrideSnapshot> {
 	const response = await requestRecord<CodexIdentityOverrideSnapshot>("/codex-identity-overrides", { signal });
 	return {
@@ -1738,7 +1814,8 @@ function channelEntriesFromResponse(kind: AIProviderChannelKind, payload: unknow
       throw new APIError(502, "ui.invalid_api_response");
     }
     const source = item as Record<string, unknown>;
-    const entry: AIProviderChannelEntry = { index };
+    const responseIndex = Number(source["index"]);
+    const entry: AIProviderChannelEntry = { index: Number.isSafeInteger(responseIndex) && responseIndex >= 0 ? responseIndex : index };
     if (typeof source["name"] === "string") entry.name = source["name"];
     if (typeof source["api-key"] === "string") entry.api_key = source["api-key"];
     if (source["api-key-entries"] !== undefined) {
@@ -2137,13 +2214,17 @@ export async function saveAIProviderChannelEntry(
     throw new Error("saveAIProviderChannelEntry only supports host-managed channels");
   }
   const raw = await getRawAIProviderChannelItems(kind);
-  if (index < 0 || index >= raw.length) throw new Error(kind + " entry #" + (index + 1) + " was not found");
 
-  const items = raw.map((item) => {
+  const items: Record<string, unknown>[] = raw.map((item) => {
     if (typeof item === "string") return { "api-key": item };
     return isRecord(item) ? { ...item } : {};
   });
-  const target = items[index];
+  const rawIndex = items.findIndex((item, position) => {
+    const candidate = Number(item["index"]);
+    return Number.isSafeInteger(candidate) && candidate >= 0 ? candidate === index : position === index;
+  });
+  if (rawIndex < 0) throw new Error(kind + " entry #" + (index + 1) + " was not found");
+  const target = items[rawIndex];
   const patched: Record<string, unknown> = { ...target };
 
   const replacementAPIKey = patch.api_key?.trim() ?? "";
@@ -2162,7 +2243,7 @@ export async function saveAIProviderChannelEntry(
     // rebuilding them from visible fields would otherwise strip metadata and
     // make the saved channel disappear from AI provider runtime views.
     const legacyAPIKey = typeof patched["api-key"] === "string" ? patched["api-key"].trim() : "";
-    const originalHasKeyEntries = Array.isArray((raw[index] as Record<string, unknown>)["api-key-entries"]);
+    const originalHasKeyEntries = Array.isArray(items[rawIndex]["api-key-entries"]);
     if (replacementAPIKey && originalHasKeyEntries) {
       // The editor only exposes the first credential as a simple replacement
       // field. Update that row in place so auth-index and other host metadata
@@ -2258,7 +2339,7 @@ export async function saveAIProviderChannelEntry(
     patched["api-key-entries"] = keyEntriesToJSON(patch.api_key_entries);
   }
 
-  items[index] = patched;
+  items[rawIndex] = patched;
   await putAIProviderChannel(kind, items);
 }
 

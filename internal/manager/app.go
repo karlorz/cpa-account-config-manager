@@ -86,6 +86,7 @@ type App struct {
 	opencodeZen            *OpenCodeZenService
 	proxyProfiles          *ProxyProfileService
 	quotaPolicies          *QuotaPolicyService
+	aiProviderNames        *AIProviderNameService
 	codexIdentityOverrides *CodexIdentityOverrideService
 	globalPolicy           *GlobalPolicyService
 	riskControl            *RiskControlService
@@ -118,6 +119,7 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	opencodeZen := NewOpenCodeZenService()
 	proxyProfiles := NewProxyProfileService()
 	quotaPolicies := NewQuotaPolicyService()
+	aiProviderNames := NewAIProviderNameService()
 	codexIdentityOverrides := NewCodexIdentityOverrideService()
 	globalPolicy := NewGlobalPolicyService()
 	riskControl := NewRiskControlService()
@@ -136,15 +138,12 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	weeklyOverdraft := NewWeeklyOverdraftExperiment(experiments.WeeklyOverdraftEnabled).WithOverdraftGate(usage)
 	codexIdentity := NewCodexIdentityExperiment(experiments, accounts)
 	codexIdentity.SetOverrides(codexIdentityOverrides)
-	setCodexIdentitySettingsProvider(func() ExperimentalCodexIdentitySettings {
-		if snapshot := globalPolicy.Snapshot(); snapshot.Policy.Enabled {
-			// The permanent global policy is authoritative, including an
-			// explicitly cleared identity policy. Falling back based on whether
-			// the value is empty would resurrect legacy experimental settings.
-			return snapshot.Policy.CodexIdentity
-		}
-		return experiments.codexIdentitySnapshot()
-	})
+	// Codex client identity has exactly one source: the global experimental
+	// settings edited under Other settings. The permanent global policy used to
+	// carry a competing copy that silently became authoritative whenever that
+	// policy was enabled, which made the setting look like it stopped working
+	// after an unrelated policy change.
+	setCodexIdentitySettingsProvider(experiments.codexIdentitySnapshot)
 	modelTests.SetCodexIdentityExperiment(codexIdentity)
 	providerRuntime := NewProviderRuntimeTracker(creditUsage)
 	providerRuntime.SetQuotaPolicies(quotaPolicies)
@@ -199,6 +198,7 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 		opencodeZen:            opencodeZen,
 		proxyProfiles:          proxyProfiles,
 		quotaPolicies:          quotaPolicies,
+		aiProviderNames:        aiProviderNames,
 		codexIdentityOverrides: codexIdentityOverrides,
 		globalPolicy:           globalPolicy,
 		riskControl:            riskControl,
@@ -270,10 +270,22 @@ func (a *App) ConfigureHost(raw []byte, hostSchema uint32) {
 	a.opencodeZen.Configure(config)
 	a.proxyProfiles.Configure(config)
 	a.quotaPolicies.Configure(config)
+	a.aiProviderNames.Configure(config)
 	a.codexIdentityOverrides.Configure(config)
 	a.proxyProfiles.SetBindingApplier(a.applyProxyProfileBindings)
 	a.experiments.Configure(config)
-	a.globalPolicy.Configure(config, a.experiments.CodexIdentity())
+	a.globalPolicy.Configure(config)
+	// Migrate the Codex identity copy that earlier releases stored in the global
+	// policy: keep the value that was effective, then drop the duplicate and any
+	// account overrides this plugin derived from it automatically.
+	if legacyIdentity, legacyEnabled := a.globalPolicy.LegacyCodexIdentity(); !globalIdentityEmpty(legacyIdentity) {
+		if legacyEnabled {
+			if errAdopt := a.experiments.AdoptCodexIdentity(legacyIdentity); errAdopt != nil {
+				a.experiments.storageErr = "experimental settings could not be persisted"
+			}
+			a.mergeLegacyCodexIdentityOverrides(legacyIdentity)
+		}
+	}
 	a.riskControl.Configure(config)
 	a.creditUsage.Configure(config, a.experiments.Sub2APICreditUsageEnabled())
 	a.providerRuntime.Configure(config)
@@ -286,6 +298,21 @@ func (a *App) ConfigureHost(raw []byte, hostSchema uint32) {
 	a.force.Configure(config)
 	a.usage.Configure(config)
 	a.reconcileOperationSources()
+}
+
+// mergeLegacyCodexIdentityOverrides removes per-account identity overrides that
+// this plugin previously derived from the global-policy copy, so the single
+// global switch becomes effective for those accounts again. Overrides that do
+// not match the derived value are preserved.
+func (a *App) mergeLegacyCodexIdentityOverrides(legacy ExperimentalCodexIdentitySettings) {
+	if a == nil || a.codexIdentityOverrides == nil {
+		return
+	}
+	derived := codexIdentityOverrideFromGlobal(legacy)
+	if derived == nil {
+		return
+	}
+	a.codexIdentityOverrides.DropMatchingAccounts(*derived)
 }
 
 func (a *App) configSnapshot() Config {
@@ -572,6 +599,8 @@ func (a *App) ManagementRegistration() cpaapi.ManagementRegistrationResponse {
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/codex-identity-overrides", Description: "Read plugin-managed account and AI-provider Codex identity overrides."},
 			{Method: http.MethodPut, Path: managementRoutePrefix + "/codex-identity-overrides/account", Description: "Save or clear one account's Codex identity override."},
 			{Method: http.MethodPut, Path: managementRoutePrefix + "/codex-identity-overrides/provider", Description: "Save or clear one AI provider's Codex identity override."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/ai-provider-names", Description: "Read plugin-stored AI provider display names keyed by stable channel characteristics."},
+			{Method: http.MethodPut, Path: managementRoutePrefix + "/ai-provider-names", Description: "Save or clear plugin-stored AI provider display names for one channel."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/accounts/quota-metadata/refresh", Description: "Refresh one Codex, Antigravity, or Kimi account's quota metadata."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/accounts/quota-metadata/reset", Description: "Consume one explicitly confirmed Codex active reset credit and refresh quota metadata."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/accounts/models", Description: "Load the common effective model catalog for an editable account scope."},
@@ -645,6 +674,7 @@ func (a *App) ManagementRegistration() cpaapi.ManagementRegistrationResponse {
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/opencode/zen/probe-account", Description: "Probe one saved OpenCode Zen account with its stored key."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/ai-providers/test", Description: "Probe one AI provider channel endpoint with the submitted credential."},
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/ai-providers/runtime", Description: "Read redacted AI provider concurrency, token, and model cost metrics."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/usage/reset", Description: "Reset locally recorded usage for one account or AI provider."},
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/proxy-profiles", Description: "List redacted reusable proxy profiles."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/proxy-profiles", Description: "Create a reusable proxy profile."},
 			{Method: http.MethodPut, Path: managementRoutePrefix + "/proxy-profiles", Description: "Update a reusable proxy profile."},
@@ -878,6 +908,14 @@ func (a *App) HandleManagement(ctx context.Context, req cpaapi.ManagementRequest
 			return jsonResponse(http.StatusUnauthorized, map[string]any{"error": "management key is unavailable"})
 		}
 		return a.handleAIProviderRuntime()
+	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/usage/reset":
+		if resolveManagementKey(req.Headers) == "" {
+			return jsonResponse(http.StatusUnauthorized, map[string]any{"error": "management key is unavailable"})
+		}
+		return a.handleUsageReset(req)
+	case (method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/ai-provider-names") ||
+		(method == http.MethodPut && path == "/v0/management"+managementRoutePrefix+"/ai-provider-names"):
+		return a.handleAIProviderNames(ctx, req)
 	case method == http.MethodGet && path == opencodeStatusResourcePath:
 		return a.handleOpenCodeStatusPage(ctx, req)
 	default:

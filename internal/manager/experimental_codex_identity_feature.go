@@ -461,14 +461,23 @@ func (e *CodexIdentityExperiment) effectiveFingerprintModeForAccount(ctx context
 	return e.effectiveAccountFingerprintMode(gate)
 }
 
+// effectiveAccountIngressGate resolves the plugin-side official-client gate for
+// one account. Only the global experiment switch enables it: a stored per-account
+// policy can exempt an account, never re-enable the gate while the switch is off.
+// Copies this plugin derived automatically from the former global-policy identity
+// used to keep rejecting requests long after the operator disabled the gate, and a
+// host codex_cli_only flag is still honoured only while the gate is enabled.
 func (e *CodexIdentityExperiment) effectiveAccountIngressGate(gate codexAccountWithMetadata) bool {
-	if override, ok := e.accountOverride(gate.account); ok && override.IngressGateEnabled != nil {
-		return *override.IngressGateEnabled
+	if override, ok := e.accountOverride(gate.account); ok && override.IngressGateEnabled != nil && !*override.IngressGateEnabled {
+		return false
+	}
+	if e == nil || e.settings == nil || !e.settings.CodexIdentity().IngressGateEnabled {
+		return false
 	}
 	if enabled, ok := metadataCodexBool(gate.metadata, "codex_cli_only"); ok {
 		return enabled
 	}
-	return e != nil && e.settings != nil && e.settings.CodexIdentity().IngressGateEnabled
+	return true
 }
 
 func (e *CodexIdentityExperiment) effectiveAccountAllowAppServer(gate codexAccountWithMetadata) bool {
@@ -497,10 +506,12 @@ func (e *CodexIdentityExperiment) effectiveProviderFingerprintMode(providerKey s
 	return effectiveCodexFingerprintMode(settings.ConvergenceMode)
 }
 
+// effectiveProviderIngressGate follows the same rule as the account path: the
+// global switch enables the gate and a provider policy can only exempt it.
 func (e *CodexIdentityExperiment) effectiveProviderIngressGate(providerKey string) bool {
 	if e != nil && e.overrides != nil {
-		if override, ok := e.overrides.Provider(providerKey); ok && override.IngressGateEnabled != nil {
-			return *override.IngressGateEnabled
+		if override, ok := e.overrides.Provider(providerKey); ok && override.IngressGateEnabled != nil && !*override.IngressGateEnabled {
+			return false
 		}
 	}
 	return e != nil && e.settings != nil && e.settings.CodexIdentity().IngressGateEnabled
@@ -548,7 +559,15 @@ func codexExtraBool(value any) bool {
 }
 
 func (e *CodexIdentityExperiment) reject(result codexRestrictionDetectionResult) cpaapi.RequestInterceptResponse {
-	body, _ := json.Marshal(map[string]any{"error": map[string]any{"message": codexRestrictionMessage(result)}})
+	// Keep the stable message clients already match, and add the provenance of
+	// this rejection: an operator who disabled the plugin gate must be able to
+	// tell a plugin-side block from the host's own account restriction.
+	body, _ := json.Marshal(map[string]any{"error": map[string]any{
+		"message": codexRestrictionMessage(result),
+		"code":    "codex_official_clients_only",
+		"source":  "plugin_ingress_gate",
+		"reason":  string(result.Reason),
+	}})
 	return cpaapi.RequestInterceptResponse{
 		Terminate:       true,
 		StatusCode:      http.StatusForbidden,
