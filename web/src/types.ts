@@ -1223,7 +1223,6 @@ export interface GlobalPolicy {
   websockets?: boolean | null;
   headers?: HeaderPatch | null;
   model_policy?: ModelPolicyPatch | null;
-  codex_identity: ExperimentalCodexIdentitySettings;
 }
 
 export interface GlobalPolicySnapshot {

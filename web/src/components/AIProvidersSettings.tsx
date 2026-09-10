@@ -1,6 +1,6 @@
 import { Activity, Eye, EyeOff, LoaderCircle, Plus, Power, PowerOff, RefreshCw, Save, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, ShieldQuestion, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Pencil, ShieldQuestion, XCircle } from "lucide-react";
 import * as api from "../api/client";
 import { technicalLabel } from "../format/accountDisplay";
 import { operatorMessage } from "../format/operatorMessage";
@@ -21,6 +21,7 @@ import type {
 } from "../types";
 import { IconButton } from "./IconButton";
 import { Modal } from "./Modal";
+import { ProviderActionsMenu } from "./ProviderActionsMenu";
 
 interface AIProvidersSettingsProps {
   refreshRevision: number;
@@ -228,6 +229,23 @@ function providerStableIdentity(entry: ProviderIdentitySource): string {
   return `index:${entry.index}`;
 }
 
+function normalizeProviderURL(value: string | undefined): string {
+  return (value ?? "").trim().toLowerCase().replace(/\/+$/, "");
+}
+
+// CPA drops the channel name for kinds that have no such field, so the plugin
+// stores the operator label under a salted digest of the channel base URL and
+// credential. The browser never computes that digest: it only verifies that the
+// resolved label still belongs to the entry it renders.
+function storedProviderName(assignments: api.AIProviderNameAssignment[], kind: AIProviderChannelKind, entry: AIProviderChannelEntry): string {
+  const match = assignments.find((assignment) =>
+    assignment.kind === kind &&
+    assignment.index === entry.index &&
+    normalizeProviderURL(assignment.base_url) === normalizeProviderURL(entry.base_url),
+  );
+  return match?.name ?? "";
+}
+
 function providerDisplayName(entry: Pick<AIProviderChannelEntry, "index" | "name" | "workspace_id">): string {
   return (entry.name ?? "").trim() || (entry.workspace_id ?? "").trim() || `#${entry.index + 1}`;
 }
@@ -356,8 +374,8 @@ function ProviderCodexIdentityFields({
           <span>{tx("ui.codex_ingress_gate")}</span>
           <select value={entry.codexIngressGate} onChange={(event) => onEntry({ codexIngressGate: event.target.value as IdentityBooleanValue })}>
             <option value="">{tx("ui.inherit_global_setting")}</option>
-            <option value="true">{tx("ui.explicitly_enabled")}</option>
-            <option value="false">{tx("ui.explicitly_disabled")}</option>
+            <option value="true">{tx("ui.codex_ingress_gate_option_follows_global")}</option>
+            <option value="false">{tx("ui.codex_ingress_gate_option_exempt")}</option>
           </select>
         </label>
         <label className="field-block">
@@ -462,10 +480,13 @@ function RichChannelFields({
   return (
     <>
       {kind !== "opencode-go" && kind !== "api-keys" ? (
-        <label className="field-block">
-          <span>{tx("ui.ai_provider_name")}</span>
-          <input value={entry.name} onChange={(event) => set({ name: event.target.value })} autoComplete="off" />
-        </label>
+        <>
+          <label className="field-block">
+            <span>{tx("ui.ai_provider_name")}</span>
+            <input value={entry.name} onChange={(event) => set({ name: event.target.value })} autoComplete="off" />
+          </label>
+          {kind === "opencode-zen" ? null : <p className="ai-provider-field-note">{tx("ui.ai_provider_name_plugin_note")}</p>}
+        </>
       ) : null}
       <label className="field-block">
         <span>{tx("ui.ai_provider_api_key")}</span>
@@ -644,6 +665,7 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
   const [runtimeError, setRuntimeError] = useState("");
   const [quotaPolicies, setQuotaPolicies] = useState<QuotaPolicySnapshot>({ accounts: {}, providers: [] });
   const [codexIdentityOverrides, setCodexIdentityOverrides] = useState<CodexIdentityOverrideSnapshot>({ accounts: {}, providers: {} });
+  const [providerNames, setProviderNames] = useState<api.AIProviderNameAssignment[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -672,28 +694,40 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
     setError(operatorMessage(caught instanceof Error ? caught.message : tx("ui.request_failed"), locale));
   }, [locale, onAPIError, tx]);
 
-  const refresh = useCallback(async (signal?: AbortSignal) => {
+  const refresh = useCallback(async (signal?: AbortSignal): Promise<AIProviderChannelSnapshot[] | undefined> => {
     const requestID = refreshRequest.current + 1;
     refreshRequest.current = requestID;
     setLoading(true);
     setError("");
     try {
-      const [nextChannels, nextQuotaPolicies, nextCodexIdentityOverrides] = await Promise.all([
+      const [nextChannels, nextQuotaPolicies, nextCodexIdentityOverrides, nextProviderNames] = await Promise.all([
         api.listAIProviderChannels(signal),
         api.getQuotaPolicies(signal),
         api.getCodexIdentityOverrides(signal),
+        api.getAIProviderNames(signal),
       ]);
-      if (requestID !== refreshRequest.current) return;
+      if (requestID !== refreshRequest.current) return undefined;
       setChannels(nextChannels);
       setQuotaPolicies(nextQuotaPolicies);
       setCodexIdentityOverrides(nextCodexIdentityOverrides);
+      setProviderNames(nextProviderNames.names);
+      return nextChannels;
     } catch (caught) {
-      if (signal?.aborted || (caught instanceof DOMException && caught.name === "AbortError")) return;
+      if (signal?.aborted || (caught instanceof DOMException && caught.name === "AbortError")) return undefined;
       if (requestID === refreshRequest.current) handleError(caught);
+      return undefined;
     } finally {
       if (requestID === refreshRequest.current) setLoading(false);
     }
   }, [handleError]);
+
+  const channelEntriesFor = (kind: AIProviderChannelKind): AIProviderChannelEntry[] =>
+    channels.find((channel) => channel.kind === kind)?.entries ?? [];
+  /** Operator label for one channel entry, verified against index and base URL. */
+  const providerLabel = (kind: AIProviderChannelKind, entry: AIProviderChannelEntry): string =>
+    storedProviderName(providerNames, kind, entry) || providerDisplayName(entry);
+  const providerNamesSupported = (kind: AIProviderChannelKind): boolean =>
+    kind !== "opencode-go" && kind !== "opencode-zen" && kind !== "api-keys";
 
   const providerPolicyKey = (kind: AIProviderChannelKind, entry: AIProviderChannelEntry) => `${kind}:${providerStableIdentity(entry)}`;
   const providerPolicyFor = (kind: AIProviderChannelKind, entry: AIProviderChannelEntry): ProviderQuotaPolicy | undefined => {
@@ -724,7 +758,7 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
       codexConvergenceMode: identityOverride.convergence_mode ?? "",
       codexIngressGate: identityOverride.ingress_gate_enabled === undefined ? "" : identityOverride.ingress_gate_enabled ? "true" : "false",
       codexAllowAppServer: identityOverride.allow_app_server_clients === undefined ? "" : identityOverride.allow_app_server_clients ? "true" : "false",
-      name: entry.name ?? entry.workspace_id ?? "",
+      name: storedProviderName(providerNames, kind, entry) || entry.name || entry.workspace_id || "",
       baseURL: entry.base_url ?? "",
       apiKey: "",
       disabled: entry.disabled === true,
@@ -970,7 +1004,28 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
       }
       onNotice(tx("ui.ai_provider_added"));
       resetForm();
-      await refresh();
+      const nextChannels = await refresh();
+      // Adopt the typed label for the entry CPA just created. Match it by the
+      // base URL the operator supplied (and by the credential when one was
+      // given) instead of trusting the array position CPA returned; the plugin
+      // then stores the label under its own base URL plus credential digest.
+      const typedName = newName.trim();
+      if (typedName && nextChannels && providerNamesSupported(addKind)) {
+        const entries = nextChannels.find((channel) => channel.kind === addKind)?.entries ?? [];
+        const normalizedURL = normalizeProviderURL(newBaseURL);
+        const byURL = entries.filter((entry) => normalizeProviderURL(entry.base_url) === normalizedURL);
+        const typedKey = newAPIKey.trim();
+        const byKey = typedKey ? byURL.filter((entry) => (entry.api_key ?? "").trim() === typedKey) : [];
+        const matched = byKey.length > 0 ? byKey : byURL;
+        for (const entry of matched) {
+          await api.saveAIProviderName({
+            kind: addKind,
+            index: entry.index,
+            base_url: entry.base_url ?? "",
+            name: typedName,
+          });
+        }
+      }
     } catch (caught) {
       handleError(caught);
     } finally {
@@ -1098,6 +1153,17 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
           patch.models = models;
         }
         await api.saveAIProviderChannelEntry(editing.kind, editing.index, patch);
+        // CPA drops the channel name for kinds that have no such field, so the
+        // plugin stores the operator label under a salted digest of the base URL
+        // and credential, revalidated on every read.
+        if (providerNamesSupported(editing.kind)) {
+          await api.saveAIProviderName({
+            kind: editing.kind,
+            index: editing.index,
+            base_url: editing.baseURL.trim(),
+            name: editing.name.trim(),
+          });
+        }
         onNotice(tx("ui.ai_provider_saved"));
       }
       await api.saveAIProviderQuotaPolicy(policy);
@@ -1122,6 +1188,22 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
     setBusy(true);
     setError("");
     try {
+      // Deleting a channel must not leave its local runtime totals attached to
+      // a later channel that receives the same CPA auth identity.
+      for (const target of providerResetTargets(kind, entry)) {
+        await api.resetUsage({ scope: "provider", ...target });
+      }
+      // Retire the stored label as well, so a re-created channel with the same
+      // base URL and credential never inherits a name the operator deleted. This
+      // is cleanup only: a label failure must never block the deletion itself,
+      // and the store prunes orphaned labels on the next write.
+      if (providerNamesSupported(kind)) {
+        try {
+          await api.saveAIProviderName({ kind, index: entry.index, base_url: entry.base_url ?? "", name: "" });
+        } catch {
+          // Ignore: the channel deletion below is the requested operation.
+        }
+      }
       await api.deleteAIProviderChannelEntry(kind, entry.index, entry.account_id);
       onNotice(tx("ui.ai_provider_deleted"));
       await refresh();
@@ -1147,6 +1229,45 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
     }
   };
 
+  const providerResetTargets = (kind: AIProviderChannelKind, entry: AIProviderChannelEntry): Array<{ provider: string; identity: string }> => {
+    const identities = new Set<string>();
+    if (entry.auth_index?.trim()) identities.add(entry.auth_index.trim());
+    for (const keyEntry of entry.api_key_entries ?? []) {
+      if (keyEntry.auth_index?.trim()) identities.add(keyEntry.auth_index.trim());
+    }
+    const targets: Array<{ provider: string; identity: string }> = [];
+    for (const identity of identities) {
+      const matchingSnapshots = runtimeSnapshots.filter((snapshot) => snapshot.auth_index?.trim() === identity);
+      if (matchingSnapshots.length > 0) {
+        for (const snapshot of matchingSnapshots) targets.push({ provider: snapshot.provider, identity: snapshot.identity });
+      } else {
+        const provider = kind === "openai-compatibility" ? "openai" : kind.replace(/-api-key$/, "");
+        targets.push({ provider, identity });
+      }
+    }
+    return targets;
+  };
+
+  const resetProviderUsage = async (kind: AIProviderChannelKind, entry: AIProviderChannelEntry) => {
+    const targets = providerResetTargets(kind, entry);
+    if (targets.length === 0) {
+      setError(tx("ui.ai_provider_identity_unavailable"));
+      return;
+    }
+    const label = providerLabel(kind, entry);
+    if (!window.confirm(tx("ui.confirm_reset_local_usage", { target: label }))) return;
+    setBusy(true);
+    try {
+      for (const target of targets) await api.resetUsage({ scope: "provider", ...target });
+      await refreshRuntime();
+      onNotice(tx("ui.local_usage_reset", { target: label }));
+    } catch (caught) {
+      handleError(caught);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const testChannel = async (entry: AIProviderChannelEntry, kind: AIProviderChannelKind) => {
     if (busy) return;
     if (kind === "opencode-go") return;
@@ -1155,7 +1276,7 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
       : "";
     if (unsupported) {
       setError(unsupported);
-      setTesting({ kind, index: entry.index, label: providerDisplayName(entry) });
+      setTesting({ kind, index: entry.index, label: providerLabel(kind, entry) });
       setTestResult({
         reachable: false,
         status: "unsupported",
@@ -1171,7 +1292,7 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
     setTestResult(null);
     setTestModels([]);
     setTestModel("");
-    setTesting({ kind, index: entry.index, label: providerDisplayName(entry) });
+    setTesting({ kind, index: entry.index, label: providerLabel(kind, entry) });
     try {
       if (kind === "opencode-zen") {
         setTestResult((await api.probeOpenCodeZenAccount(entry.account_id as string)).result);
@@ -1496,12 +1617,12 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
       ) : null}
 
       {viewing ? (
-        <Modal title={tx("ui.view_ai_provider", { name: providerDisplayName(viewing.entry) })} onClose={() => setViewing(null)} footer={(
+        <Modal title={tx("ui.view_ai_provider", { name: providerLabel(viewing.kind, viewing.entry) })} onClose={() => setViewing(null)} footer={(
           <button className="button" type="button" onClick={() => setViewing(null)}>{tx("ui.close")}</button>
         )}>
           <div className="ai-provider-detail">
             <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_type")}</span><strong>{tx(channelLabelKey(viewing.kind))}</strong></div>
-            <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_name")}</span><strong>{providerDisplayName(viewing.entry)}</strong></div>
+            <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_name")}</span><strong>{providerLabel(viewing.kind, viewing.entry)}</strong></div>
             <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_base_url")}</span><code>{viewing.entry.base_url || viewing.entry.workspace_id || "-"}</code></div>
             <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_api_key")}</span><code className="ai-provider-table-secret">{maskSecret(viewing.entry.api_key) || "-"}</code></div>
             {viewing.entry.prefix ? <div className="ai-provider-detail-row"><span>{tx("ui.prefix")}</span><strong>{viewing.entry.prefix}</strong></div> : null}
@@ -1656,7 +1777,7 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
                 ...channel.entries.map((entry) => (
                 <tr key={`${channel.kind}-${entry.index}`}>
                   <td><span className="provider-tag">{tx(channelLabelKey(channel.kind))}</span></td>
-                  <td><div className="identity-cell"><strong>{providerDisplayName(entry)}</strong></div></td>
+                  <td><div className="identity-cell"><strong>{providerLabel(channel.kind, entry)}</strong></div></td>
                   <td>{entry.disabled ? <span className="ai-provider-entry-badge is-disabled">{tx("ui.disabled")}</span> : <span className="ai-provider-entry-badge">{tx("ui.enabled")}</span>}</td>
                   <td><strong className="ai-provider-model-count">{entry.models?.length ?? 0}</strong></td>
                   {(() => {
@@ -1692,9 +1813,16 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
                   <td className="ai-provider-table-secret">{maskSecret(entry.api_key) || (channel.kind === "opencode-go" ? tx("ui.opencode_auth_cookie") : channel.kind === "opencode-zen" ? (entry.key_set ? "••••" : "-") : "-")}</td>
                   <td className="actions-cell ai-provider-table-actions">
                     <div className="row-actions">
-                      <IconButton label={tx("ui.view_ai_provider", { name: providerDisplayName(entry) })} onClick={() => { setError(""); setViewing({ kind: channel.kind, entry }); }}><Eye size={15} /></IconButton>
-                      <IconButton label={tx("ui.test_ai_provider", { name: providerDisplayName(entry) })} disabled={channel.kind === "opencode-go" || busy} onClick={() => void testChannel(entry, channel.kind)}><Activity size={15} /></IconButton>
-                      <IconButton label={tx("ui.edit_ai_provider")} onClick={() => openEditor(channel.kind, entry)}><Save size={15} /></IconButton>
+                      <IconButton label={tx("ui.view_ai_provider", { name: providerLabel(channel.kind, entry) })} onClick={() => { setError(""); setViewing({ kind: channel.kind, entry }); }}><Eye size={15} /></IconButton>
+                      <IconButton label={tx("ui.test_ai_provider", { name: providerLabel(channel.kind, entry) })} disabled={channel.kind === "opencode-go" || busy} onClick={() => void testChannel(entry, channel.kind)}><Activity size={15} /></IconButton>
+                      <IconButton label={tx("ui.edit_ai_provider")} onClick={() => openEditor(channel.kind, entry)}><Pencil size={15} /></IconButton>
+                      <ProviderActionsMenu
+                        label={tx("ui.more_actions_for_provider", { provider: providerLabel(channel.kind, entry) })}
+                        menuLabel={tx("ui.provider_more_actions")}
+                        resetUsageLabel={tx("ui.reset_local_usage")}
+                        resetting={busy}
+                        onResetUsage={() => void resetProviderUsage(channel.kind, entry)}
+                      />
                       {channel.kind !== "opencode-go" && channel.kind !== "opencode-zen" ? (
                         <>
                           <IconButton className="row-enable-action" label={tx("ui.enable_ai_provider")} disabled={busy || !entry.disabled} onClick={() => void toggleEnabled(entry, channel.kind, true)}><Power size={15} /></IconButton>
