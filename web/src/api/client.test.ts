@@ -1435,18 +1435,28 @@ describe("management API client", () => {
     await expect(getPluginStore()).rejects.toMatchObject({ status: 502, message: "ui.invalid_api_response" });
   });
 
-  it("rejects malformed plugin-store rows instead of treating the plugin as absent", async () => {
+  it("skips malformed plugin-store sibling rows instead of failing the whole store", async () => {
     setSession("", "management-secret");
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      plugins_enabled: true,
       plugins: [
-        { id: "cpa-account-config-manager", version: "0.3.0" },
+        { id: "cpa-account-config-manager", version: "0.3.1403-0", repository: "https://github.com/karlorz/cpa-account-config-manager" },
         "invalid-entry",
         null,
+        { id: "", version: "1.0.0" },
+        { id: "other-plugin", version: "  " },
+        { id: "ok-sibling", version: "1.2.3" },
       ],
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(getPluginStore()).rejects.toMatchObject({ status: 502, message: "ui.invalid_api_response" });
+    await expect(getPluginStore()).resolves.toEqual({
+      plugins_enabled: true,
+      plugins: [
+        { id: "cpa-account-config-manager", version: "0.3.1403-0", repository: "https://github.com/karlorz/cpa-account-config-manager" },
+        { id: "ok-sibling", version: "1.2.3" },
+      ],
+    });
   });
 
   it("rejects unverified versions and malformed plugin-store install responses", async () => {

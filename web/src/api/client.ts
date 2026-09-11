@@ -1204,18 +1204,20 @@ export async function getPluginStore(signal?: AbortSignal): Promise<PluginStoreR
   if (source.plugins !== null && pluginValues === null) {
     throw new APIError(502, "ui.invalid_api_response");
   }
-  // Never silently drop malformed rows: the update checker could otherwise
-  // conclude that this plugin is absent and report a false "no update" state.
-  if (pluginValues !== null && pluginValues.some((plugin) => {
-    if (!isRecord(plugin)) return true;
-    return typeof plugin.id !== "string" || plugin.id.trim() === ""
-      || typeof plugin.version !== "string" || plugin.version.trim() === "";
-  })) {
-    throw new APIError(502, "ui.invalid_api_response");
-  }
+  // Skip malformed sibling rows instead of failing the whole store. A single
+  // bad catalog entry previously made Other Settings /updates report
+  // "plugin store metadata is unavailable" even when the karlorz CPA entry
+  // was valid. Missing fork rows still surface via reconcileUpdateStatus.
+  const plugins = pluginValues === null
+    ? null
+    : pluginValues.filter((plugin) => {
+      if (!isRecord(plugin)) return false;
+      return typeof plugin.id === "string" && plugin.id.trim() !== ""
+        && typeof plugin.version === "string" && plugin.version.trim() !== "";
+    }) as unknown as NonNullable<PluginStoreResponse["plugins"]>;
   return {
     plugins_enabled: source.plugins_enabled,
-    plugins: (pluginValues ?? []) as unknown as NonNullable<PluginStoreResponse["plugins"]>,
+    plugins,
   };
 }
 
