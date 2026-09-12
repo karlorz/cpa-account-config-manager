@@ -1256,6 +1256,113 @@ export interface AgentIdentitySessionLoginResponse {
 export interface OpenCodeAccountView {
   id: string;
   workspace_id: string;
+  base_url?: string;
+  /** Whether a Go API key is stored. The key itself is never returned. */
+  key_set?: boolean;
+  /** Model catalog read from the upstream; ids are not secret. */
+  models?: string[];
+  models_error?: string;
+  models_fetched_at?: string;
+}
+
+/**
+ * Outcome of one OpenCode model probe. The result is sanitized: it carries the
+ * status and a bounded detail, never the credential.
+ */
+export interface OpenCodeModelTestResult {
+  reachable: boolean;
+  status: "available" | "unavailable" | "unsupported" | "review";
+  status_code?: number;
+  reason_code?: string;
+  model?: string;
+  detail?: string;
+  latency_ms?: number;
+  tested_at?: string;
+}
+
+/** CPA channel written by the bind action so the models become routable. */
+export interface OpenCodeBindingResult {
+  kind: string;
+  base_url: string;
+  index: number;
+  created: boolean;
+  channel_key: string;
+  /** Number of model rows published on the CPA channel. */
+  models: number;
+}
+
+/** One context-length price tier; Zen charges more above the threshold. */
+export interface OpenCodePriceTier {
+  min_context_tokens: number;
+  input_usd_per_million?: number;
+  output_usd_per_million?: number;
+  cache_read_usd_per_million?: number;
+  cache_write_usd_per_million?: number;
+}
+
+/** Official OpenCode price for one model, in USD per million tokens. */
+export interface OpenCodeModelPrice {
+  id: string;
+  name?: string;
+  input_usd_per_million?: number;
+  output_usd_per_million?: number;
+  cache_read_usd_per_million?: number;
+  cache_write_usd_per_million?: number;
+  context_tokens?: number;
+  output_tokens?: number;
+  tiers?: OpenCodePriceTier[];
+  /** Go-only monthly USD allowance taken from the official pricing docs. */
+  monthly_limit_usd?: number;
+  /** Documented request estimates for the Go 5-hour, weekly and monthly windows. */
+  estimated_requests?: { five_hour?: number; weekly?: number; monthly?: number };
+  /** Official API endpoint published for the model. */
+  endpoint?: string;
+  /** Deprecation notice from the official pricing docs. */
+  deprecated_at?: string;
+  /** True when the row comes from the official pricing tables, not the mirror. */
+  official_prices?: boolean;
+}
+
+/**
+ * How one OpenCode gateway charges for usage. The values are contractual
+ * rather than measured: Zen is metered pay-as-you-go, Go is a $10/month
+ * subscription whose per-model USD allowance is split across three windows.
+ */
+export interface OpenCodeBillingMode {
+  kind: string;
+  metered: boolean;
+  subscription_usd_per_month?: number;
+  /** Share of the monthly allowance available in the 5-hour window (0.2). */
+  five_hour_fraction?: number;
+  /** Share of the monthly allowance available in the weekly window (0.5). */
+  weekly_fraction?: number;
+  docs_url?: string;
+  summary?: string;
+}
+
+/** Synced official price catalog for the whole OpenCode catalog. */
+export interface OpenCodePricingSnapshot {
+  updated_at?: string;
+  /** When the official pricing docs were last parsed, next to the mirror sync. */
+  docs_updated_at?: string;
+  source?: string;
+  /** Contractual billing descriptors for Zen and Go. */
+  billing?: OpenCodeBillingMode[];
+  zen?: OpenCodeModelPrice[];
+  go?: OpenCodeModelPrice[];
+  storage_error?: string;
+}
+
+/** Per-conversation x-opencode-session routing state. */
+export interface OpenCodeSessionSnapshot {
+  enabled: boolean;
+  salt_ready: boolean;
+  target_models?: string[];
+  /** Number of CPA auth indexes attributed to OpenCode channels. */
+  target_auth_indexes?: number;
+  injected_requests: number;
+  distinct_sessions: number;
+  last_injected_at?: string;
 }
 
 export interface OpenCodeWindowUsage {
@@ -1291,6 +1398,9 @@ export interface OpenCodeZenAccountView {
   name?: string;
   base_url: string;
   key_set: boolean;
+  models?: string[];
+  models_error?: string;
+  models_fetched_at?: string;
 }
 
 export interface OpenCodeZenAccountsResponse {
@@ -1322,6 +1432,27 @@ export interface OpenCodeAccountsResponse {
   accounts: OpenCodeAccountView[];
   storage_error?: string;
 }
+/** One CPA AI-provider channel that belongs to OpenCode; the credential is never included. */
+export interface OpenCodeChannelView {
+  kind: "go" | "zen";
+  name?: string;
+  base_url: string;
+  key_set: boolean;
+  models: number;
+  source: string;
+  imported: boolean;
+  workspace_id?: string;
+}
+
+/** Outcome of importing one AI-provider channel credential into the workspace. */
+export interface OpenCodeImportResult {
+  kind: string;
+  action: "create_zen" | "attach_key";
+  account_id: string;
+  name?: string;
+  base_url: string;
+}
+
 
 export type AIProviderChannelKind =
   | "openai-compatibility"

@@ -198,7 +198,10 @@ func (t *ProviderRuntimeTracker) Configure(config Config) {
 		t.persistTimer.Stop()
 		t.persistTimer = nil
 	}
-	if t.loaded && t.dirty && t.store != "" {
+	t.mu.Lock()
+	pendingDirty := t.dirty
+	t.mu.Unlock()
+	if t.loaded && pendingDirty && t.store != "" {
 		if errPersist := t.persistLocked(); errPersist != nil {
 			return
 		}
@@ -297,7 +300,10 @@ func (t *ProviderRuntimeTracker) DiscoverAuthStorage(entries []cpaapi.HostAuthFi
 		t.persistTimer.Stop()
 		t.persistTimer = nil
 	}
-	if t.loaded && t.dirty && t.store != "" {
+	t.mu.Lock()
+	pendingDirty := t.dirty
+	t.mu.Unlock()
+	if t.loaded && pendingDirty && t.store != "" {
 		if errPersist := t.persistLocked(); errPersist != nil {
 			return
 		}
@@ -345,8 +351,9 @@ func (t *ProviderRuntimeTracker) DiscoverAuthStorage(entries []cpaapi.HostAuthFi
 	t.storageErr = ""
 	t.storageBlocked = false
 	t.dirty = len(currentAggregates) > 0 || recovered || pruned || removed
+	needsPersist := t.dirty
 	t.mu.Unlock()
-	if t.dirty {
+	if needsPersist {
 		_ = t.persistLocked()
 	}
 }
@@ -1207,7 +1214,9 @@ func (t *ProviderRuntimeTracker) Shutdown() {
 	// instead of returning early for the same data directory.
 	t.loaded = false
 	t.store = ""
+	t.mu.Lock()
 	t.dirty = false
+	t.mu.Unlock()
 	t.storeMu.Unlock()
 	t.mu.Lock()
 	t.requests = make(map[string]providerRuntimeRequest)
@@ -1457,13 +1466,21 @@ func runtimeIdentityFromUsage(record cpaapi.UsageRecord) (string, string) {
 	return "", ""
 }
 
-func runtimeCredentialIdentity(record cpaapi.UsageRecord) string {
-	provider, key := normalizeRuntimeProvider(record.Provider), strings.TrimSpace(record.APIKey)
+// aiProviderRuntimeCredentialIdentity derives the runtime aggregate identity CPA
+// reports for a provider credential. It is the durable usage key: it survives an
+// auth-index regeneration, so usage history follows the channel rather than the
+// volatile index, and it never exposes the credential itself.
+func aiProviderRuntimeCredentialIdentity(provider, apiKey string) string {
+	provider, key := normalizeRuntimeProvider(provider), strings.TrimSpace(apiKey)
 	if provider == "" || key == "" {
 		return ""
 	}
 	digest := sha256.Sum256([]byte(provider + "\x00" + key))
 	return "credential:" + hex.EncodeToString(digest[:])
+}
+
+func runtimeCredentialIdentity(record cpaapi.UsageRecord) string {
+	return aiProviderRuntimeCredentialIdentity(record.Provider, record.APIKey)
 }
 
 func (a *App) handleAIProviderRuntime() cpaapi.ManagementResponse {
