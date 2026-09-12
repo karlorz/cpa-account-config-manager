@@ -73,17 +73,45 @@ func TestRenderOpenCodeStatusPageLabels(t *testing.T) {
 	if strings.Contains(body, "super-secret-cookie-value") {
 		t.Fatalf("page must not echo cookie material")
 	}
+	// The resource route is unauthenticated, so the page must not offer any form
+	// that submits credentials or mutates state.
+	for _, forbidden := range []string{"auth_cookie", "<form", `action="save"`, `action="remove"`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("read-only status page contains %q", forbidden)
+		}
+	}
+	if strings.Contains(body, "wrk_test") {
+		t.Fatal("status page exposed the full workspace identifier")
+	}
+	if !strings.Contains(body, "****") {
+		t.Fatal("status page did not mask the workspace identifier")
+	}
+}
+
+func TestMaskOpenCodeWorkspaceIDKeepsOnlyASuffix(t *testing.T) {
+	cases := map[string]string{
+		"":            "",
+		"ab":          "**",
+		"abcd":        "****",
+		"wrk_abcdef":  "******cdef",
+		"wrk_abc_def": "*******_def",
+	}
+	for input, want := range cases {
+		if got := maskOpenCodeWorkspaceID(input); got != want {
+			t.Fatalf("maskOpenCodeWorkspaceID(%q) = %q, want %q", input, got, want)
+		}
+	}
 }
 
 func TestOpenCodeQuotaServicePersistsAccounts(t *testing.T) {
 	dataDir := t.TempDir()
 	service := NewOpenCodeQuotaService()
 	service.Configure(Config{DataDir: dataDir})
-	firstID, errSave := service.SaveAccount("wrk_one", "cookie-secret-1")
+	firstID, errSave := service.SaveAccount("wrk_one", "cookie-secret-1", "")
 	if errSave != nil {
 		t.Fatalf("SaveAccount() error = %v", errSave)
 	}
-	if _, errSave := service.SaveAccount("wrk_two", "cookie-secret-2"); errSave != nil {
+	if _, errSave := service.SaveAccount("wrk_two", "cookie-secret-2", ""); errSave != nil {
 		t.Fatalf("SaveAccount() error = %v", errSave)
 	}
 
@@ -175,7 +203,11 @@ func TestOpenCodeManagementAccountsRoutesRedactAndPersist(t *testing.T) {
 	}
 }
 
-func TestOpenCodeStatusPageResourceServesHTMLAndSavesAccount(t *testing.T) {
+// The status page is served on an unauthenticated resource route. Query
+// parameters must never mutate state or carry a credential: a GET that saved a
+// cookie could be triggered cross-site and would leak the credential into browser
+// history, referrers, and server access logs.
+func TestOpenCodeStatusPageResourceIsReadOnly(t *testing.T) {
 	dataDir := t.TempDir()
 	app := NewApp(&fakeAuthHost{}, []byte("index"))
 	defer app.Close()
@@ -188,6 +220,7 @@ func TestOpenCodeStatusPageResourceServesHTMLAndSavesAccount(t *testing.T) {
 			"workspace_id": {"wrk_status"},
 			"auth_cookie":  {"status-cookie"},
 			"action":       {"save"},
+			"account_id":   {"wrk_existing"},
 		},
 	})
 	if response.StatusCode != http.StatusOK {
@@ -197,15 +230,14 @@ func TestOpenCodeStatusPageResourceServesHTMLAndSavesAccount(t *testing.T) {
 		t.Fatalf("content type = %q", contentType)
 	}
 	body := string(response.Body)
-	if !strings.Contains(body, "OpenCode Go") || !strings.Contains(body, "wrk_status") {
-		t.Fatalf("status page missing account content: %.2000s", body)
+	if !strings.Contains(body, "OpenCode Go") {
+		t.Fatalf("status page missing content: %.2000s", body)
 	}
 	if strings.Contains(body, "status-cookie") {
 		t.Fatalf("status page echoed the auth cookie")
 	}
-	views := app.opencode.ListAccounts()
-	if len(views) != 1 || views[0].WorkspaceID != "wrk_status" {
-		t.Fatalf("status page save did not bind account: %#v", views)
+	if views := app.opencode.ListAccounts(); len(views) != 0 {
+		t.Fatalf("unauthenticated status page mutated state: %#v", views)
 	}
 }
 
@@ -228,7 +260,7 @@ func TestOpenCodeProbeRequiresCredentialAndRejectsEmpty(t *testing.T) {
 func TestOpenCodeQuotaSnapshotNeverLeaksCookies(t *testing.T) {
 	service := NewOpenCodeQuotaService()
 	service.Configure(Config{DataDir: t.TempDir()})
-	if _, errSave := service.SaveAccount("wrk_leak", "cookie-leak-test"); errSave != nil {
+	if _, errSave := service.SaveAccount("wrk_leak", "cookie-leak-test", ""); errSave != nil {
 		t.Fatalf("SaveAccount() error = %v", errSave)
 	}
 	raw, errMarshal := json.Marshal(service.Snapshot())
@@ -244,7 +276,7 @@ func TestOpenCodeStorePathIsPrivate(t *testing.T) {
 	dataDir := t.TempDir()
 	service := NewOpenCodeQuotaService()
 	service.Configure(Config{DataDir: dataDir})
-	if _, errSave := service.SaveAccount("wrk_perm", "cookie"); errSave != nil {
+	if _, errSave := service.SaveAccount("wrk_perm", "cookie", ""); errSave != nil {
 		t.Fatalf("SaveAccount() error = %v", errSave)
 	}
 	info, errStat := os.Stat(filepath.Join(dataDir, "opencode-quota.json"))
@@ -280,7 +312,7 @@ func TestOpenCodeQuotaConfigureRetriesCorruptStoreWithoutDroppingAccounts(t *tes
 	firstDir := t.TempDir()
 	service := NewOpenCodeQuotaService()
 	service.Configure(Config{DataDir: firstDir})
-	if _, errSave := service.SaveAccount("wrk_existing", "cookie-existing"); errSave != nil {
+	if _, errSave := service.SaveAccount("wrk_existing", "cookie-existing", ""); errSave != nil {
 		t.Fatalf("SaveAccount() error = %v", errSave)
 	}
 
@@ -321,7 +353,7 @@ func TestOpenCodeQuotaPersistenceFailureIsSanitized(t *testing.T) {
 	}
 	service := NewOpenCodeQuotaService()
 	service.Configure(Config{DataDir: blockingPath})
-	_, errSave := service.SaveAccount("wrk_secret", "cookie-super-secret")
+	_, errSave := service.SaveAccount("wrk_secret", "cookie-super-secret", "")
 	if errSave == nil {
 		t.Fatal("SaveAccount() error = nil")
 	}

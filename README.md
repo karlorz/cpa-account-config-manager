@@ -54,8 +54,9 @@
 - 测试结果展示模型、HTTP 状态、延迟和脱敏后的上游响应；支持主模型、回退模型和兼容模型，成功的 `200` 完成响应会被正确识别。
 - 手动测试会持久化最后一次模型和历史测试模型；白名单账号会优先加载白名单模型。
 - 模型策略支持全部模型、白名单和黑名单。手动测试、自动探测与巡检都会遵守策略；新 Codex 账号可自动识别受限兼容模型并应用白名单。自动兼容白名单属于常驻能力，不需要实验开关。
-- Codex 客户端身份策略是常驻配置，支持出站身份收敛、官方客户端入口门、App Server 放行、最低/最高版本、白名单/黑名单、引擎指纹信号，以及关闭、设备级、会话级和完全收敛模式。
-- 身份策略可在全局策略、默认策略、条件策略、单账号和 AI 提供商层级继承或覆盖；Codex OAuth、`codex-api-key` 健康检查及内部模型、额度、Token、PAT、Agent Identity 探测使用一致的兼容身份。
+- Codex 客户端身份策略是「其他配置 → 实验性功能」中的唯一全局配置，支持出站身份收敛、官方客户端入口门、App Server 放行、最低/最高版本、白名单/黑名单、引擎指纹信号，以及关闭、设备级、会话级和完全收敛模式。
+- 官方客户端入口门只能由该全局开关开启：账号或 AI 提供商的策略只能豁免单个对象，不能单独开启，因此不会在关闭总开关后继续拦截请求；被拦截时会返回来源标记（`source`、`reason`）便于区分插件拦截与上游限制。
+- 出站收敛与入口门是相互独立的：只开启收敛不会拒绝任何请求。Codex OAuth、`codex-api-key` 健康检查及内部模型、额度、Token、PAT、Agent Identity 探测使用一致的兼容身份。
 
 ### 巡检、自动处置与策略
 
@@ -82,9 +83,31 @@ AI 提供商是独立工作区，当前可管理：
 - OpenCode Go。
 - OpenCode Zen，以及通过自定义 Base URL 接入的自建 `opencode-cc`；OpenCode Zen 未填写 Base URL 时默认使用 `https://opencode.ai/zen`。
 
-支持提供商名称、状态、模型数量、并发用量、Base URL、API Key、模型映射、Priority、Weight、前缀、Header、代理和渠道专用选项。API Key 始终脱敏，编辑时留空会保留原值。支持查看、测试、编辑、启用、禁用、删除、模型目录、真实模型测试、Token/成本统计、15 秒/60 秒并发、5h/7d 自定义预算、代理档案和 Codex 身份策略；无法由当前 CPA 修改的能力会显示兼容提示，而不是伪造可用状态。
+支持提供商名称、状态、模型数量、并发用量、Base URL、API Key、模型映射、Priority、Weight、前缀、Header、代理和渠道专用选项。CPA 渠道条目本身没有名称字段，因此名称、该渠道的用量身份等由插件保存为「渠道记录」：键为渠道 Base URL 与 API Key 的加盐不可逆摘要，每次读取都会用实时渠道数据重新校验并回写；仅 Base URL 或仅 Key 相同的渠道不会被认错。换 Key 后会按新摘要重新读取，若该 Base URL 在同类渠道中唯一，则自动继承旧记录（名称与历史用量身份），因此历史用量仍能对上；Base URL 重复时不做继承，避免两个渠道互相认领。API Key 始终脱敏，编辑时留空会保留原值。每行的「更多」菜单集中提供重置本地用量与删除渠道（删除为最后一项）；支持查看、测试、编辑、启用、禁用、删除、模型目录、真实模型测试、Token/成本统计、15 秒/60 秒并发、5h/7d 自定义预算、代理档案和 Codex 身份策略；无法由当前 CPA 修改的能力会显示兼容提示，而不是伪造可用状态。
 
-OpenCode Go 还支持 Workspace ID 与 auth Cookie、5h/7d/30d 配额、重置时间、手动刷新和删除。
+OpenCode Go 还支持 Workspace ID 与 auth Cookie、5h/7d/30d 配额、重置时间、手动刷新和删除（配置与刷新在鉴权界面中进行；独立的 OpenCode 状态页无需鉴权，因此只读取缓存状态、掩码工作区 ID，且不接收任何凭据）。
+
+### OpenCode
+
+侧边菜单在「AI 提供商」之后新增独立的 **OpenCode** 工作区：
+
+- 工作区按标签页组织，便于管理，依次为：「概览」（计费摘要、对话会话状态和计数条）、「Go 账号」、「Zen 账号」、「渠道」，以及「模型与价格」（价格目录与模型测试）。快捷入口和刷新操作在每个标签页都保持可用，从账号行发起模型测试会切换到「模型与价格」标签页。
+- 绑定 OpenCode Go 时，先登录 opencode.ai 并打开 Go 工作区页面，再以 Workspace ID 和 auth Cookie（即 `auth` 的值，用于抓取额度）添加工作区，并可选择保存 OpenCode Go API Key；每个工作区展示已保存的 5h/7d/30d 配额。
+- 以名称、API Key 和 Base URL 添加 OpenCode Zen 凭据，Base URL 可以是 Zen 网关 `https://opencode.ai/zen`（默认值），也可以是自建 `opencode-cc` 桥接地址（例如 `http://localhost:8787`）。
+- 「渠道」标签页会读取已归属 OpenCode 的 CPA AI 提供商渠道并列出类型、名称、Base URL、模型数量、密钥状态以及工作区是否已管理该渠道。一次点击即可导入渠道凭据，无需重复填写：Zen 渠道（包括自建 `opencode-cc` 桥接）会成为 Zen 账号，Go 渠道会把其 API Key 附加到已保存 Workspace ID 和 auth Cookie 的工作区账号。若没有这样的账号，Go 渠道会返回一个明确状态，引导操作者先到「Go 账号」标签页填写 Workspace ID 和 auth Cookie。凭据在服务端读取并保存，绝不会到达浏览器。
+- “加载模型”会从 OpenAI 兼容端点 `GET {base}/v1/models` 获取模型列表，请求携带 `x-opencode-client: cli` 请求头和 `opencode/<version>` User-Agent，并按账号缓存结果。
+- 模型测试会使用所选模型发起真实 `POST {base}/v1/chat/completions` 探测，返回状态、原因码、HTTP 状态和延迟；原因码包括 `authentication_failed`、`model_not_found`、`quota_limited` 和 `upstream_unavailable`。
+- 一键绑定会 upsert 一个 `openai-compatibility` CPA 渠道，把模型发布到 CPA 路由：Base URL 为 `{base}/v1`，以已保存的 API Key 作为 key 条目并携带 OpenCode 请求头，同时把已验证的模型目录写入渠道的模型列表；重复绑定同一账号只会更新已有渠道、保留既有别名，不会创建重复渠道。
+- 快捷入口提供 `https://opencode.ai/auth`、`https://opencode.ai/workspace`、`https://opencode.ai/zen` 和只读的 OpenCode 状态页。
+- auth Cookie 和 API Key 只在经过鉴权的 Management 连接中写入一次，保存在插件私有数据目录；不会返回给浏览器（只有 `key_set` 布尔标记），也不会写入日志。
+- 计费以 OpenCode 官方文档为准：OpenCode Go 见 https://opencode.ai/docs/go/，OpenCode Zen 见 https://opencode.ai/docs/zen/。每次同步都会重新解析这些页面中的价格、额度与计费参数；models.dev 现在只作为机器可读镜像，用于补齐缺项。官方表格发布的价格优先，并会被标记为官方来源，因此官方调价无需升级插件即可生效。插件每 24 小时用 ETag 条件请求重新校验该目录，在插件私有数据目录保留缓存副本，并内置官方快照，因此离线或首次同步前价格即可用；OpenCode 工作区展示目录（模型、输入、输出、缓存读取、缓存写入、上下文窗口与按上下文长度的价格档位），并给出来源、最后同步时间和“同步价格”操作。
+- OpenCode 路由的用量改为按 OpenCode 自身价格计费，不再套用通用厂商价目表：当插件能按已记录的渠道 Base URL 将请求归属到某个 OpenCode 渠道时，就使用 Zen 或 Go 的官方价格。价格为公开数据，但相关路由仍需 Management Key。
+- OpenCode Go 计费语义：每月 10 美元订阅，每个模型有自己的每月美元额度（文档示例：GLM-5.3 为每月 $15，GLM-5.3-Flash 为每月 $60），并按 5 小时窗口 20%、每周窗口 50%、整月 100% 拆分。工作区展示每个模型的每月额度及其推导出的 5 小时与每周预算，并给出官方的各窗口预计请求数，同时标记官方已弃用模型及其弃用日期。
+- OpenCode Zen 计费语义：按百万 Token 计费的即用即付（pay-as-you-go）。余额低于 5 美元时默认自动充值 20 美元，并可为工作区和每个成员设置每月用量上限。工作区会一并展示该计量模式及其参数。
+- 订阅价格、窗口拆分以及自动充值阈值与金额都会从文档正文解析，内置默认值仅作兜底，因此 OpenCode 侧的改动会在下一次同步时被采用。官方文档同步时间与镜像同步时间分开显示；某个来源暂时不可用时保留最近一次可用数据，而不会清空价格。
+- OpenCode Go 路由按会话派生会话 ID：OpenCode Go 要求客户端“Send a stable session ID in `x-opencode-session` for each conversation so we can optimize routing and prompt caching”（引自 https://opencode.ai/docs/go/#where-can-i-use-it）；插件为 OpenCode 模型按以下顺序取值：入站 `x-opencode-session` 原样保留；否则复用原生客户端会话请求头（可识别 Claude Code、Codex、ZCode、Pi 风格的请求头）；再取请求体中的会话 ID（`prompt_cache_key`、`session_id`、`conversation_id`）；最后回退为对会话前缀的加盐摘要，使同一会话在各轮次保持同一 ID，且任何消息正文都不会被发送。注入仅限 OpenCode 发布的模型 ID（Zen 与 Go 目录，以及各账号已加载的目录），不触碰其他模型。
+- 工作区展示会话状态：启用/停用、覆盖的模型数量、已分配会话 ID 的请求数、观察到的不同会话数。会话 ID 永不写入日志，每个安装的盐以 0600 权限保存在插件数据目录中。
+- 所有路由均为固定路径并要求 Management Key，位于 `/v0/management/plugins/cpa-account-config-manager` 下：`POST /opencode/models` 携带 `{kind: "go"|"zen", account_id}`，返回带模型列表的脱敏账号视图；`POST /opencode/model-test` 携带 `{kind, account_id, model, timeout_seconds?}`，返回状态、原因码、HTTP 状态、延迟、测试时间和详情；`POST /opencode/bind` 携带 `{kind, account_id}`，返回绑定信息（类型、Base URL、索引、是否新建、渠道 key）；`POST /opencode/accounts` 还接受 `{account_id, api_key}` 做仅更新密钥操作，`api_key` 为空时保留已保存的密钥，传入新密钥会使缓存的模型目录失效；`GET /opencode/pricing` 返回目录及其同步来源信息；`POST /opencode/pricing/refresh` 重新校验该目录并报告是否发生变化；`GET /opencode/session` 返回会话路由状态；`GET /opencode/channels` 返回 OpenCode 渠道及其导入状态；`POST /opencode/import` 携带 `{base_url}` 导入一条渠道凭据，成功返回 200，需要工作区凭据的 Go 渠道返回标记为 `needs_workspace` 的 409。
 
 ### 操作日志、界面与更新
 
