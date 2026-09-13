@@ -244,4 +244,3 @@ func TestInspectionStartupScanClearsBusyWhenListAuthBlocks(t *testing.T) {
 	snapshot := app.inspection.Snapshot()
 	t.Fatalf("inspection snapshot stayed busy: running=%t pending=%t", snapshot.Running, snapshot.Pending)
 }
-
