@@ -98,6 +98,7 @@ type InspectionEngine struct {
 	cancel                     context.CancelFunc
 	started                    bool
 	closed                     bool
+	deferredConfig             *Config
 	now                        func() time.Time
 }
 
@@ -210,7 +211,13 @@ func (e *InspectionEngine) Configure(config Config) {
 		return
 	}
 
-	e.scanMu.Lock()
+	if !e.scanMu.TryLock() {
+		e.mu.Lock()
+		copied := config
+		e.deferredConfig = &copied
+		e.mu.Unlock()
+		return
+	}
 	defer e.scanMu.Unlock()
 	e.mu.RLock()
 	sameStore = e.started && e.store == storePath && !e.loadFailed
@@ -236,6 +243,8 @@ func (e *InspectionEngine) Configure(config Config) {
 	// the current store active so a later Configure or retry can recover.
 	e.mu.RLock()
 	needsFlush := e.started && e.store != storePath && e.dirty
+	previousState := e.persistedStateLocked()
+	hasPreviousState := e.started && e.store != storePath
 	e.mu.RUnlock()
 	if needsFlush {
 		e.persist()
@@ -258,6 +267,8 @@ func (e *InspectionEngine) Configure(config Config) {
 		state = loaded
 	} else if !errors.Is(errLoad, os.ErrNotExist) {
 		storageErr = "inspection state could not be loaded"
+	} else if hasPreviousState {
+		state = previousState
 	}
 	if hasConfiguredPolicy {
 		if errConfiguredPolicy != nil {
@@ -1558,7 +1569,10 @@ func (e *InspectionEngine) scan(ctx context.Context) {
 
 func (e *InspectionEngine) scanWithMode(ctx context.Context, scheduled, manualProbe, requestedSweep bool) bool {
 	e.scanMu.Lock()
-	defer e.scanMu.Unlock()
+	defer func() {
+		e.scanMu.Unlock()
+		e.applyDeferredConfigure()
+	}()
 	e.mu.RLock()
 	owner := e.backgroundOwner
 	e.mu.RUnlock()
@@ -1891,6 +1905,16 @@ func (e *InspectionEngine) clearScanRunning() {
 	e.running = false
 	e.scanStarted = time.Time{}
 	e.mu.Unlock()
+}
+
+func (e *InspectionEngine) applyDeferredConfigure() {
+	e.mu.Lock()
+	deferred := e.deferredConfig
+	e.deferredConfig = nil
+	e.mu.Unlock()
+	if deferred != nil {
+		e.Configure(*deferred)
+	}
 }
 
 func (e *InspectionEngine) finishScan(summary InspectionRunSummary, records map[string]inspectionRecord, actions []InspectionAction, ranNative, ranProbe bool, probeCursor int) {

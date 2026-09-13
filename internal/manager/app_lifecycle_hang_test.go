@@ -244,3 +244,51 @@ func TestInspectionStartupScanClearsBusyWhenListAuthBlocks(t *testing.T) {
 	snapshot := app.inspection.Snapshot()
 	t.Fatalf("inspection snapshot stayed busy: running=%t pending=%t", snapshot.Running, snapshot.Pending)
 }
+
+func TestInspectionStartupScanCompletesWhenListAuthMigratesImplicitDataDir(t *testing.T) {
+	authDir := t.TempDir()
+	authPath := writeAuthEntryWithDir(t, authDir, "codex-one.json")
+
+	host := &fakeAuthHost{
+		entries: []cpaapi.HostAuthFileEntry{{
+			Name:        "codex-one.json",
+			Path:        authPath,
+			Source:      "file",
+			RuntimeOnly: false,
+		}},
+	}
+
+	app := NewApp(host, []byte("index"))
+	defer app.Close()
+
+	// ConfigureHost with implicit data_dir and inspection_policy that enables native schedule
+	configYAML := []byte(`
+inspection_policy:
+  enabled: true
+  auto_enable: true
+  auto_disable: true
+`)
+
+	app.ConfigureHost(configYAML, cpaapi.SchemaVersion)
+
+	// Poll app.inspection.Snapshot() until !Running && !Pending within ~3s
+	deadline := time.Now().Add(3 * time.Second)
+	completed := false
+	for time.Now().Before(deadline) {
+		snapshot := app.inspection.Snapshot()
+		if !snapshot.Running && !snapshot.Pending {
+			completed = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	snapshot := app.inspection.Snapshot()
+	if !completed {
+		t.Fatalf("inspection startup scan timed out/deadlocked: running=%t pending=%t", snapshot.Running, snapshot.Pending)
+	}
+
+	if snapshot.LastRun.FinishedAt.IsZero() && snapshot.LastRun.StartedAt.IsZero() {
+		t.Fatalf("inspection last_run was not recorded: %#v", snapshot.LastRun)
+	}
+}
