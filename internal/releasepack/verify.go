@@ -72,13 +72,10 @@ func Verify(options VerifyOptions) error {
 		return fmt.Errorf("open archive: %w", errOpen)
 	}
 	defer func() { _ = archive.Close() }()
-	if len(archive.File) != 1 {
-		return fmt.Errorf("archive must contain exactly one inner library, found %d entries", len(archive.File))
-	}
 	expectedLibrary := fmt.Sprintf("%s-v%s%s", options.PluginID, options.Version, extension)
-	library := archive.File[0]
-	if library.Name != expectedLibrary {
-		return fmt.Errorf("inner library must be %s, found %s", expectedLibrary, library.Name)
+	library, errLibrary := innerLibraryFromArchive(archive.File, expectedLibrary)
+	if errLibrary != nil {
+		return errLibrary
 	}
 	if library.Mode().Perm() != 0o755 {
 		return fmt.Errorf("inner library mode must be 0755, found %04o", library.Mode().Perm())
@@ -155,4 +152,27 @@ func linkerAssignmentValue(ldflags, symbol string) (string, bool) {
 		found = true
 	}
 	return value, found
+}
+
+func innerLibraryFromArchive(files []*zip.File, expectedLibrary string) (*zip.File, error) {
+	var library *zip.File
+	for _, file := range files {
+		switch file.Name {
+		case expectedLibrary:
+			if library != nil {
+				return nil, fmt.Errorf("archive must contain exactly one inner library, found a duplicate %s", expectedLibrary)
+			}
+			library = file
+		case "ui/index.html":
+			if file.Mode().Perm() != 0o644 {
+				return nil, fmt.Errorf("ui/index.html mode must be 0644, found %04o", file.Mode().Perm())
+			}
+		default:
+			return nil, fmt.Errorf("archive contains unexpected entry %s", file.Name)
+		}
+	}
+	if library == nil {
+		return nil, fmt.Errorf("archive must contain exactly one inner library, found %d entries", len(files))
+	}
+	return library, nil
 }

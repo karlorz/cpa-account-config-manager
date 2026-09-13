@@ -59,7 +59,7 @@ func TestVerifyReleaseArchiveRejectsUnexpectedInnerLibrary(t *testing.T) {
 		PluginID: verifyTestPluginID, Version: verifyTestVersion, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
 		Repository: verifyTestRepository, Archive: fixture.archive, Checksum: fixture.checksum,
 	})
-	if errVerify == nil || !strings.Contains(errVerify.Error(), "inner library") {
+	if errVerify == nil || !(strings.Contains(errVerify.Error(), "inner library") || strings.Contains(errVerify.Error(), "unexpected entry")) {
 		t.Fatalf("Verify() error = %v, want inner-library rejection", errVerify)
 	}
 }
@@ -98,8 +98,26 @@ func TestVerifyReleaseArchiveRejectsMultipleEntries(t *testing.T) {
 		PluginID: verifyTestPluginID, Version: verifyTestVersion, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
 		Repository: verifyTestRepository, Archive: fixture.archive, Checksum: fixture.checksum,
 	})
-	if errVerify == nil || !strings.Contains(errVerify.Error(), "exactly one") {
-		t.Fatalf("Verify() error = %v, want multiple-entry rejection", errVerify)
+	if errVerify == nil || !strings.Contains(errVerify.Error(), "unexpected entry") {
+		t.Fatalf("Verify() error = %v, want unexpected-entry rejection", errVerify)
+	}
+}
+
+func TestVerifyReleaseArchiveAcceptsEmbeddedUI(t *testing.T) {
+	fixtureOptions := defaultReleaseVerificationFixtureOptions(t)
+	fixtureOptions.includeUI = true
+	fixture := writeReleaseVerificationFixture(t, fixtureOptions)
+	errVerify := Verify(VerifyOptions{
+		PluginID:   verifyTestPluginID,
+		Version:    verifyTestVersion,
+		GOOS:       runtime.GOOS,
+		GOARCH:     runtime.GOARCH,
+		Repository: verifyTestRepository,
+		Archive:    fixture.archive,
+		Checksum:   fixture.checksum,
+	})
+	if errVerify != nil {
+		t.Fatalf("Verify() error = %v", errVerify)
 	}
 }
 
@@ -172,6 +190,7 @@ type releaseVerificationFixtureOptions struct {
 	goarch           string
 	mode             os.FileMode
 	extraEntry       bool
+	includeUI        bool
 }
 
 func defaultReleaseVerificationFixtureOptions(t *testing.T) releaseVerificationFixtureOptions {
@@ -224,6 +243,16 @@ func writeReleaseVerificationFixture(t *testing.T, options releaseVerificationFi
 	entry, errEntry := writer.CreateHeader(header)
 	if errEntry == nil {
 		_, errEntry = entry.Write(binaryData)
+	}
+	if options.includeUI && errEntry == nil {
+		uiHeader := &zip.FileHeader{Name: "ui/index.html", Method: zip.Deflate}
+		uiHeader.SetMode(0o644)
+		uiEntry, errCreateUI := writer.CreateHeader(uiHeader)
+		if errCreateUI != nil {
+			errEntry = errCreateUI
+		} else {
+			_, errEntry = uiEntry.Write([]byte("<!doctype html><title>ui</title>"))
+		}
 	}
 	if options.extraEntry && errEntry == nil {
 		_, errEntry = writer.Create("unexpected.txt")
