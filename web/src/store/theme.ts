@@ -1,3 +1,5 @@
+import { applyEmbeddedIframeLayout } from "../layout/embeddedIframeLayout";
+
 type Theme = "light" | "white" | "dark";
 
 function embedded(): boolean {
@@ -23,17 +25,33 @@ function applyTheme(theme: Theme): void {
   else document.documentElement.setAttribute("data-theme", theme);
 }
 
+function syncEmbeddedIframeLayout(isEmbedded: boolean): void {
+  applyEmbeddedIframeLayout(
+    document.documentElement,
+    { width: window.innerWidth, height: window.innerHeight },
+    isEmbedded,
+  );
+}
+
 export function initThemeSync(): () => void {
   const isEmbedded = embedded();
   document.documentElement.setAttribute("data-plugin-host", isEmbedded ? "cpa" : "standalone");
   applyTheme(isEmbedded ? parentTheme() : "light");
-  if (!isEmbedded) return () => undefined;
+  syncEmbeddedIframeLayout(isEmbedded);
+  const onResize = () => syncEmbeddedIframeLayout(isEmbedded);
+  window.addEventListener("resize", onResize);
+  if (!isEmbedded) {
+    return () => window.removeEventListener("resize", onResize);
+  }
   try {
     const element = window.parent.document.documentElement;
     const observer = new MutationObserver(() => applyTheme(parentTheme()));
     observer.observe(element, { attributes: true, attributeFilter: ["data-theme"] });
-    return () => observer.disconnect();
+    return () => {
+      window.removeEventListener("resize", onResize);
+      observer.disconnect();
+    };
   } catch {
-    return () => undefined;
+    return () => window.removeEventListener("resize", onResize);
   }
 }
