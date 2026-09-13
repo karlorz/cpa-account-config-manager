@@ -187,15 +187,41 @@ func (e *InspectionEngine) Configure(config Config) {
 	storePath := inspectionStorePath(config.DataDir)
 	configuredPolicy, hasConfiguredPolicy, errConfiguredPolicy := inspectionPolicyFromConfig(config)
 
-	e.scanMu.Lock()
-	defer e.scanMu.Unlock()
 	e.mu.RLock()
 	sameStore := e.started && e.store == storePath && !e.loadFailed
+	currentPolicy := e.policy
 	e.mu.RUnlock()
 	if sameStore {
 		e.mu.Lock()
 		e.config = config
-		currentPolicy := e.policy
+		currentPolicy = e.policy
+		if hasConfiguredPolicy && errConfiguredPolicy != nil {
+			e.storageErr = "inspection state could not be loaded"
+		} else if hasConfiguredPolicy && e.storageErr == "inspection state could not be loaded" {
+			e.storageErr = ""
+		}
+		e.mu.Unlock()
+		if hasConfiguredPolicy && errConfiguredPolicy == nil && !reflect.DeepEqual(currentPolicy, configuredPolicy) {
+			e.scanMu.Lock()
+			if _, errSave := e.setPolicyInternal(configuredPolicy); errSave != nil {
+				e.mu.Lock()
+				e.storageErr = "inspection state could not be persisted"
+				e.mu.Unlock()
+			}
+			e.scanMu.Unlock()
+		}
+		return
+	}
+
+	e.scanMu.Lock()
+	defer e.scanMu.Unlock()
+	e.mu.RLock()
+	sameStore = e.started && e.store == storePath && !e.loadFailed
+	e.mu.RUnlock()
+	if sameStore {
+		e.mu.Lock()
+		e.config = config
+		currentPolicy = e.policy
 		if hasConfiguredPolicy && errConfiguredPolicy != nil {
 			e.storageErr = "inspection state could not be loaded"
 		} else if hasConfiguredPolicy && e.storageErr == "inspection state could not be loaded" {
