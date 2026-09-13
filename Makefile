@@ -39,6 +39,7 @@ package: plugin
 		-goos $$(go env GOOS) \
 		-goarch $$(go env GOARCH) \
 		-library $(DIST_DIR)/$(PLUGIN_ID).$(PLUGIN_EXT) \
+		-ui $(CURDIR)/internal/web/dist/index.html \
 		-out $(DIST_DIR)/release
 
 test:

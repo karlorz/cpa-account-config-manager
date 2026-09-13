@@ -1162,6 +1162,57 @@ export interface UpdateSnapshot {
   };
 }
 
+/**
+ * State of the direct GitHub self-update path, which never depends on the CPA plugin
+ * store: the plugin resolves its own release, verifies the archive and replaces its
+ * library file on disk. A loaded library cannot be swapped in-process, so an applied
+ * update always waits for a CPA restart.
+ */
+/** Outcome of asking CPA to reinstall and reload this plugin in place. */
+export interface SelfUpdateReloadResult {
+  reloaded: boolean;
+  store_version?: string;
+  applied_version?: string;
+  restart_required: boolean;
+  reason?: string;
+}
+
+export interface SelfUpdateSnapshot {
+  current_version: string;
+  latest_version?: string;
+  update_available: boolean;
+  source?: "github_api" | "github_redirect" | "github_atom";
+  checked_at?: string;
+  asset_name?: string;
+  asset_url?: string;
+  asset_bytes?: number;
+  archive_sha256?: string;
+  checksum_ok: boolean;
+  plugin_file?: string;
+  plugin_file_source?: "setting" | "proc" | "search";
+  plugin_file_exists: boolean;
+  staged_path?: string;
+  applied_version?: string;
+  backup_path?: string;
+  restart_required: boolean;
+  /**
+   * Derived by the plugin: the library on disk is newer than the one this process loaded. It
+   * clears by itself once the process runs the applied version, so a stale applied_version can
+   * no longer keep claiming that a restart is pending.
+   */
+  pending_restart: boolean;
+  /** The last reload attempt through the CPA plugin store, when one was made. */
+  reload?: SelfUpdateReloadResult;
+  /** The release also delivered the interface, which is live after a page refresh. */
+  ui_updated: boolean;
+  ui_path?: string;
+  /** True when only the interface changed, so refreshing the page is enough. */
+  interface_refresh_only: boolean;
+  can_install: boolean;
+  error?: string;
+  storage_error?: string;
+}
+
 export interface PluginStoreEntry {
   id: string;
   version: string;
@@ -1243,6 +1294,90 @@ export interface ExperimentalSettingsSnapshot {
   storage_error?: string;
 }
 
+/** One editable Codex request-fingerprint field returned by GET /codex/fingerprint. */
+export interface CodexFingerprintField {
+  key: string;
+  group: string;
+  kind: "text" | "select" | "bool" | "number";
+  default: string;
+  value: string;
+  overridden: boolean;
+  options?: string[];
+}
+
+export interface CodexFingerprintProfile {
+  fields: CodexFingerprintField[];
+  overridden_fields: number;
+  storage_error?: string;
+}
+
+/** One row of the global model control table. */
+export interface CodexModelControlRow {
+  id: string;
+  disabled: boolean;
+  accounts: number;
+  channels: number;
+  /** True when the plugin's price table (Sub2API) prices this model. */
+  priced?: boolean;
+  input_usd_per_million?: number;
+  output_usd_per_million?: number;
+  cache_read_usd_per_million?: number;
+  cache_creation_usd_per_million?: number;
+  long_context_threshold_tokens?: number;
+  long_context_input_multiplier?: number;
+  long_context_output_multiplier?: number;
+}
+
+export interface CodexModelControlSnapshot {
+  models: CodexModelControlRow[];
+  disabled: string[];
+  storage_error?: string;
+  pricing_source?: string;
+  pricing_updated_at?: string;
+}
+
+/** One credential the Codex model page can probe: a CPA account or an AI-provider channel. */
+export interface CodexTestTarget {
+  /** "account:<id>" or "channel:<index>". */
+  id: string;
+  label: string;
+  kind: "channel" | "account";
+  key_set: boolean;
+}
+
+/** One selectable probe target: a CPA account or an AI-provider channel. */
+export interface CodexTestTargetOption {
+  id: string;
+  label: string;
+}
+
+/** Outcome of one Codex channel probe. */
+export interface CodexModelProbeResult {
+  reachable: boolean;
+  status: "available" | "unavailable" | "unsupported" | "review" | string;
+  status_code?: number;
+  reason_code?: string;
+  model?: string;
+  detail?: string;
+  latency_ms?: number;
+  endpoint?: string;
+  probe_kind?: string;
+  /** The sanitized upstream response, rendered like the accounts model test. */
+  response?: ModelTestResponsePreview;
+  tested_at?: string;
+}
+
+export interface CodexOverview {
+  accounts: number;
+  channels: number;
+  disabled_models: number;
+  convergence_mode: string;
+  account_overrides: number;
+  provider_overrides: number;
+  fingerprint_overridden_fields: number;
+  model_control_active: boolean;
+}
+
 export interface AgentIdentitySessionLoginResponse {
   status: "completed";
   account: {
@@ -1253,12 +1388,32 @@ export interface AgentIdentitySessionLoginResponse {
   };
 }
 
+/**
+ * Where the OpenCode credentials are stored. The plugin's state directory is implicit unless
+ * `data_dir` is pinned, so an empty store here explains why saved credentials can look gone
+ * after CPA is restarted from another working directory.
+ */
+export interface OpenCodeStorageInfo {
+  data_dir: string;
+  store_path: string;
+  store_exists: boolean;
+  store_bytes?: number;
+  store_modified?: string;
+  accounts: number;
+  /** Set when the store was adopted from another directory. */
+  adopted_from?: string;
+  hint?: "missing" | "adopted";
+}
+
 export interface OpenCodeAccountView {
   id: string;
   workspace_id: string;
   base_url?: string;
   /** Whether a Go API key is stored. The key itself is never returned. */
+  /** Whether a Go API key is stored. The key itself is never returned. */
   key_set?: boolean;
+  /** Whether the auth cookie is stored, so an incomplete credential is visible. */
+  cookie_set?: boolean;
   /** Model catalog read from the upstream; ids are not secret. */
   models?: string[];
   models_error?: string;
@@ -1277,6 +1432,14 @@ export interface OpenCodeModelTestResult {
   model?: string;
   detail?: string;
   latency_ms?: number;
+  /** The protocol that produced this result: responses, chat or anthropic. */
+  endpoint?: string;
+  /** Every protocol the probe attempted, in order. */
+  tried_endpoints?: string[];
+  /** "model" for these probes, so the dialog can label the probe kind. */
+  probe_kind?: string;
+  /** The sanitized upstream response, rendered like the accounts model test. */
+  response?: ModelTestResponsePreview;
   tested_at?: string;
 }
 
@@ -1363,6 +1526,12 @@ export interface OpenCodeSessionSnapshot {
   injected_requests: number;
   distinct_sessions: number;
   last_injected_at?: string;
+  /** How injected requests were recognised, and why others were skipped. */
+  attributed_by_auth_index?: number;
+  attributed_by_model?: number;
+  skipped_other_channel?: number;
+  skipped_codex_requests?: number;
+  skipped_untargeted_model?: number;
 }
 
 export interface OpenCodeWindowUsage {
@@ -1432,6 +1601,27 @@ export interface OpenCodeAccountsResponse {
   accounts: OpenCodeAccountView[];
   storage_error?: string;
 }
+
+/** One row of the OpenCode global model control table. */
+export interface OpenCodeModelControlRow {
+  id: string;
+  disabled: boolean;
+  accounts: number;
+  channels: number;
+  priced?: boolean;
+  input_usd_per_million?: number;
+  output_usd_per_million?: number;
+  cache_read_usd_per_million?: number;
+}
+
+export interface OpenCodeModelControlSnapshot {
+  models: OpenCodeModelControlRow[];
+  disabled: string[];
+  storage_error?: string;
+  pricing_source?: string;
+  pricing_updated_at?: string;
+}
+
 /** One CPA AI-provider channel that belongs to OpenCode; the credential is never included. */
 export interface OpenCodeChannelView {
   kind: "go" | "zen";

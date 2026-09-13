@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"cpa-account-config-manager/internal/cpaapi"
 )
@@ -210,6 +211,11 @@ func TestOpenCodeGoModelRoutesAndBinding(t *testing.T) {
 	if boundHeaders["x-opencode-client"] != "cli" || !strings.HasPrefix(boundHeaders["User-Agent"].(string), "opencode/") {
 		t.Fatalf("bound headers = %#v", entry["headers"])
 	}
+	// The channel carries a baseline session id: OpenCode Go rejects a request that
+	// has none, and a host without request interception must still be routable.
+	if boundHeaders["x-opencode-session"] != openCodeChannelSessionBaseline {
+		t.Fatalf("bound session baseline = %#v", boundHeaders["x-opencode-session"])
+	}
 	if name, _ := entry["name"].(string); !strings.HasPrefix(name, "OpenCode Go") {
 		t.Fatalf("bound channel name = %#v", entry["name"])
 	}
@@ -342,5 +348,213 @@ func TestOpenCodeMergeChannelModelsPreservesExistingRows(t *testing.T) {
 
 	if empty := mergeOpenCodeChannelModels(nil, nil); len(empty) != 0 {
 		t.Fatalf("empty merge = %#v", empty)
+	}
+}
+
+// The gateway reports a model the credential cannot use as HTTP 401 with a ModelError body, so the
+// reason must come from the body: telling the operator to rotate the key would send them the wrong
+// way, and a missing session header has its own fix.
+func TestOpenCodeProbeFailureClassification(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		status     int
+		body       string
+		wantStatus string
+		wantReason string
+	}{
+		"model not supported on this tier": {
+			status:     401,
+			body:       `{"type":"error","error":{"type":"ModelError","message":"Model gemini-3.1-pro is not supported"}}`,
+			wantStatus: "unavailable",
+			wantReason: "model_not_supported",
+		},
+		"model without the chat-completions protocol": {
+			status:     400,
+			body:       `{"error":{"type":"ModelError","message":"This model does not support chat completions"}}`,
+			wantStatus: "unavailable",
+			wantReason: "model_not_supported",
+		},
+		"missing session header": {
+			status:     400,
+			body:       `{"error":{"type":"MissingSessionID","message":"Request is missing x-opencode-session"}}`,
+			wantStatus: "unavailable",
+			wantReason: "missing_session",
+		},
+		"rejected credential": {
+			status:     401,
+			body:       `{"error":{"message":"Invalid API key"}}`,
+			wantStatus: "unavailable",
+			wantReason: "authentication_failed",
+		},
+		"rate limited": {
+			status:     429,
+			body:       `{"error":{"message":"Rate limit exceeded"}}`,
+			wantStatus: "unavailable",
+			wantReason: "quota_limited",
+		},
+		"unknown model": {
+			status:     404,
+			body:       `{"error":{"message":"unknown model"}}`,
+			wantStatus: "unavailable",
+			wantReason: "model_not_found",
+		},
+		"upstream down": {
+			status:     503,
+			body:       `gateway unavailable`,
+			wantStatus: "unavailable",
+			wantReason: "upstream_unavailable",
+		},
+		"unrecognised failure": {
+			status:     418,
+			body:       `{"error":{"message":"teapot"}}`,
+			wantStatus: "review",
+			wantReason: "unconfirmed_upstream_response",
+		},
+	} {
+		gotStatus, gotReason := classifyOpenCodeProbeFailure(testCase.status, testCase.body)
+		if gotStatus != testCase.wantStatus || gotReason != testCase.wantReason {
+			t.Fatalf("%s: (%s, %s), want (%s, %s)", name, gotStatus, gotReason, testCase.wantStatus, testCase.wantReason)
+		}
+	}
+}
+
+// Every probe carries the header set a real CLI call uses, because the gateway rejects a request
+// without a session id and expects the per-request and project headers too.
+func TestOpenCodeProbeSendsTheFullClientHeaderSet(t *testing.T) {
+	request, errRequest := newOpenCodeRequest(context.Background(), http.MethodPost, "https://opencode.ai/zen/go/v1/chat/completions", "sk-probe", nil)
+	if errRequest != nil {
+		t.Fatalf("newOpenCodeRequest() error = %v", errRequest)
+	}
+	for _, header := range []string{"x-opencode-client", "x-opencode-session", "x-opencode-request", "x-opencode-project", "x-session-affinity", "User-Agent"} {
+		if strings.TrimSpace(request.Header.Get(header)) == "" {
+			t.Fatalf("header %s is missing", header)
+		}
+	}
+	if request.Header.Get("x-opencode-client") != "cli" {
+		t.Fatalf("client header = %q", request.Header.Get("x-opencode-client"))
+	}
+	if !strings.HasPrefix(request.Header.Get("x-opencode-session"), "oc-") {
+		t.Fatalf("session header = %q", request.Header.Get("x-opencode-session"))
+	}
+	// The session and affinity headers agree, like the reference implementation.
+	if request.Header.Get("x-opencode-session") != request.Header.Get("x-session-affinity") {
+		t.Fatalf("affinity = %q, session = %q", request.Header.Get("x-session-affinity"), request.Header.Get("x-opencode-session"))
+	}
+	// Two probes are two conversations, but one credential keeps one project id.
+	second, _ := newOpenCodeRequest(context.Background(), http.MethodPost, "https://opencode.ai/zen/go/v1/chat/completions", "sk-probe", nil)
+	if second.Header.Get("x-opencode-session") == request.Header.Get("x-opencode-session") {
+		t.Fatalf("each probe must get its own session id")
+	}
+	if second.Header.Get("x-opencode-project") != request.Header.Get("x-opencode-project") {
+		t.Fatalf("the project id must stay stable for one credential")
+	}
+}
+
+// Models differ in the protocol they speak, so the probe walks them instead of assuming
+// chat-completions: the gateway answers "not supported" for the wrong endpoint, which is not a
+// statement about the model.
+func TestOpenCodeProbeWalksTheProtocols(t *testing.T) {
+	newServer := func(t *testing.T, responses func(http.ResponseWriter, *http.Request) bool) (*httptest.Server, *[]string) {
+		t.Helper()
+		seen := &[]string{}
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			*seen = append(*seen, request.URL.Path)
+			if responses(writer, request) {
+				return
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			writer.WriteHeader(http.StatusUnauthorized)
+			_, _ = writer.Write([]byte(`{"error":{"type":"ModelError","message":"Model x is not supported"}}`))
+		}))
+		t.Cleanup(server.Close)
+		return server, seen
+	}
+
+	// A Responses-only model succeeds on the first attempt.
+	responsesOnly, responsesPaths := newServer(t, func(writer http.ResponseWriter, request *http.Request) bool {
+		if request.URL.Path != "/v1/responses" {
+			return false
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"id":"resp_1"}`))
+		return true
+	})
+	result := probeOpenCodeModel(context.Background(), responsesOnly.URL, "sk-probe", "gpt-5.6-sol", 5*time.Second)
+	if result.Status != "available" || result.Endpoint != "responses" {
+		t.Fatalf("responses probe = %#v", result)
+	}
+	if len(*responsesPaths) != 1 {
+		t.Fatalf("attempts = %#v", *responsesPaths)
+	}
+
+	// A chat-only model falls back to chat-completions and reports that endpoint.
+	chatOnly, chatPaths := newServer(t, func(writer http.ResponseWriter, request *http.Request) bool {
+		if request.URL.Path != "/v1/chat/completions" {
+			return false
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"pong"}}]}`))
+		return true
+	})
+	result = probeOpenCodeModel(context.Background(), chatOnly.URL, "sk-probe", "claude-opus-4-1", 5*time.Second)
+	if result.Status != "available" || result.Endpoint != "chat" {
+		t.Fatalf("chat probe = %#v", result)
+	}
+	if len(*chatPaths) < 2 {
+		t.Fatalf("the responses endpoint must be tried first: %#v", *chatPaths)
+	}
+
+	// An Anthropic-only model is reachable through /v1/messages.
+	anthropicOnly, anthropicPaths := newServer(t, func(writer http.ResponseWriter, request *http.Request) bool {
+		if request.URL.Path != "/v1/messages" {
+			return false
+		}
+		if request.Header.Get("anthropic-version") == "" {
+			t.Errorf("the anthropic-version header is missing")
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"content":[{"type":"text","text":"pong"}]}`))
+		return true
+	})
+	result = probeOpenCodeModel(context.Background(), anthropicOnly.URL, "sk-probe", "claude-opus-4-1", 5*time.Second)
+	if result.Status != "available" || result.Endpoint != "anthropic" {
+		t.Fatalf("anthropic probe = %#v", result)
+	}
+	if len(*anthropicPaths) < 3 {
+		t.Fatalf("every protocol must be tried: %#v", *anthropicPaths)
+	}
+
+	// When no protocol serves the model, the failure names the protocols that were tried.
+	none, _ := newServer(t, func(http.ResponseWriter, *http.Request) bool { return false })
+	result = probeOpenCodeModel(context.Background(), none.URL, "sk-probe", "ghost-model", 5*time.Second)
+	if result.Status != "unavailable" || result.ReasonCode != "model_not_supported" {
+		t.Fatalf("unsupported model = %#v", result)
+	}
+	if len(result.TriedEndpoints) != 3 {
+		t.Fatalf("tried endpoints = %#v", result.TriedEndpoints)
+	}
+}
+
+// A real credential or quota failure outranks a protocol mismatch, because only the former tells
+// the operator what to fix.
+func TestOpenCodeProbePrefersTheActionableFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/v1/responses":
+			writer.WriteHeader(http.StatusUnauthorized)
+			_, _ = writer.Write([]byte(`{"error":{"type":"ModelError","message":"Model x is not supported"}}`))
+		default:
+			writer.WriteHeader(http.StatusUnauthorized)
+			_, _ = writer.Write([]byte(`{"error":{"message":"Invalid API key"}}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	result := probeOpenCodeModel(context.Background(), server.URL, "sk-probe", "gpt-5.6-sol", 5*time.Second)
+	if result.ReasonCode != "authentication_failed" {
+		t.Fatalf("reason = %q result = %#v", result.ReasonCode, result)
+	}
+	if result.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status code = %d", result.StatusCode)
 	}
 }

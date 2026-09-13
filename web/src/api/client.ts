@@ -72,6 +72,8 @@ import type {
   PolicySnapshot,
 	QuotaMetadataResponse,
   ResultExportFormat,
+  SelfUpdateReloadResult,
+  SelfUpdateSnapshot,
   TargetScope,
   UpdatePolicy,
   UpdateSnapshot,
@@ -79,6 +81,10 @@ import type {
 
 const API_ROOT = "/v0/management/plugins/cpa-account-config-manager";
 const REQUEST_TIMEOUT_MS = 30_000;
+// Resolving a release and downloading an archive legitimately takes longer than an
+// ordinary request: the server fetches the checksums, downloads the zip and replaces the
+// library, with its own 60s budget per upstream call.
+const RELEASE_DOWNLOAD_TIMEOUT_MS = 300_000;
 
 export class APIError extends Error {
   status: number;
@@ -121,7 +127,7 @@ async function responseErrorMessage(response: Response, fallback: string, prefer
   return fallback;
 }
 
-async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController();
   let timedOut = false;
   const abortFromCaller = () => controller.abort();
@@ -130,7 +136,7 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
   const timeout = globalThis.setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, REQUEST_TIMEOUT_MS);
+  }, timeoutMs);
   try {
     return await fetch(input, { ...init, signal: controller.signal });
   } catch (error) {
@@ -142,7 +148,7 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}, query?: URLSearchParams): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}, query?: URLSearchParams, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   const session = getSession();
   if (!session) throw new APIError(401, "ui.management_key_is_not_set");
   const headers = new Headers(init.headers);
@@ -150,7 +156,7 @@ async function request<T>(path: string, init: RequestInit = {}, query?: URLSearc
   headers.set("Authorization", `Bearer ${session.managementKey}`);
   const isFormData = typeof FormData !== "undefined" && init.body instanceof FormData;
   if (init.body && !isFormData && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  const response = await fetchWithTimeout(buildURL(path, query), { ...init, headers });
+  const response = await fetchWithTimeout(buildURL(path, query), { ...init, headers }, timeoutMs);
   if (!response.ok) {
     const message = await responseErrorMessage(response, `Request failed (${response.status})`);
     throw new APIError(response.status, message);
@@ -158,8 +164,8 @@ async function request<T>(path: string, init: RequestInit = {}, query?: URLSearc
   return parseJSONResponse<T>(response);
 }
 
-async function requestRecord<T>(path: string, init: RequestInit = {}, query?: URLSearchParams): Promise<T> {
-  const response = await request<unknown>(path, init, query);
+async function requestRecord<T>(path: string, init: RequestInit = {}, query?: URLSearchParams, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
+  const response = await request<unknown>(path, init, query, timeoutMs);
   if (!isRecord(response)) {
     throw new APIError(502, "ui.invalid_json_response");
   }
@@ -1061,8 +1067,8 @@ export async function getExperimentalSettings(signal?: AbortSignal): Promise<Exp
 	return requestRecord<ExperimentalSettingsSnapshot>("/experiments", { signal });
 }
 
-export async function saveExperimentalSettings(settings: ExperimentalSettings): Promise<ExperimentalSettingsSnapshot> {
-	await persistPluginSettings({ experimental_settings: settings });
+export async function saveExperimentalSettings(settings: Partial<ExperimentalSettings>): Promise<ExperimentalSettingsSnapshot> {
+	await persistPluginSettings({ experimental_settings: settings as ExperimentalSettings });
 	return requestRecord<ExperimentalSettingsSnapshot>("/experiments", {
 		method: "PUT",
 		body: JSON.stringify(settings),
@@ -1093,6 +1099,10 @@ function normalizeOpenCodeAccountsResponse(response: unknown): OpenCodeAccountsR
 			};
 			if (typeof account.base_url === "string" && account.base_url.trim()) view.base_url = account.base_url.trim();
 			if (typeof account.key_set === "boolean") view.key_set = account.key_set;
+			// Copying the view field by field means a new field is dropped unless it is listed here:
+			// cookie_set drives the "incomplete credential" warning, so losing it warned about every
+			// account even when the auth cookie was stored.
+			if (typeof account.cookie_set === "boolean") view.cookie_set = account.cookie_set;
 			const models = stringArrayOrUndefined(account.models);
 			if (models) view.models = models;
 			if (typeof account.models_error === "string" && account.models_error.trim()) view.models_error = account.models_error.trim();
@@ -1140,6 +1150,23 @@ export async function testOpenCodeModel(kind: "go" | "zen", accountID: string, m
 	});
 }
 
+/** Report the private state directory that holds the OpenCode credentials. */
+export async function getOpenCodeStorage(signal?: AbortSignal): Promise<{ storage: import("../types").OpenCodeStorageInfo }> {
+	return requestRecord<{ storage: import("../types").OpenCodeStorageInfo }>("/opencode/storage", { signal });
+}
+
+/** Global OpenCode model control: disabled ids affect every Go and Zen credential. */
+export async function getOpenCodeModelControl(signal?: AbortSignal): Promise<import("../types").OpenCodeModelControlSnapshot> {
+  return requestRecord<import("../types").OpenCodeModelControlSnapshot>("/opencode/model-control", { signal });
+}
+
+export async function saveOpenCodeModelControl(disabled: string[]): Promise<import("../types").OpenCodeModelControlSnapshot> {
+  return requestRecord<import("../types").OpenCodeModelControlSnapshot>("/opencode/model-control", {
+    method: "PUT",
+    body: JSON.stringify({ disabled }),
+  });
+}
+
 /**
  * Create or update the CPA OpenAI-compatible channel that routes one OpenCode
  * credential, so its models become reachable through CPA.
@@ -1156,6 +1183,26 @@ export async function saveOpenCodeAccountKey(accountID: string, apiKey: string):
 	return requestRecord<{ account: import("../types").OpenCodeAccountView }>("/opencode/accounts", {
 		method: "POST",
 		body: JSON.stringify({ account_id: accountID, api_key: apiKey }),
+	});
+}
+
+/**
+ * Complete or correct one stored credential. An omitted or empty field keeps the stored
+ * value, so an account created before the workspace (or the key) was known can be repaired
+ * in place instead of being deleted and re-added.
+ */
+export async function updateOpenCodeAccountCredentials(
+	accountID: string,
+	patch: { workspaceID?: string; authCookie?: string; apiKey?: string },
+): Promise<{ account: import("../types").OpenCodeAccountView }> {
+	return requestRecord<{ account: import("../types").OpenCodeAccountView }>("/opencode/accounts", {
+		method: "POST",
+		body: JSON.stringify({
+			account_id: accountID,
+			...(patch.workspaceID ? { workspace_id: patch.workspaceID } : {}),
+			...(patch.authCookie ? { auth_cookie: patch.authCookie } : {}),
+			...(patch.apiKey ? { api_key: patch.apiKey } : {}),
+		}),
 	});
 }
 
@@ -1223,6 +1270,7 @@ function normalizeOpenCodeZenAccountsResponse(response: unknown): OpenCodeZenAcc
 				id: (account.id as string).trim(),
 				base_url: (account.base_url as string).trim(),
 				key_set: account.key_set as boolean,
+				...(typeof account.cookie_set === "boolean" ? { cookie_set: account.cookie_set } : {}),
 			};
 			if (typeof account.name === "string") view.name = account.name;
 			const models = stringArrayOrUndefined(account.models);
@@ -1306,6 +1354,54 @@ export async function checkForUpdates(signal?: AbortSignal): Promise<UpdateSnaps
 	return requestRecord<UpdateSnapshot>("/updates/check", { method: "POST", signal });
 }
 
+/**
+ * Direct GitHub self-update, independent of the CPA plugin store. Every response wraps
+ * the same snapshot; the routes only ever return versions, checksums and file paths.
+ */
+export async function getSelfUpdate(signal?: AbortSignal): Promise<SelfUpdateSnapshot> {
+	return readSelfUpdateEnvelope(await requestRecord<unknown>("/self-update", { signal }));
+}
+
+export async function checkSelfUpdate(signal?: AbortSignal): Promise<SelfUpdateSnapshot> {
+	const response = await requestRecord<unknown>("/self-update/check", { method: "POST", signal }, undefined, RELEASE_DOWNLOAD_TIMEOUT_MS);
+	return readSelfUpdateEnvelope(response);
+}
+
+export async function installSelfUpdate(signal?: AbortSignal): Promise<SelfUpdateSnapshot> {
+	const response = await requestRecord<unknown>("/self-update/install", { method: "POST", signal }, undefined, RELEASE_DOWNLOAD_TIMEOUT_MS);
+	return readSelfUpdateEnvelope(response);
+}
+
+/**
+ * Ask CPA to reinstall and reload this plugin. A store install is the only action the host
+ * watches for a native plugin reload, so this is how a replaced library applies without a full
+ * CPA restart; a refusal carries a reason code instead of pretending it worked.
+ */
+export async function reloadSelfUpdateThroughStore(signal?: AbortSignal): Promise<SelfUpdateReloadResult> {
+	const response = await requestRecord<{ reload: SelfUpdateReloadResult }>("/self-update/reload", { method: "POST", signal }, undefined, RELEASE_DOWNLOAD_TIMEOUT_MS);
+	if (!isRecord(response.reload)) throw new APIError(502, "ui.invalid_json_response");
+	return response.reload as unknown as SelfUpdateReloadResult;
+}
+
+/** Record the plugin library path when this host cannot detect it automatically. */
+export async function saveSelfUpdateSettings(pluginFile: string, signal?: AbortSignal): Promise<SelfUpdateSnapshot> {
+	const response = await requestRecord<unknown>("/self-update/settings", {
+		method: "PUT",
+		body: JSON.stringify({ plugin_file: pluginFile }),
+		signal,
+	});
+	return readSelfUpdateEnvelope(response);
+}
+
+/**
+ * Every self-update route answers with a `self_update` envelope. A response without it is
+ * malformed, and silently returning `undefined` would crash the panel instead of showing
+ * the operator a clear error.
+ */
+function readSelfUpdateEnvelope(response: unknown): SelfUpdateSnapshot {
+	if (!isRecord(response) || !isRecord(response.self_update)) throw new APIError(502, "ui.invalid_json_response");
+	return response.self_update as unknown as SelfUpdateSnapshot;
+}
 export async function getPluginStore(signal?: AbortSignal): Promise<PluginStoreResponse> {
   const response = await managementRequest<unknown>("/plugin-store", { signal });
   if (!isRecord(response)) throw new APIError(502, "ui.invalid_json_response");
@@ -2673,4 +2769,53 @@ export async function clearRiskControlEvents(): Promise<import("../types").RiskC
 
 export async function clearRiskControlHashes(): Promise<import("../types").RiskControlSnapshot> {
   return requestRecord<import("../types").RiskControlSnapshot>("/risk-control/hashes", { method: "DELETE" });
+}
+
+export async function getCodexFingerprint(signal?: AbortSignal): Promise<{ profile: import("../types").CodexFingerprintProfile }> {
+  return requestRecord<{ profile: import("../types").CodexFingerprintProfile }>("/codex/fingerprint", { signal });
+}
+
+/** An empty string clears the field back to its built-in default. */
+export async function saveCodexFingerprint(values: Record<string, string>): Promise<{ profile: import("../types").CodexFingerprintProfile }> {
+  return requestRecord<{ profile: import("../types").CodexFingerprintProfile }>("/codex/fingerprint", {
+    method: "PUT",
+    body: JSON.stringify({ values }),
+  });
+}
+
+/** An empty key list resets every field. */
+export async function resetCodexFingerprint(keys: string[]): Promise<{ profile: import("../types").CodexFingerprintProfile }> {
+  return requestRecord<{ profile: import("../types").CodexFingerprintProfile }>("/codex/fingerprint/reset", {
+    method: "POST",
+    body: JSON.stringify({ keys }),
+  });
+}
+
+export async function getCodexModels(signal?: AbortSignal): Promise<import("../types").CodexModelControlSnapshot> {
+  return requestRecord<import("../types").CodexModelControlSnapshot>("/codex/models", { signal });
+}
+
+/** Every credential the Codex model page can probe, including AI-provider channels. */
+export async function getCodexTestTargets(signal?: AbortSignal): Promise<{ targets: import("../types").CodexTestTarget[] }> {
+	return requestRecord<{ targets: import("../types").CodexTestTarget[] }>("/codex/test-targets", { signal });
+}
+
+/** Probe one model through a saved Codex AI-provider channel. */
+export async function testCodexChannelModel(channelIndex: number, model: string): Promise<{ result: import("../types").CodexModelProbeResult }> {
+	return requestRecord<{ result: import("../types").CodexModelProbeResult }>("/codex/model-test", {
+		method: "POST",
+		body: JSON.stringify({ channel_index: channelIndex, model }),
+	});
+}
+
+/** Disabling a model is global: it affects every Codex account and AI-provider channel. */
+export async function saveCodexModels(disabled: string[]): Promise<import("../types").CodexModelControlSnapshot> {
+  return requestRecord<import("../types").CodexModelControlSnapshot>("/codex/models", {
+    method: "PUT",
+    body: JSON.stringify({ disabled }),
+  });
+}
+
+export async function getCodexOverview(signal?: AbortSignal): Promise<{ overview: import("../types").CodexOverview }> {
+  return requestRecord<{ overview: import("../types").CodexOverview }>("/codex/overview", { signal });
 }
