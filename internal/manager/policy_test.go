@@ -369,6 +369,57 @@ func TestPolicyEngineChangedSameStoreConfigureDoesNotWakeScan(t *testing.T) {
 	}
 }
 
+func TestPolicyEngineSameStoreConfigureReturnsWhileScanBlocksInListAuth(t *testing.T) {
+	dataDir := t.TempDir()
+	host := &blockingListAuthHost{
+		started: make(chan struct{}),
+	}
+	engine := NewPolicyEngine(host)
+	defer engine.Shutdown()
+
+	priority := 4
+	policy := normalizeDefaultPolicy(DefaultPolicy{Enabled: true, Priority: &priority, ScanIntervalSeconds: 15})
+	configA := Config{DataDir: dataDir, DefaultPolicy: &policy}
+	engine.Configure(configA)
+
+	// Wait until scan has entered ListAuth (reconcile holds operationMu)
+	select {
+	case <-host.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for host ListAuth to be entered")
+	}
+
+	// Reconfigure on same store with same policy must return within 1s
+	sameDone := make(chan struct{})
+	go func() {
+		engine.Configure(configA)
+		close(sameDone)
+	}()
+
+	select {
+	case <-sameDone:
+	case <-time.After(1 * time.Second):
+		t.Fatal("PolicyEngine.Configure blocked on hanging host ListAuth with same policy")
+	}
+
+	// Reconfigure on same store with changed policy must also return within 1s
+	newPriority := 5
+	policyB := normalizeDefaultPolicy(DefaultPolicy{Enabled: true, Priority: &newPriority, ScanIntervalSeconds: 20})
+	configB := Config{DataDir: dataDir, DefaultPolicy: &policyB}
+
+	changeDone := make(chan struct{})
+	go func() {
+		engine.Configure(configB)
+		close(changeDone)
+	}()
+
+	select {
+	case <-changeDone:
+	case <-time.After(1 * time.Second):
+		t.Fatal("PolicyEngine.Configure blocked on hanging host ListAuth with changed policy")
+	}
+}
+
 func TestPolicyEngineAppliesConfiguredPolicyDuringSameStoreReconfigure(t *testing.T) {
 	dataDir := t.TempDir()
 	engine := NewPolicyEngine(&fakeAuthHost{details: map[string]cpaapi.HostAuthGetResponse{}})

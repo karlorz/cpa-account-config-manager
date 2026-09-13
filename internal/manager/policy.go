@@ -323,9 +323,58 @@ func (e *PolicyEngine) Configure(config Config) {
 	storePath := policyStorePath(config.DataDir)
 	configuredPolicy, hasConfiguredPolicy, errConfiguredPolicy := policyFromConfig(config)
 
-	e.operationMu.Lock()
 	e.mu.RLock()
 	sameStore := e.started && e.store == storePath && !e.loadFailed
+	currentPolicy := cloneDefaultPolicy(e.policy)
+	e.mu.RUnlock()
+
+	if sameStore {
+		e.mu.Lock()
+		e.config = config
+		currentPolicy = cloneDefaultPolicy(e.policy)
+		lastScan := e.lastScan
+		if hasConfiguredPolicy {
+			if errConfiguredPolicy != nil {
+				e.lastScan.Error = configuredPolicyError
+				e.mu.Unlock()
+				return
+			}
+			if defaultPolicyEqual(currentPolicy, configuredPolicy) {
+				if e.lastScan.Error == configuredPolicyError || e.lastScan.Error == policyLocalStoreError {
+					e.lastScan.Error = ""
+				}
+				e.mu.Unlock()
+				return
+			}
+		} else {
+			e.mu.Unlock()
+			return
+		}
+		e.mu.Unlock()
+
+		// Policy changed on same store: persist without holding operationMu.
+		if errSave := savePolicyRuntimeState(storePath, configuredPolicy, lastScan, nil); errSave != nil {
+			e.mu.Lock()
+			e.lastScan.Error = policyLocalStoreError
+			e.mu.Unlock()
+		} else {
+			e.mu.Lock()
+			e.policy = configuredPolicy
+			e.fingerprints = make(map[string]authFingerprint)
+			e.failures = make(map[string]policyFailureBackoff)
+			if e.lastScan.Error == configuredPolicyError || e.lastScan.Error == policyLocalStoreError {
+				e.lastScan.Error = ""
+			}
+			e.loadFailed = false
+			e.dirty = false
+			e.mu.Unlock()
+		}
+		return
+	}
+
+	e.operationMu.Lock()
+	e.mu.RLock()
+	sameStore = e.started && e.store == storePath && !e.loadFailed
 	e.mu.RUnlock()
 
 	if sameStore {
@@ -343,7 +392,7 @@ func (e *PolicyEngine) Configure(config Config) {
 			}
 			e.mu.Lock()
 		}
-		currentPolicy := cloneDefaultPolicy(e.policy)
+		currentPolicy = cloneDefaultPolicy(e.policy)
 		lastScan := e.lastScan
 		e.mu.Unlock()
 		if hasConfiguredPolicy {

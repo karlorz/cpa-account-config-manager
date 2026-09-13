@@ -202,13 +202,7 @@ func (e *InspectionEngine) Configure(config Config) {
 		}
 		e.mu.Unlock()
 		if hasConfiguredPolicy && errConfiguredPolicy == nil && !reflect.DeepEqual(currentPolicy, configuredPolicy) {
-			e.scanMu.Lock()
-			if _, errSave := e.setPolicyInternal(configuredPolicy); errSave != nil {
-				e.mu.Lock()
-				e.storageErr = "inspection state could not be persisted"
-				e.mu.Unlock()
-			}
-			e.scanMu.Unlock()
+			e.applyConfiguredPolicySameStore(configuredPolicy)
 		}
 		return
 	}
@@ -229,11 +223,7 @@ func (e *InspectionEngine) Configure(config Config) {
 		}
 		e.mu.Unlock()
 		if hasConfiguredPolicy && errConfiguredPolicy == nil && !reflect.DeepEqual(currentPolicy, configuredPolicy) {
-			if _, errSave := e.setPolicyInternal(configuredPolicy); errSave != nil {
-				e.mu.Lock()
-				e.storageErr = "inspection state could not be persisted"
-				e.mu.Unlock()
-			}
+			e.applyConfiguredPolicySameStore(configuredPolicy)
 		}
 		return
 	}
@@ -577,6 +567,78 @@ func (e *InspectionEngine) SetPolicy(policy InspectionPolicy) (InspectionSnapsho
 	e.scanMu.Lock()
 	defer e.scanMu.Unlock()
 	return e.setPolicyInternal(policy)
+}
+
+// applyConfiguredPolicySameStore applies a policy change on the same store
+// without waiting for scanMu or blocking an in-flight inspection scan.
+func (e *InspectionEngine) applyConfiguredPolicySameStore(policy InspectionPolicy) {
+	normalized, errValidate := validateInspectionPolicy(policy)
+	if errValidate != nil {
+		return
+	}
+
+	e.mu.Lock()
+	if e.closed || strings.TrimSpace(e.store) == "" {
+		e.mu.Unlock()
+		return
+	}
+	currentPolicy := e.policy
+	e.policy = normalized
+	notificationChanged := inspectionNotificationPolicyChanged(currentPolicy, normalized)
+	if notificationChanged {
+		e.lastNotificationAt = time.Time{}
+		e.lastNotificationByEndpoint = make(map[string]time.Time)
+	}
+	if notificationChanged && inspectionNotificationEnabled(normalized) {
+		e.notificationPending = true
+		e.notificationRevision++
+	} else if !inspectionNotificationEnabled(normalized) {
+		e.notificationPending = false
+	}
+	if !normalized.AnomalyTriggerEnabled {
+		e.anomalyTriggerPending = false
+	}
+	if !normalized.ModelProbeFullSweep && !normalized.AnomalyTriggerEnabled {
+		e.probeSweepRemaining = 0
+		e.pendingProbeSweep = false
+	}
+	if normalized.AnomalyNotificationOnly {
+		e.anomalyTriggerPending = false
+		if normalizeInspectionSweepSource(e.probeSweepSource) == InspectionSweepSourceAnomaly &&
+			normalizeInspectionSweepStatus(e.probeSweepStatus) != InspectionSweepStatusRunning {
+			e.probeSweepTotal = 0
+			e.probeSweepCompleted = 0
+			e.probeSweepRemaining = 0
+			e.probeSweepStatus = InspectionSweepStatusStopped
+			e.probeSweepTargets = nil
+			e.pendingProbeSweep = false
+		}
+	}
+	e.storageErr = ""
+	e.loadFailed = false
+	e.generation++
+	e.dirty = true
+	storePath := e.store
+	state := e.persistedStateLocked()
+	generation := e.generation
+	e.mu.Unlock()
+
+	// Persist asynchronously under storeMu, matching the persistLoop pattern,
+	// or try to persist directly under storeMu.
+	e.storeMu.Lock()
+	errSave := saveInspectionState(storePath, state)
+	e.storeMu.Unlock()
+
+	e.mu.Lock()
+	if errSave != nil {
+		e.storageErr = "inspection state could not be persisted"
+		e.schedulePersistRetryLocked()
+	} else if e.store == storePath && e.generation == generation {
+		e.dirty = false
+		e.persistedGeneration = generation
+	}
+	e.mu.Unlock()
+	e.RequestScan()
 }
 
 // setPolicyInternal serializes policy persistence with inspection scans.
