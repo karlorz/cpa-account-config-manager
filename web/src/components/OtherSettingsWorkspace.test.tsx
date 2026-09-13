@@ -30,16 +30,27 @@ describe("OtherSettingsWorkspace", () => {
     vi.restoreAllMocks();
   });
 
-  it("edits the global Codex identity policy in Other settings and persists it", async () => {
+  it("preserves the Codex-owned settings when saving other experimental options", async () => {
     const user = userEvent.setup();
-    const saveSpy = vi.spyOn(api, "saveExperimentalSettings").mockImplementation(async (settings) => ({ settings }));
+    const saveSpy = vi.spyOn(api, "saveExperimentalSettings").mockImplementation(async (settings) => ({
+      settings: {
+        weekly_overdraft_enabled: false,
+        agent_identity_enabled: false,
+        auto_model_whitelist_enabled: true,
+        sub2api_credit_usage_enabled: true,
+        codex_identity: { outbound_convergence_enabled: false, ingress_gate_enabled: false, allow_app_server_clients: false },
+        ...settings,
+      },
+    }));
+    // The Codex identity policy is owned by the Codex view; this panel must echo
+    // it unchanged while still editing the two Codex experiments itself.
     vi.spyOn(api, "getExperimentalSettings").mockResolvedValue({
       settings: {
         weekly_overdraft_enabled: false,
         agent_identity_enabled: false,
-        auto_model_whitelist_enabled: false,
-        sub2api_credit_usage_enabled: false,
-        codex_identity: { outbound_convergence_enabled: false, ingress_gate_enabled: false, allow_app_server_clients: false },
+        auto_model_whitelist_enabled: true,
+        sub2api_credit_usage_enabled: true,
+        codex_identity: { outbound_convergence_enabled: true, convergence_mode: "session", ingress_gate_enabled: true, allow_app_server_clients: false },
       },
     });
 
@@ -48,17 +59,23 @@ describe("OtherSettingsWorkspace", () => {
     const workspace = await screen.findByRole("region", { name: "其他配置" });
     await user.click(within(workspace).getByRole("tab", { name: "实验性功能" }));
     const panel = await within(workspace).findByRole("tabpanel", { name: "实验性功能" });
-    const identity = within(panel).getByRole("region", { name: "Codex 身份兼容" });
-    await user.click(within(identity).getByRole("checkbox", { name: /出站收敛/ }));
-    await user.selectOptions(within(identity).getByRole("combobox", { name: "收敛模式" }), "session");
+    // Both experiments load from the snapshot and can be toggled here.
+    await user.click(within(panel).getByRole("checkbox", { name: "Codex 5h / 7d 额度透支续用" }));
+    await user.click(within(panel).getByRole("checkbox", { name: "Codex Agent Identity / PAT" }));
+    // The identity policy editor moved to the Codex view, but the two Codex
+    // experiments still live here.
+    expect(within(panel).queryByRole("region", { name: "Codex 身份兼容" })).not.toBeInTheDocument();
+    expect(within(panel).getByText("Codex 5h / 7d 额度透支续用")).toBeInTheDocument();
+    expect(within(panel).getByText("Codex Agent Identity / PAT")).toBeInTheDocument();
     await user.click(within(panel).getByRole("button", { name: "保存设置" }));
 
     await waitFor(() => expect(saveSpy).toHaveBeenCalled());
-    expect(saveSpy.mock.calls.at(-1)?.[0].codex_identity).toMatchObject({
-      outbound_convergence_enabled: true,
-      convergence_mode: "session",
-      ingress_gate_enabled: false,
-    });
+    const payload = saveSpy.mock.calls.at(-1)?.[0];
+    // Both experiment toggles are owned here again.
+    expect(payload?.weekly_overdraft_enabled).toBe(true);
+    expect(payload?.agent_identity_enabled).toBe(true);
+    // The identity policy is echoed from the loaded snapshot, not cleared.
+    expect(payload?.codex_identity).toMatchObject({ outbound_convergence_enabled: true, convergence_mode: "session", ingress_gate_enabled: true });
   });
 
   it("shows CPA server and plugin versions, installs the plugin, and saves update policy", async () => {
@@ -127,7 +144,9 @@ describe("OtherSettingsWorkspace", () => {
 
     await user.click(within(plugin).getByLabelText("自动更新"));
     await user.click(within(plugin).getByRole("button", { name: "保存设置" }));
-    expect(within(workspace).getByRole("alert")).toHaveTextContent("确认风险");
+    // The workspace now also renders the direct self-update panel, so query the
+    // confirmation text instead of assuming this is the only alert on the page.
+    expect(within(workspace).getByText(/确认风险/)).toBeInTheDocument();
     await user.click(within(plugin).getByLabelText("确认开启自动更新"));
     await user.click(within(plugin).getByRole("button", { name: "保存设置" }));
     await waitFor(() => expect(requests.some(({ url, init }) => url.endsWith("/updates") && init.method === "PUT")).toBe(true));
@@ -245,9 +264,10 @@ describe("OtherSettingsWorkspace", () => {
     await user.click(within(workspace).getByRole("tab", { name: "实验性功能" }));
     const panel = within(workspace).getByRole("tabpanel", { name: "实验性功能" });
     expect(within(panel).getByText("实验性行为")).toBeInTheDocument();
+    // Both Codex experiments remain experimental toggles on this panel.
     expect(within(panel).getByText("Codex 5h / 7d 额度透支续用")).toBeInTheDocument();
-    expect(within(panel).queryByText("Sub2API 额度计费用量")).not.toBeInTheDocument();
     expect(within(panel).getByText("Codex Agent Identity / PAT")).toBeInTheDocument();
+    expect(within(panel).queryByText("Sub2API 额度计费用量")).not.toBeInTheDocument();
     expect(within(panel).queryByText("Codex 自动模型白名单")).not.toBeInTheDocument();
 
     await user.click(within(panel).getByRole("checkbox", { name: "Codex 5h / 7d 额度透支续用" }));
@@ -257,11 +277,16 @@ describe("OtherSettingsWorkspace", () => {
     await waitFor(() => expect(requests.some(({ url, init }) => url.endsWith("/experiments") && init.method === "PUT")).toBe(true));
     const configRequest = requests.find(({ url, init }) => url.endsWith("/config") && init.method === "PATCH");
     const saveRequest = requests.find(({ url, init }) => url.endsWith("/experiments") && init.method === "PUT");
-    expect(JSON.parse(String(configRequest?.init.body))).toEqual({ experimental_settings: { weekly_overdraft_enabled: true, agent_identity_enabled: true, auto_model_whitelist_enabled: true, sub2api_credit_usage_enabled: true, codex_identity: { outbound_convergence_enabled: false, ingress_gate_enabled: false, allow_app_server_clients: false } } });
-    expect(JSON.parse(String(saveRequest?.init.body))).toEqual({ weekly_overdraft_enabled: true, agent_identity_enabled: true, auto_model_whitelist_enabled: true, sub2api_credit_usage_enabled: true, codex_identity: { outbound_convergence_enabled: false, ingress_gate_enabled: false, allow_app_server_clients: false } });
+    // The toggles carry the panel's own state while the Codex identity policy is
+    // echoed from the snapshot this test loaded, so it is never cleared here.
+    const expected = { weekly_overdraft_enabled: true, agent_identity_enabled: true, auto_model_whitelist_enabled: true, sub2api_credit_usage_enabled: true, codex_identity: { outbound_convergence_enabled: false, ingress_gate_enabled: false, allow_app_server_clients: false } };
+    expect(JSON.parse(String(configRequest?.init.body))).toEqual({ experimental_settings: expected });
+    expect(JSON.parse(String(saveRequest?.init.body))).toEqual(expected);
+    // The callback receives the saved snapshot returned by the API.
     expect(onExperimentalSettingsChange).toHaveBeenLastCalledWith({ weekly_overdraft_enabled: true, agent_identity_enabled: true, auto_model_whitelist_enabled: true, sub2api_credit_usage_enabled: true, codex_identity: { outbound_convergence_enabled: false, ingress_gate_enabled: false, allow_app_server_clients: false } });
     expect(onNotice).toHaveBeenCalledWith("实验性设置已保存");
   });
+
   it("preserves the legacy Codex identity settings when saving experiments", async () => {
     const user = userEvent.setup();
     const onNotice = vi.fn();

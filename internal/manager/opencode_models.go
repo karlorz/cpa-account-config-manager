@@ -3,6 +3,9 @@ package manager
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -59,14 +62,23 @@ type OpenCodeModelCatalog struct {
 // OpenCodeModelTestResult is the sanitized outcome of one OpenCode model probe.
 // It never contains the credential, an upstream request body, or a raw header.
 type OpenCodeModelTestResult struct {
-	Reachable  bool      `json:"reachable"`
-	Status     string    `json:"status"`
-	StatusCode int       `json:"status_code,omitempty"`
-	ReasonCode string    `json:"reason_code,omitempty"`
-	Model      string    `json:"model,omitempty"`
-	Detail     string    `json:"detail,omitempty"`
-	LatencyMS  int64     `json:"latency_ms,omitempty"`
-	TestedAt   time.Time `json:"tested_at"`
+	Reachable  bool   `json:"reachable"`
+	Status     string `json:"status"`
+	StatusCode int    `json:"status_code,omitempty"`
+	ReasonCode string `json:"reason_code,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+	// Endpoint names the protocol that produced this result (responses, chat or anthropic), and
+	// TriedEndpoints lists every protocol the probe attempted.
+	Endpoint       string   `json:"endpoint,omitempty"`
+	TriedEndpoints []string `json:"tried_endpoints,omitempty"`
+	// ProbeKind is "model" for these probes, so the UI can label them like the accounts test.
+	ProbeKind string `json:"probe_kind,omitempty"`
+	// Response is the sanitized upstream response (headers and redacted JSON), exactly like the
+	// accounts model test shows, so the operator can see what the gateway actually returned.
+	Response  *ModelTestResponsePreview `json:"response,omitempty"`
+	LatencyMS int64                     `json:"latency_ms,omitempty"`
+	TestedAt  time.Time                 `json:"tested_at"`
 }
 
 func openCodeModelTimeout(seconds int) time.Duration {
@@ -85,7 +97,48 @@ func newOpenCodeRequest(ctx context.Context, method, target, apiKey string, body
 	request.Header.Set("User-Agent", openCodeClientUserAgent())
 	request.Header.Set("x-opencode-client", "cli")
 	request.Header.Set("Accept", "application/json")
+	// The gateway rejects a request that carries no session id at all, exactly like the CLI
+	// traffic it expects. The community reference implementation
+	// (github.com/jasonxu114514/opencode2api) also sends a per-request id, a project id and the
+	// affinity headers, so the probe mimics a real CLI call instead of a bare HTTP request.
+	session := newOpenCodeProbeSessionValue()
+	request.Header.Set("x-opencode-session", session)
+	request.Header.Set("x-session-affinity", session)
+	request.Header.Set("X-Session-Id", session)
+	request.Header.Set("x-opencode-request", newOpenCodeProbeRequestValue())
+	request.Header.Set("x-opencode-project", openCodeProbeProjectValue(target, apiKey))
 	return request, nil
+}
+
+// newOpenCodeProbeRequestValue mints one id for a single probe attempt, like the CLI's
+// per-request identifier.
+func newOpenCodeProbeRequestValue() string {
+	raw := make([]byte, 16)
+	if _, errRead := rand.Read(raw); errRead != nil {
+		sum := sha256.Sum256([]byte(fmt.Sprintf("request-%d", time.Now().UnixNano())))
+		return hex.EncodeToString(sum[:16])
+	}
+	return hex.EncodeToString(raw)
+}
+
+// openCodeProbeProjectValue derives a stable project id for one credential, so repeated probes
+// look like the same project without ever echoing the key itself.
+func openCodeProbeProjectValue(target, apiKey string) string {
+	sum := sha256.Sum256([]byte("project|" + strings.TrimSpace(target) + "|" + strings.TrimSpace(apiKey)))
+	return hex.EncodeToString(sum[:16])
+}
+
+// newOpenCodeProbeSessionValue mints one session id for a plugin-initiated request. The CLI keeps
+// a session per conversation; a probe is its own short conversation, so it gets a fresh id in the
+// same shape the router uses for routed traffic.
+func newOpenCodeProbeSessionValue() string {
+	raw := make([]byte, 16)
+	if _, errRead := rand.Read(raw); errRead != nil {
+		// A missing random source must not produce a request without the header.
+		sum := sha256.Sum256([]byte(fmt.Sprintf("probe-%d", time.Now().UnixNano())))
+		return "oc-" + hex.EncodeToString(sum[:16])
+	}
+	return "oc-" + hex.EncodeToString(raw)
 }
 
 // fetchOpenCodeModels lists the models one OpenCode credential can reach. It
@@ -190,57 +243,173 @@ func probeOpenCodeModel(ctx context.Context, baseURL, apiKey, model string, time
 		result.Detail = "a model id is required"
 		return result
 	}
-	payload, errMarshal := json.Marshal(map[string]any{
-		"model":      result.Model,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens": 16,
-		"stream":     false,
-	})
-	if errMarshal != nil {
-		result.Status, result.ReasonCode = "unsupported", "invalid_model"
-		result.Detail = "the probe request could not be encoded"
-		return result
-	}
 	client := &http.Client{Timeout: timeout}
-	request, errRequest := newOpenCodeRequest(ctx, http.MethodPost, base+"/v1/chat/completions", key, bytes.NewReader(payload))
-	if errRequest != nil {
-		result.Status, result.ReasonCode = "unavailable", "request_failed"
-		result.Detail = "the probe request could not be created"
-		return result
+	// Not every model speaks the same protocol: the catalog marks models as Responses, Anthropic
+	// Messages or OpenAI-compatible Chat, and the gateway answers a plainly "not supported" for
+	// the wrong one. Try the native protocols before giving up, and report which one answered.
+	attempts := openCodeProbeAttempts()
+	tried := make([]string, 0, len(attempts))
+	best := OpenCodeModelTestResult{Model: result.Model, TestedAt: result.TestedAt}
+	bestScore := -1
+	var lastErr error
+	for _, attempt := range attempts {
+		payload, errMarshal := json.Marshal(attempt.body(result.Model))
+		if errMarshal != nil {
+			continue
+		}
+		request, errRequest := newOpenCodeRequest(ctx, http.MethodPost, base+attempt.path, key, bytes.NewReader(payload))
+		if errRequest != nil {
+			lastErr = errRequest
+			continue
+		}
+		request.Header.Set("Content-Type", "application/json")
+		for name, value := range attempt.headers {
+			request.Header.Set(name, value)
+		}
+		startedAt := time.Now()
+		response, errDo := client.Do(request)
+		latency := time.Since(startedAt).Milliseconds()
+		tried = append(tried, attempt.name)
+		if errDo != nil {
+			lastErr = errDo
+			continue
+		}
+		if response == nil || response.Body == nil {
+			lastErr = fmt.Errorf("the upstream returned an empty response")
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(response.Body, openCodeModelProbeMaxBytes))
+		_ = response.Body.Close()
+		attemptResult := OpenCodeModelTestResult{
+			Model:      result.Model,
+			TestedAt:   result.TestedAt,
+			StatusCode: response.StatusCode,
+			Reachable:  response.StatusCode > 0,
+			LatencyMS:  latency,
+			Endpoint:   attempt.name,
+			ProbeKind:  "model",
+			Response: sanitizeModelTestResponsePreview(modelProbeHTTPResponse{
+				StatusCode: response.StatusCode,
+				Header:     response.Header,
+				Body:       body,
+			}),
+		}
+		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			attemptResult.Status, attemptResult.ReasonCode = "available", "model_response_ok"
+			attemptResult.Detail = ""
+			return attemptResult
+		}
+		attemptResult.Detail = sanitizeOpenCodeError(string(body))
+		attemptResult.Status, attemptResult.ReasonCode = classifyOpenCodeProbeFailure(response.StatusCode, string(body))
+		// A protocol mismatch ("not supported" for this endpoint) is the least useful answer, so a
+		// real credential or quota failure from another protocol wins.
+		if score := openCodeProbeOutcomeScore(attemptResult.ReasonCode); score > bestScore {
+			best, bestScore = attemptResult, score
+		}
 	}
-	request.Header.Set("Content-Type", "application/json")
-	startedAt := time.Now()
-	response, errDo := client.Do(request)
-	result.LatencyMS = time.Since(startedAt).Milliseconds()
-	if errDo != nil {
-		result.Status, result.ReasonCode = "unavailable", "request_timeout"
-		result.Detail = sanitizeOpenCodeError(errDo.Error())
-		return result
+	if bestScore >= 0 {
+		best.Detail = strings.TrimSpace(best.Detail)
+		best.TriedEndpoints = tried
+		return best
 	}
-	if response == nil || response.Body == nil {
-		result.Status, result.ReasonCode = "unavailable", "invalid_response"
-		result.Detail = "the upstream returned an empty response"
-		return result
+	result.Status, result.ReasonCode = "unavailable", "request_timeout"
+	result.TriedEndpoints = tried
+	if lastErr != nil {
+		result.Detail = sanitizeOpenCodeError(lastErr.Error())
 	}
-	defer func() { _ = response.Body.Close() }()
-	body, _ := io.ReadAll(io.LimitReader(response.Body, openCodeModelProbeMaxBytes))
-	result.StatusCode = response.StatusCode
-	result.Reachable = response.StatusCode > 0
-	switch {
-	case response.StatusCode >= 200 && response.StatusCode < 300:
-		result.Status, result.ReasonCode = "available", "model_response_ok"
-		return result
-	case response.StatusCode == http.StatusUnauthorized, response.StatusCode == http.StatusForbidden:
-		result.Status, result.ReasonCode = "unavailable", "authentication_failed"
-	case response.StatusCode == http.StatusNotFound:
-		result.Status, result.ReasonCode = "unavailable", "model_not_found"
-	case response.StatusCode == http.StatusTooManyRequests:
-		result.Status, result.ReasonCode = "unavailable", "quota_limited"
-	case response.StatusCode >= 500:
-		result.Status, result.ReasonCode = "unavailable", "upstream_unavailable"
-	default:
-		result.Status, result.ReasonCode = "review", "unconfirmed_upstream_response"
-	}
-	result.Detail = sanitizeOpenCodeError(string(body))
 	return result
+}
+
+// openCodeProbeAttempt is one protocol the probe may use for a model.
+type openCodeProbeAttempt struct {
+	name    string
+	path    string
+	headers map[string]string
+	body    func(model string) map[string]any
+}
+
+// openCodeProbeAttempts lists the protocols in the order OpenCode itself prefers them.
+func openCodeProbeAttempts() []openCodeProbeAttempt {
+	return []openCodeProbeAttempt{
+		{
+			name: "responses",
+			path: "/v1/responses",
+			body: func(model string) map[string]any {
+				return map[string]any{"model": model, "input": "ping", "max_output_tokens": 16, "stream": false}
+			},
+		},
+		{
+			name: "chat",
+			path: "/v1/chat/completions",
+			body: func(model string) map[string]any {
+				return map[string]any{
+					"model":      model,
+					"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+					"max_tokens": 16,
+					"stream":     false,
+				}
+			},
+		},
+		{
+			name:    "anthropic",
+			path:    "/v1/messages",
+			headers: map[string]string{"anthropic-version": "2023-06-01"},
+			body: func(model string) map[string]any {
+				return map[string]any{
+					"model":      model,
+					"max_tokens": 16,
+					"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+				}
+			},
+		},
+	}
+}
+
+// openCodeProbeOutcomeScore ranks a failure so the most actionable one is reported: a rejected
+// credential or an exhausted quota says far more than "this endpoint does not serve the model".
+func openCodeProbeOutcomeScore(reasonCode string) int {
+	switch reasonCode {
+	case "authentication_failed":
+		return 5
+	case "quota_limited":
+		return 4
+	case "missing_session":
+		return 3
+	case "model_not_supported":
+		return 2
+	case "model_not_found":
+		return 1
+	}
+	return 0
+}
+
+// classifyOpenCodeProbeFailure maps an upstream failure onto a reason the operator can act on.
+func classifyOpenCodeProbeFailure(statusCode int, body string) (string, string) {
+	lowered := strings.ToLower(body)
+	switch {
+	case strings.Contains(lowered, "modelerror"),
+		strings.Contains(lowered, "not supported"),
+		strings.Contains(lowered, "unsupported model"),
+		strings.Contains(lowered, "does not support"):
+		return "unavailable", "model_not_supported"
+	case strings.Contains(lowered, "missingsessionid"),
+		strings.Contains(lowered, "x-opencode-session"):
+		return "unavailable", "missing_session"
+	case strings.Contains(lowered, "ratelimit"),
+		strings.Contains(lowered, "rate limit"),
+		strings.Contains(lowered, "too many requests"),
+		strings.Contains(lowered, "quota"):
+		return "unavailable", "quota_limited"
+	}
+	switch {
+	case statusCode == http.StatusUnauthorized, statusCode == http.StatusForbidden:
+		return "unavailable", "authentication_failed"
+	case statusCode == http.StatusNotFound:
+		return "unavailable", "model_not_found"
+	case statusCode == http.StatusTooManyRequests:
+		return "unavailable", "quota_limited"
+	case statusCode >= 500:
+		return "unavailable", "upstream_unavailable"
+	}
+	return "review", "unconfirmed_upstream_response"
 }

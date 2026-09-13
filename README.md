@@ -54,7 +54,7 @@
 - 测试结果展示模型、HTTP 状态、延迟和脱敏后的上游响应；支持主模型、回退模型和兼容模型，成功的 `200` 完成响应会被正确识别。
 - 手动测试会持久化最后一次模型和历史测试模型；白名单账号会优先加载白名单模型。
 - 模型策略支持全部模型、白名单和黑名单。手动测试、自动探测与巡检都会遵守策略；新 Codex 账号可自动识别受限兼容模型并应用白名单。自动兼容白名单属于常驻能力，不需要实验开关。
-- Codex 客户端身份策略是「其他配置 → 实验性功能」中的唯一全局配置，支持出站身份收敛、官方客户端入口门、App Server 放行、最低/最高版本、白名单/黑名单、引擎指纹信号，以及关闭、设备级、会话级和完全收敛模式。
+- Codex 客户端身份策略在「Codex」页面中配置，支持出站身份收敛、官方客户端入口门、App Server 放行、最低/最高版本、白名单/黑名单、引擎指纹信号，以及关闭、设备级、会话级和完全收敛模式；两个 Codex 实验项（额度透支续用、Agent Identity / PAT）仍保留在「其他配置 → 实验性功能」中。
 - 官方客户端入口门只能由该全局开关开启：账号或 AI 提供商的策略只能豁免单个对象，不能单独开启，因此不会在关闭总开关后继续拦截请求；被拦截时会返回来源标记（`source`、`reason`）便于区分插件拦截与上游限制。
 - 出站收敛与入口门是相互独立的：只开启收敛不会拒绝任何请求。Codex OAuth、`codex-api-key` 健康检查及内部模型、额度、Token、PAT、Agent Identity 探测使用一致的兼容身份。
 
@@ -87,6 +87,19 @@ AI 提供商是独立工作区，当前可管理：
 
 OpenCode Go 还支持 Workspace ID 与 auth Cookie、5h/7d/30d 配额、重置时间、手动刷新和删除（配置与刷新在鉴权界面中进行；独立的 OpenCode 状态页无需鉴权，因此只读取缓存状态、掩码工作区 ID，且不接收任何凭据）。
 
+### Codex
+
+侧边菜单在「OpenCode」之前新增独立的 **Codex** 工作区：
+
+- 工作区按标签页组织，依次为：「总览」、「模型与价格」和「指纹配置」。
+- 「总览」展示 Codex 账号数、AI 提供商渠道数、已禁用模型数、账号级覆盖数、提供商级覆盖数、已覆盖指纹字段数、有效收敛模式，以及一个表示全局模型管控是否启用的指示器。
+- Codex 身份兼容策略编辑器位于「总览」。两个 Codex 实验项（Codex 5h / 7d 额度透支续用、Agent Identity / PAT）仍作为实验性开关保留在「其他配置 → 实验性功能」；Codex 页面保存时会回显这两个开关的当前值，实验性功能保存时会回显身份策略，两个页面不会互相清空配置。
+- 「指纹配置」把原先直接编译进 Codex 指纹的每个取值都变成可编辑字段，字段旁同时展示内置默认值与当前生效值，并提供「已覆盖」标记、单字段恢复、分组恢复和全部恢复操作。
+- 可编辑字段为：收敛模式；客户端身份字符串（User-Agent、Originator、Version、OpenAI-Beta）和 turn 元数据请求头名称；显式 installation/session/thread id（留空表示自动派生）和窗口后缀；installation、session 和 thread id 的派生前缀以及种子策略（按账号或固定种子）；请求体开关（turn 时间戳、关联字段和 prompt-cache-key 重写）。
+- 清空字段或执行恢复都会回到默认值；无效取值会被拒绝，且不会产生任何改动。指纹配置作用于每个 Codex 账号和每条 Codex AI 提供商渠道，AI 提供商页面上的账号级与提供商级收敛覆盖仍优先于档案默认值。
+- 「模型与价格」提供 Codex 模型 id 的全局开关列表，展示每个模型被多少 Codex 账号和 AI 提供商渠道引用；列表带选择列，每行提供「测试」和「禁用」/「启用」操作，并支持批量「禁用所选」「启用所选」以及既有的「全部启用」；模型测试通过已保存的 Codex 账号凭据发起探测。每个模型同时显示插件计费所采用的价格——输入、输出与缓存读取的「美元 / 百万 token」单价，取自与 Codex 用量计费相同的 Sub2API / Wei-Shaw 价格表，并标注该模型的长上下文倍率；列表上方展示价格来源与同步时间。价格表未收录的模型会标记为「暂无价格」，而不是显示为免费。禁用会同时作用于所有 Codex 账号和 AI 提供商渠道，并在请求路径上强制执行：被禁用的模型会立即收到拒绝响应，而不是被转发到上游，因此改动在下一次请求即生效，无需等待宿主侧策略应用。此能力只影响 Codex 流量，同一模型 id 在其他提供商系列上不受影响。
+- 两项设置都保存在插件私有数据目录（0600），并通过要求 Management Key 的管理路由开放，位于 `/v0/management/plugins/cpa-account-config-manager` 下：`GET /codex/overview`、`GET|PUT /codex/fingerprint`、`POST /codex/fingerprint/reset` 和 `GET|PUT /codex/models`。响应中不包含任何凭据。
+
 ### OpenCode
 
 侧边菜单在「AI 提供商」之后新增独立的 **OpenCode** 工作区：
@@ -97,24 +110,31 @@ OpenCode Go 还支持 Workspace ID 与 auth Cookie、5h/7d/30d 配额、重置�
 - 「渠道」标签页会读取已归属 OpenCode 的 CPA AI 提供商渠道并列出类型、名称、Base URL、模型数量、密钥状态以及工作区是否已管理该渠道。一次点击即可导入渠道凭据，无需重复填写：Zen 渠道（包括自建 `opencode-cc` 桥接）会成为 Zen 账号，Go 渠道会把其 API Key 附加到已保存 Workspace ID 和 auth Cookie 的工作区账号。若没有这样的账号，Go 渠道会返回一个明确状态，引导操作者先到「Go 账号」标签页填写 Workspace ID 和 auth Cookie。凭据在服务端读取并保存，绝不会到达浏览器。
 - “加载模型”会从 OpenAI 兼容端点 `GET {base}/v1/models` 获取模型列表，请求携带 `x-opencode-client: cli` 请求头和 `opencode/<version>` User-Agent，并按账号缓存结果。
 - 模型测试会使用所选模型发起真实 `POST {base}/v1/chat/completions` 探测，返回状态、原因码、HTTP 状态和延迟；原因码包括 `authentication_failed`、`model_not_found`、`quota_limited` 和 `upstream_unavailable`。
-- 一键绑定会 upsert 一个 `openai-compatibility` CPA 渠道，把模型发布到 CPA 路由：Base URL 为 `{base}/v1`，以已保存的 API Key 作为 key 条目并携带 OpenCode 请求头，同时把已验证的模型目录写入渠道的模型列表；重复绑定同一账号只会更新已有渠道、保留既有别名，不会创建重复渠道。
+- 一键绑定会 upsert 一个 `openai-compatibility` CPA 渠道，把模型发布到 CPA 路由：Base URL 为 `{base}/v1`，以已保存的 API Key 作为 key 条目并携带 OpenCode 请求头，同时把已验证的模型目录写入渠道的模型列表；重复绑定同一账号只会更新已有渠道、保留既有别名，不会创建重复渠道。已保存的 Go 凭据可在「Go 账号」表格里用「编辑凭据」补全或修改 Workspace ID、auth Cookie 与 API Key（留空的字段保持原值），账号缺少 Cookie 或 API Key 时会直接在表格里给出提示——旧凭据只存了 API Key、缺 workspace 时不再需要删除重建。
 - 快捷入口提供 `https://opencode.ai/auth`、`https://opencode.ai/workspace`、`https://opencode.ai/zen` 和只读的 OpenCode 状态页。
 - auth Cookie 和 API Key 只在经过鉴权的 Management 连接中写入一次，保存在插件私有数据目录；不会返回给浏览器（只有 `key_set` 布尔标记），也不会写入日志。
 - 计费以 OpenCode 官方文档为准：OpenCode Go 见 https://opencode.ai/docs/go/，OpenCode Zen 见 https://opencode.ai/docs/zen/。每次同步都会重新解析这些页面中的价格、额度与计费参数；models.dev 现在只作为机器可读镜像，用于补齐缺项。官方表格发布的价格优先，并会被标记为官方来源，因此官方调价无需升级插件即可生效。插件每 24 小时用 ETag 条件请求重新校验该目录，在插件私有数据目录保留缓存副本，并内置官方快照，因此离线或首次同步前价格即可用；OpenCode 工作区展示目录（模型、输入、输出、缓存读取、缓存写入、上下文窗口与按上下文长度的价格档位），并给出来源、最后同步时间和“同步价格”操作。
+- 状态目录默认跟随 CPA 账号目录：未显式配置 `data_dir` 时，插件状态（OpenCode Go/Zen 账号、模型管控、指纹、自更新等）保存在 CPA 账号目录下的 `.cpa-account-config-manager/`，与已有的用量快照同一处，因此**重启 CPA 时的工作目录变化不再影响它**；旧的相对路径 `data/cpa-account-config-manager`、插件库目录旁与 CPA 可执行文件目录旁仍作为回退目录被检索并采纳。显式配置的 `data_dir` 依旧优先，插件不会覆盖它。`GET /opencode/storage` 会一并给出当前目录与全部回退目录。
+- 凭据与状态位置可见、可恢复：`GET /opencode/storage` 返回插件实际使用的数据目录、账号状态文件路径、是否存在与账号数；当隐式数据目录里没有状态文件（例如 CPA 换了工作目录重启），插件会先在同名的已知位置（插件库目录旁、CPA 可执行文件目录旁）寻找已有状态文件并**采纳**它，而不是从空开始；读不出来的状态文件会先另存一份 `.unreadable` 备份，绝不因一次读取失败而丢掉凭据。
+- 「模型与价格」提供逐模型管控表：每行带选择列和「测试」「禁用」/「启用」操作，并提供批量「禁用所选」「启用所选」和「全部启用」。禁用会同时作用于所有 OpenCode 账号和渠道，并在请求路径上强制执行：匹配的请求会立即以 `opencode_model_disabled` 被拒绝，而不是被转发到上游；这也是阻止 GPT 级模型消耗 OpenCode Go 资源的推荐做法。测试 OpenCode 模型时，探测通过引用该模型的 OpenCode 凭据发起。写入与测试都在被点击的行上显示进度，并在完成后给出全局提示；禁用/启用不等待 CPA 管理 API 的渠道扫描，因此点击会立即返回，扫描在后台刷新（读取则最多等待 5 秒后退回到上一次扫描结果），慢或不可达的管理 API 不会再让一次点击看起来「没有反应」。
 - OpenCode 路由的用量改为按 OpenCode 自身价格计费，不再套用通用厂商价目表：当插件能按已记录的渠道 Base URL 将请求归属到某个 OpenCode 渠道时，就使用 Zen 或 Go 的官方价格。价格为公开数据，但相关路由仍需 Management Key。
 - OpenCode Go 计费语义：每月 10 美元订阅，每个模型有自己的每月美元额度（文档示例：GLM-5.3 为每月 $15，GLM-5.3-Flash 为每月 $60），并按 5 小时窗口 20%、每周窗口 50%、整月 100% 拆分。工作区展示每个模型的每月额度及其推导出的 5 小时与每周预算，并给出官方的各窗口预计请求数，同时标记官方已弃用模型及其弃用日期。
 - OpenCode Zen 计费语义：按百万 Token 计费的即用即付（pay-as-you-go）。余额低于 5 美元时默认自动充值 20 美元，并可为工作区和每个成员设置每月用量上限。工作区会一并展示该计量模式及其参数。
 - 订阅价格、窗口拆分以及自动充值阈值与金额都会从文档正文解析，内置默认值仅作兜底，因此 OpenCode 侧的改动会在下一次同步时被采用。官方文档同步时间与镜像同步时间分开显示；某个来源暂时不可用时保留最近一次可用数据，而不会清空价格。
-- OpenCode Go 路由按会话派生会话 ID：OpenCode Go 要求客户端“Send a stable session ID in `x-opencode-session` for each conversation so we can optimize routing and prompt caching”（引自 https://opencode.ai/docs/go/#where-can-i-use-it）；插件为 OpenCode 模型按以下顺序取值：入站 `x-opencode-session` 原样保留；否则复用原生客户端会话请求头（可识别 Claude Code、Codex、ZCode、Pi 风格的请求头）；再取请求体中的会话 ID（`prompt_cache_key`、`session_id`、`conversation_id`）；最后回退为对会话前缀的加盐摘要，使同一会话在各轮次保持同一 ID，且任何消息正文都不会被发送。注入仅限 OpenCode 发布的模型 ID（Zen 与 Go 目录，以及各账号已加载的目录），不触碰其他模型。
-- 工作区展示会话状态：启用/停用、覆盖的模型数量、已分配会话 ID 的请求数、观察到的不同会话数。会话 ID 永不写入日志，每个安装的盐以 0600 权限保存在插件数据目录中。
-- 所有路由均为固定路径并要求 Management Key，位于 `/v0/management/plugins/cpa-account-config-manager` 下：`POST /opencode/models` 携带 `{kind: "go"|"zen", account_id}`，返回带模型列表的脱敏账号视图；`POST /opencode/model-test` 携带 `{kind, account_id, model, timeout_seconds?}`，返回状态、原因码、HTTP 状态、延迟、测试时间和详情；`POST /opencode/bind` 携带 `{kind, account_id}`，返回绑定信息（类型、Base URL、索引、是否新建、渠道 key）；`POST /opencode/accounts` 还接受 `{account_id, api_key}` 做仅更新密钥操作，`api_key` 为空时保留已保存的密钥，传入新密钥会使缓存的模型目录失效；`GET /opencode/pricing` 返回目录及其同步来源信息；`POST /opencode/pricing/refresh` 重新校验该目录并报告是否发生变化；`GET /opencode/session` 返回会话路由状态；`GET /opencode/channels` 返回 OpenCode 渠道及其导入状态；`POST /opencode/import` 携带 `{base_url}` 导入一条渠道凭据，成功返回 200，需要工作区凭据的 Go 渠道返回标记为 `needs_workspace` 的 409。
+- OpenCode Go 路由始终为归属 OpenCode 的请求生成会话 ID：OpenCode Go 要求客户端“Send a stable session ID in `x-opencode-session` for each conversation so we can optimize routing and prompt caching”（引自 https://opencode.ai/docs/go/#where-can-i-use-it），插件按以下顺序取值：入站 `x-opencode-session` 原样保留；否则复用原生客户端会话请求头（可识别 Claude Code、Codex、ZCode、Pi 风格的请求头）；再取请求体中的会话 ID（`prompt_cache_key`、`session_id`、`conversation_id`）；否则对系统提示与首条用户消息构成的种子取加盐摘要；请求体解析不出这样的种子时，退化为对请求体有界前缀的加盐摘要；最后退化为由凭据与模型构成的稳定种子，因此归属 OpenCode 的请求绝不会不带该请求头，同一会话在各轮次保持同一 ID，且任何消息正文都不会被发送。归属采用分层判定：CPA 记录的鉴权索引能对应到已记录的 OpenCode 渠道时，按该索引精确归属；否则由模型判定——模型由 OpenCode 发布且请求不属于 Codex 流量，即归属 OpenCode，模型匹配忽略前缀与分隔符，因此 `opencode-go/` 这样的渠道前缀无法把模型藏起来。该模型回退是必要的：OpenCode Go 会拒绝未携带 `x-opencode-session` 的请求，渠道列表一时未知时不能因此不发该请求头。注入仅限 OpenCode 发布的模型 ID（Zen 与 Go 目录，以及各账号已加载的目录），不触碰其他模型。一键绑定创建的渠道也自带一个基线 `x-opencode-session` 值，因此不进行请求拦截的宿主也能保持可路由，而不会在上游失败。
+- 工作区展示会话状态：启用/停用、覆盖的模型数量、已分配会话 ID 的请求数、观察到的不同会话数，以及归因构成（按渠道、按模型各识别了多少请求）和跳过原因（Codex 流量、其他渠道、非目标模型），因此可以看清某个请求为什么收到或没有收到该请求头。会话 ID 永不写入日志，每个安装的盐以 0600 权限保存在插件数据目录中。
+- 会话粘性参照 Codex 的行为：调度选号会把同一会话固定到同一上游账号。粘性键优先取请求的会话请求头（`x-opencode-session`、`session-id`、`session_id`、`x-session-id`、`x-codex-session-id`、`x-claude-session-id`、`conversation-id`、`x-conversation-id`），都没有时再取与会话相关的请求元数据（`session_id`、`conversation_id`、`prompt_cache_key`、`x-opencode-session`、`thread_id`）。映射到的账号仍有容量时继续复用；账号饱和、从候选列表消失或映射过期（30 分钟）时，选号回退到常规的最低负载选择并重新建立映射。映射只驻留内存、有界（4096 个会话），从不持久化；没有任何会话标识的请求保持原有行为不变。
+- 所有路由均为固定路径并要求 Management Key，位于 `/v0/management/plugins/cpa-account-config-manager` 下：`POST /opencode/models` 携带 `{kind: "go"|"zen", account_id}`，返回带模型列表的脱敏账号视图；`POST /opencode/model-test` 携带 `{kind, account_id, model, timeout_seconds?}`，返回状态、原因码、HTTP 状态、延迟、测试时间和详情；`POST /opencode/bind` 携带 `{kind, account_id}`，返回绑定信息（类型、Base URL、索引、是否新建、渠道 key）；`POST /opencode/accounts` 还接受 `{account_id, api_key}` 做仅更新密钥操作，`api_key` 为空时保留已保存的密钥，传入新密钥会使缓存的模型目录失效；`GET /opencode/pricing` 返回目录及其同步来源信息；`POST /opencode/pricing/refresh` 重新校验该目录并报告是否发生变化；`GET /opencode/session` 返回会话路由状态；`GET /opencode/channels` 返回 OpenCode 渠道及其导入状态；`POST /opencode/import` 携带 `{base_url}` 导入一条渠道凭据，成功返回 200，需要工作区凭据的 Go 渠道返回标记为 `needs_workspace` 的 409；`GET|PUT /opencode/model-control` 返回模型行与价格表来源信息，其中 `PUT` 携带 `{"disabled": [...]}`，两者都要求 Management Key。
+
+- **不重启热重载**：CPA 只会在「插件市场安装」之后重新加载原生插件，所以新增 `POST /self-update/reload`：插件自己去读市场、确认市场版本不低于已写入版本（绝不降级），再请求 CPA 重装本插件；成功即热重载（刷新页面即可），失败会给出明确原因（市场不可用/已禁用/未收录/版本更旧/重装失败/仍要求重启），「其他配置 → 更新」里有「不重启热重载」按钮。若市场确实不可用，重启 CPA 仍是加载新动态库的唯一办法。
+- 自更新不经过插件商店：`GET /self-update` 返回当前版本、已解析版本、解析来源、压缩包与校验和状态、插件库文件定位结果和 `restart_required`；`POST /self-update/check` 立即解析最新 Release（依次尝试 GitHub API、`releases/latest` 跳转、`releases.atom`）；`POST /self-update/install` 下载当前平台压缩包，用 Release 的 `checksums.txt` 校验 SHA-256 后原子替换插件库文件并保留 `<插件库>.previous` 备份，校验失败时不替换；`PUT /self-update/settings` 携带 `{"plugin_file": "..."}`，在宿主无法自动定位插件库时记录其路径。四个路由都要求 Management Key，响应只包含版本号、校验和、文件路径与状态。发布包同时携带 `ui/index.html`：安装后插件立即提供新界面（刷新页面即生效，无需重启），因此纯界面改动可以做到「不重启更新」；只有动态库本身仍需重启 CPA 才会加载，界面会分别显示「界面已更新」与「需要重启」，并给出 `ui_updated` / `interface_refresh_only` 字段。
 
 ### 操作日志、界面与更新
 
 - 操作日志覆盖导入、导出、批量修改、模型测试、策略扫描、巡检、自动处置、通知和插件更新，记录成功/失败/部分完成、失败依据、数量、脱敏样本、来源和时间。
 - 界面支持简体中文、繁体中文、English 和 Русский，并跟随 CPA 语言与主题；另提供中性、靛蓝、森林、玫瑰主题，舒适/紧凑密度，小/中/大字号，以及主标题与描述字号区分。
 - 表格排序、分页大小、筛选条件和手动测试模型会持久化。
-- 可检查并从 CPA 插件商店安装插件更新，也会展示 CPA 当前版本和最新版本。插件只检测 CPA 主程序更新，不替换 CPA 可执行文件。
+- 可检查并从 CPA 插件商店安装插件更新，也会展示 CPA 当前版本和最新版本。插件只检测 CPA 主程序更新，不替换 CPA 可执行文件。插件商店读取不到数据时，还可在「其他配置 → 更新」里直接使用本插件的 GitHub Release 更新自身：解析最新版本、按当前平台选择压缩包、用 Release 的 `checksums.txt` 校验 SHA-256，校验通过才原子替换插件库文件并保留上一份备份；下载仅限 GitHub 域名，且下载体积有上限。
 
 ## 实验性功能
 
@@ -164,7 +184,7 @@ plugins:
       priority: 20
 ```
 
-CPA 加载插件后，在 Management Center 中打开 **CPA-A Manager**。大多数通过分支更新通道完成的更新只需刷新页面；仅当宿主返回 `restart_required: true`，或已加载的动态库被系统锁定时，才需要重启 CPA。
+CPA 加载插件后，在 Management Center 中打开 **CPA-A Manager**。大多数通过分支更新通道完成的更新只需刷新页面；仅当宿主返回 `restart_required: true`，或已加载的动态库被系统锁定时，才需要重启 CPA。通过插件自身 GitHub 直连更新替换的是磁盘上的插件库文件，运行中的 CPA 仍映射旧库，因此始终需要重启 CPA 才会生效（界面会显示 `restart_required`）。
 
 ## 配置与持久化
 

@@ -100,7 +100,9 @@ func TestOpenCodeSessionRouterStableValueForSameConversation(t *testing.T) {
 	if snapshot.LastInjectedAt.IsZero() {
 		t.Fatal("last injected timestamp was not recorded")
 	}
-	if len(snapshot.TargetModels) != 1 || snapshot.TargetModels[0] != openCodeSessionTestModel {
+	// Targets are stored in the same normalized form the routed model is folded
+	// into, so a channel prefix cannot hide a model.
+	if len(snapshot.TargetModels) != 1 || snapshot.TargetModels[0] != normalizeOpenCodeSessionModel(openCodeSessionTestModel) {
 		t.Fatalf("target models = %v", snapshot.TargetModels)
 	}
 	if snapshot.TargetAuthIndexes != 1 {
@@ -132,18 +134,39 @@ func TestOpenCodeSessionRouterDifferentConversationsGetDifferentValues(t *testin
 }
 
 func TestOpenCodeSessionRouterOnlyInterceptsAttributedRequests(t *testing.T) {
-	t.Run("no metadata", func(t *testing.T) {
+	// CPA does not always report an auth index. A request that carries none is
+	// still attributed by model when that model is published by OpenCode, which is
+	// what makes the header reliable in production.
+	t.Run("no metadata but a targeted model", func(t *testing.T) {
 		router := newTestOpenCodeSessionRouter(t, t.TempDir(), openCodeSessionTestModel)
 		response, changed := router.InterceptRequest(openCodeSessionTestRequestWithMetadata(
 			"req-1", openCodeSessionTestModel, nil, nil, openCodeSessionTestBody))
-		assertOpenCodeSessionNotIntercepted(t, router, response, changed)
+		if !changed || response.Headers.Get(openCodeSessionHeader) == "" {
+			t.Fatalf("a targeted request without metadata was not intercepted: %#v", response.Headers)
+		}
+		if snapshot := router.Snapshot(); snapshot.AttributedByModel != 1 || snapshot.InjectedRequests != 1 {
+			t.Fatalf("attribution counters = %#v", snapshot)
+		}
 	})
 
-	t.Run("empty metadata", func(t *testing.T) {
+	t.Run("empty metadata but a targeted model", func(t *testing.T) {
 		router := newTestOpenCodeSessionRouter(t, t.TempDir(), openCodeSessionTestModel)
 		response, changed := router.InterceptRequest(openCodeSessionTestRequestWithMetadata(
 			"req-1", openCodeSessionTestModel, map[string]any{}, nil, openCodeSessionTestBody))
+		if !changed || response.Headers.Get(openCodeSessionHeader) == "" {
+			t.Fatalf("a targeted request with empty metadata was not intercepted: %#v", response.Headers)
+		}
+	})
+
+	t.Run("codex traffic is never touched", func(t *testing.T) {
+		router := newTestOpenCodeSessionRouter(t, t.TempDir(), openCodeSessionTestModel)
+		request := openCodeSessionTestRequestWithMetadata("req-1", openCodeSessionTestModel, nil, nil, openCodeSessionTestBody)
+		request.ToFormat = "codex"
+		response, changed := router.InterceptRequest(request)
 		assertOpenCodeSessionNotIntercepted(t, router, response, changed)
+		if snapshot := router.Snapshot(); snapshot.SkippedCodexRequests != 1 {
+			t.Fatalf("skip counters = %#v", snapshot)
+		}
 	})
 
 	t.Run("unknown auth index", func(t *testing.T) {
@@ -166,8 +189,8 @@ func TestOpenCodeSessionRouterOnlyInterceptsAttributedRequests(t *testing.T) {
 			t.Fatalf("session value = %q, want the fallback prefix", value)
 		}
 		snapshot := router.Snapshot()
-		if len(snapshot.TargetModels) != 1 || snapshot.TargetModels[0] != openCodeSessionTestModel {
-			t.Fatalf("target models = %v, want only %q", snapshot.TargetModels, openCodeSessionTestModel)
+		if len(snapshot.TargetModels) != 1 || snapshot.TargetModels[0] != normalizeOpenCodeSessionModel(openCodeSessionTestModel) {
+			t.Fatalf("target models = %v, want only %q", snapshot.TargetModels, normalizeOpenCodeSessionModel(openCodeSessionTestModel))
 		}
 		if snapshot.InjectedRequests != 1 {
 			t.Fatalf("injected requests = %d, want 1: attribution, not the model id, decides", snapshot.InjectedRequests)
@@ -190,6 +213,53 @@ func TestOpenCodeSessionRouterAcceptsEveryAttributionMetadataKey(t *testing.T) {
 				t.Fatalf("%s was not set", openCodeSessionHeader)
 			}
 		})
+	}
+}
+
+// A channel-prefixed model id must still be targeted, and a body the structured
+// reader cannot parse must still produce a session value: the upstream rejects a
+// request that carries no x-opencode-session.
+func TestOpenCodeSessionRouterNeverSkipsATargetedRequest(t *testing.T) {
+	router := newTestOpenCodeSessionRouter(t, t.TempDir(), "qwen3.7-max")
+
+	// The routed model carries a channel prefix.
+	response, changed := router.InterceptRequest(cpaapi.RequestInterceptRequest{
+		RequestID: "req-prefixed", ToFormat: "openai", Model: "opencode-go/qwen3.7-max",
+		Headers: http.Header{}, Metadata: openCodeSessionTestAttribution(),
+		Body: []byte(`{"messages":[{"role":"user","content":"hello"}]}`),
+	})
+	if !changed || response.Headers.Get(openCodeSessionHeader) == "" {
+		t.Fatalf("a prefixed model id was not intercepted: %#v", response.Headers)
+	}
+
+	// A body shape the structured reader does not understand (not JSON).
+	unparseable, changed := router.InterceptRequest(cpaapi.RequestInterceptRequest{
+		RequestID: "req-binary", ToFormat: "openai", Model: "qwen3.7-max",
+		Headers: http.Header{}, Metadata: openCodeSessionTestAttribution(),
+		Body: []byte("not-json-payload-that-an-upstream-encoded"),
+	})
+	if !changed {
+		t.Fatalf("an unparseable body produced no session header")
+	}
+	if value := unparseable.Headers.Get(openCodeSessionHeader); !strings.HasPrefix(value, openCodeSessionValuePrefix) {
+		t.Fatalf("unparseable-body session value = %q", value)
+	}
+
+	// An empty body still yields a stable value rather than failing upstream.
+	empty, changed := router.InterceptRequest(cpaapi.RequestInterceptRequest{
+		RequestID: "req-empty", ToFormat: "openai", Model: "qwen3.7-max",
+		Headers: http.Header{}, Metadata: openCodeSessionTestAttribution(),
+	})
+	if !changed || empty.Headers.Get(openCodeSessionHeader) == "" {
+		t.Fatalf("an empty body produced no session header")
+	}
+	// The same request produces the same value, so routing stays stable.
+	repeat, _ := router.InterceptRequest(cpaapi.RequestInterceptRequest{
+		RequestID: "req-empty-2", ToFormat: "openai", Model: "qwen3.7-max",
+		Headers: http.Header{}, Metadata: openCodeSessionTestAttribution(),
+	})
+	if repeat.Headers.Get(openCodeSessionHeader) != empty.Headers.Get(openCodeSessionHeader) {
+		t.Fatalf("the fallback value was not stable: %q then %q", empty.Headers.Get(openCodeSessionHeader), repeat.Headers.Get(openCodeSessionHeader))
 	}
 }
 
@@ -318,13 +388,16 @@ func TestOpenCodeSessionRouterDisabledDoesNotInject(t *testing.T) {
 	assertOpenCodeSessionNotIntercepted(t, router, response, changed)
 }
 
-func TestOpenCodeSessionRouterRequiresAuthIndexesToBeActive(t *testing.T) {
+// The channel allow-list refines attribution but must not gate injection: CPA does
+// not report an auth index for every API-key channel, and a router that stays
+// inactive then never sends the header the upstream requires.
+func TestOpenCodeSessionRouterActiveWithTargetsEvenWithoutAuthIndexes(t *testing.T) {
 	router := NewOpenCodeSessionRouter()
 	router.Configure(Config{DataDir: t.TempDir()})
 	router.SetEnabled(true)
 	router.SetTargets([]string{openCodeSessionTestModel})
-	if router.RequestInterceptionActive() {
-		t.Fatal("router without auth indexes reported itself active")
+	if !router.RequestInterceptionActive() {
+		t.Fatal("router with targets but no auth indexes reported itself inactive")
 	}
 	snapshot := router.Snapshot()
 	if !snapshot.Enabled || !snapshot.SaltReady {
@@ -334,9 +407,12 @@ func TestOpenCodeSessionRouterRequiresAuthIndexesToBeActive(t *testing.T) {
 		t.Fatalf("target auth indexes = %d, want 0", snapshot.TargetAuthIndexes)
 	}
 
+	// Without a channel list the request is still injected, attributed by model.
 	response, changed := router.InterceptRequest(openCodeSessionTestRequest("req-1", openCodeSessionTestModel, nil,
 		openCodeSessionTestBody))
-	assertOpenCodeSessionNotIntercepted(t, router, response, changed)
+	if !changed || response.Headers.Get(openCodeSessionHeader) == "" {
+		t.Fatalf("a targeted request was not intercepted without a channel list")
+	}
 
 	router.SetAuthIndexes([]string{openCodeSessionTestAuthIndex})
 	if !router.RequestInterceptionActive() {

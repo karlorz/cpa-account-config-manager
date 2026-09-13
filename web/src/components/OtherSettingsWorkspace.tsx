@@ -7,7 +7,6 @@ import {
   LoaderCircle,
   Network,
   PackageCheck,
-  Radar,
   RefreshCw,
   RotateCcw,
   Save,
@@ -21,7 +20,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../api/client";
 import { operatorMessage } from "../format/operatorMessage";
 import { useI18n } from "../i18n";
-import { CodexIdentityPolicyEditor } from "./CodexIdentityPolicyEditor";
 import type { CPAServerVersionSnapshot, ExperimentalCodexIdentitySettings, ExperimentalSettings, ExperimentalSettingsSnapshot, UpdateSnapshot } from "../types";
 import {
   readFontSize,
@@ -34,6 +32,7 @@ import { ExternalNotificationSettings } from "./ExternalNotificationSettings";
 import { ProxyProfilesSettings } from "./ProxyProfilesSettings";
 import { AutomationPolicySettings } from "./AutomationPolicySettings";
 import { announcePluginUpdateStatus, subscribePluginUpdateStatus } from "./PluginUpdateAutomation";
+import { SelfUpdatePanel } from "./SelfUpdatePanel";
 import { readPluginDensity, readPluginTheme, readPluginThemeEnabled, resetPluginTheme, setPluginDensity, setPluginTheme, setPluginThemeEnabled, type PluginDensity, type PluginThemePreset } from "../store/pluginTheme";
 
 export type OtherSettingsSection = "automation" | "proxy_profiles" | "notifications" | "updates" | "experimental";
@@ -57,7 +56,6 @@ export function OtherSettingsWorkspace({ onAPIError, onNotice, forceLoading = fa
   const [updates, setUpdates] = useState<UpdateSnapshot | null>(null);
   const [server, setServer] = useState<CPAServerVersionSnapshot | null>(null);
   const [experiments, setExperiments] = useState<ExperimentalSettingsSnapshot | null>(null);
-  const [codexIdentity, setCodexIdentity] = useState<ExperimentalCodexIdentitySettings>(EMPTY_CODEX_IDENTITY);
   const [activeSection, setActiveSection] = useState<OtherSettingsSection>(initialSection);
   const sections = visibleSections ?? ["automation", "proxy_profiles", "notifications", "updates", "experimental"];
   const [fontSize, setFontSize] = useState<FontSizePreset>(readFontSize);
@@ -74,12 +72,12 @@ export function OtherSettingsWorkspace({ onAPIError, onNotice, forceLoading = fa
   const [installing, setInstalling] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingExperiment, setSavingExperiment] = useState(false);
+  const [weeklyOverdraftEnabled, setWeeklyOverdraftEnabled] = useState(false);
+  const [agentIdentityEnabled, setAgentIdentityEnabled] = useState(false);
   const [checkEnabled, setCheckEnabled] = useState(true);
   const [checkInterval, setCheckInterval] = useState("24");
   const [autoUpdate, setAutoUpdate] = useState(false);
   const [confirmAutoUpdate, setConfirmAutoUpdate] = useState(false);
-  const [weeklyOverdraftEnabled, setWeeklyOverdraftEnabled] = useState(false);
-  const [agentIdentityEnabled, setAgentIdentityEnabled] = useState(false);
   const [error, setError] = useState("");
   const refreshSequence = useRef(0);
   const handleError = useCallback((caught: unknown) => {
@@ -89,6 +87,12 @@ export function OtherSettingsWorkspace({ onAPIError, onNotice, forceLoading = fa
     }
     setError(operatorMessage(caught instanceof Error ? caught.message : tx("ui.request_failed"), locale));
   }, [locale, onAPIError, tx]);
+
+  useEffect(() => {
+    if (!experiments) return;
+    setWeeklyOverdraftEnabled(experiments.settings.weekly_overdraft_enabled === true);
+    setAgentIdentityEnabled(experiments.settings.agent_identity_enabled === true);
+  }, [experiments]);
 
   const refreshPlugin = useCallback(async (checkNow = false, signal?: AbortSignal) => {
     const next = await api.getEffectiveUpdateStatus(checkNow, signal);
@@ -143,13 +147,6 @@ export function OtherSettingsWorkspace({ onAPIError, onNotice, forceLoading = fa
     setAutoUpdate(updates.policy.auto_update);
     if (updates.policy.auto_update) setConfirmAutoUpdate(false);
   }, [updates?.policy?.auto_update, updates?.policy?.check_enabled, updates?.policy?.check_interval_hours]);
-
-  useEffect(() => {
-    if (!experiments?.settings) return;
-    setWeeklyOverdraftEnabled(experiments.settings.weekly_overdraft_enabled === true);
-    setAgentIdentityEnabled(experiments.settings.agent_identity_enabled === true);
-    setCodexIdentity(experiments.settings.codex_identity ?? EMPTY_CODEX_IDENTITY);
-  }, [experiments]);
 
   const installUpdate = useCallback(async () => {
     const version = updates?.latest_version;
@@ -232,15 +229,16 @@ export function OtherSettingsWorkspace({ onAPIError, onNotice, forceLoading = fa
     setError("");
     try {
       const next = await api.saveExperimentalSettings({
+        // The two Codex experiments are edited here. The Codex identity policy is
+        // edited in the Codex view, so its current value is echoed back to avoid
+        // clearing what that view configured.
         weekly_overdraft_enabled: weeklyOverdraftEnabled,
         agent_identity_enabled: agentIdentityEnabled,
+        codex_identity: experiments?.settings.codex_identity ?? EMPTY_CODEX_IDENTITY,
         auto_model_whitelist_enabled: true,
         // Kept in the request for older runtimes; credit pricing is now a
         // permanent built-in behavior and is always normalized to true.
         sub2api_credit_usage_enabled: true,
-        // Codex client identity is global-only and edited here, so it stays the
-        // single source for outbound convergence and the ingress gate.
-        codex_identity: codexIdentity,
       });
       setExperiments(next);
       onExperimentalSettingsChange(next.settings);
@@ -394,6 +392,7 @@ export function OtherSettingsWorkspace({ onAPIError, onNotice, forceLoading = fa
             <button className="button button-primary" type="button" disabled={saving || !updates} onClick={() => void saveUpdateSettings()}>{saving ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}{tx("ui.save_settings")}</button>
           </div>
         </section>
+        <SelfUpdatePanel onAPIError={onAPIError} onNotice={onNotice} />
         </div>
       </div> : (
         <section className="experimental-settings-section" role="tabpanel" aria-label={tx("ui.experimental_features")}>
@@ -454,22 +453,7 @@ export function OtherSettingsWorkspace({ onAPIError, onNotice, forceLoading = fa
               <div><strong>{tx("ui.security_notice")}</strong><span>{tx("ui.agent_identity_security_notice")}</span></div>
             </div>
           </div>
-          <div className="experimental-feature-block" role="region" aria-label={tx("ui.codex_identity_group")}>
-            <div className="experimental-feature-row">
-              <div className="experimental-feature-copy">
-                <span className="experimental-feature-icon"><Radar size={18} /></span>
-                <div>
-                  <strong>{tx("ui.codex_identity_group")}</strong>
-                  <span>{tx("ui.codex_identity_group_help")}</span>
-                </div>
-              </div>
-            </div>
-            <CodexIdentityPolicyEditor
-              value={codexIdentity}
-              disabled={loading || savingExperiment || !experiments}
-              onChange={(patch) => setCodexIdentity((current) => ({ ...current, ...patch }))}
-            />
-          </div>
+          <p className="experimental-moved-note">{tx("ui.codex_settings_moved_note")}</p>
           <div className="settings-section-actions experimental-actions">
             <button className="button button-primary" type="button" disabled={loading || savingExperiment || !experiments} onClick={() => void saveExperimentalSettings()}>
               {savingExperiment ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}{tx("ui.save_settings")}

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -54,50 +56,56 @@ type RegistrationCapabilities struct {
 }
 
 type App struct {
-	mu                      sync.RWMutex
-	config                  Config
-	configErr               string
-	accounts                *AccountService
-	deduplication           *AccountDeduplicationService
-	deletions               *AccountDeleteService
-	tokenRefresh            *AccountTokenRefreshService
-	previews                *PreviewService
-	jobs                    *JobEngine
-	policies                *PolicyEngine
-	inspection              *InspectionEngine
-	updates                 *UpdateChecker
-	force                   *ForceSyncEngine
-	imports                 *ImportService
-	usage                   *UsageTracker
-	creditUsage             *Sub2APICreditUsage
-	operations              *OperationJournal
-	modelTests              *ModelTestService
-	newAccountProbe         *newAccountModelProbeEngine
-	quotaBootstrap          *accountQuotaMetadataBootstrap
-	managementDoer          HTTPDoer
-	requestHooks            *RequestHook
-	quotaGuard              *AccountQuotaGuard
-	concurrency             *AccountConcurrencyService
-	providerRuntime         *ProviderRuntimeTracker
-	hostSchema              uint32
-	runtime                 *RuntimeOwnership
-	experiments             *ExperimentalSettingsService
-	agentIdentity           *AgentIdentityExperiment
-	opencode                *OpenCodeQuotaService
-	opencodeZen             *OpenCodeZenService
-	opencodePricing         *OpenCodePricingService
-	opencodeSession         *OpenCodeSessionRouter
-	opencodeSessionSyncedAt atomic.Int64
-	opencodeSessionPrimedAt atomic.Int64
-	proxyProfiles           *ProxyProfileService
-	quotaPolicies           *QuotaPolicyService
-	aiProviderNames         *AIProviderNameService
-	codexIdentityOverrides  *CodexIdentityOverrideService
-	globalPolicy            *GlobalPolicyService
-	riskControl             *RiskControlService
-	indexHTML               []byte
-	quiesceOnce             sync.Once
-	quotaResetLocks         [64]sync.Mutex
+	mu                       sync.RWMutex
+	config                   Config
+	configErr                string
+	accounts                 *AccountService
+	deduplication            *AccountDeduplicationService
+	deletions                *AccountDeleteService
+	tokenRefresh             *AccountTokenRefreshService
+	previews                 *PreviewService
+	jobs                     *JobEngine
+	policies                 *PolicyEngine
+	inspection               *InspectionEngine
+	updates                  *UpdateChecker
+	force                    *ForceSyncEngine
+	imports                  *ImportService
+	usage                    *UsageTracker
+	creditUsage              *Sub2APICreditUsage
+	operations               *OperationJournal
+	modelTests               *ModelTestService
+	newAccountProbe          *newAccountModelProbeEngine
+	quotaBootstrap           *accountQuotaMetadataBootstrap
+	managementDoer           HTTPDoer
+	authDir                  string
+	requestHooks             *RequestHook
+	quotaGuard               *AccountQuotaGuard
+	concurrency              *AccountConcurrencyService
+	providerRuntime          *ProviderRuntimeTracker
+	hostSchema               uint32
+	runtime                  *RuntimeOwnership
+	experiments              *ExperimentalSettingsService
+	agentIdentity            *AgentIdentityExperiment
+	opencode                 *OpenCodeQuotaService
+	opencodeZen              *OpenCodeZenService
+	opencodePricing          *OpenCodePricingService
+	selfUpdate               *SelfUpdateService
+	codexFingerprints        *CodexFingerprintProfileService
+	codexModelControl        *CodexModelControlService
+	opencodeModelControl     *OpenCodeModelControlService
+	opencodeModelControlGate *OpenCodeModelControl
+	opencodeSession          *OpenCodeSessionRouter
+	opencodeSessionSyncedAt  atomic.Int64
+	opencodeSessionPrimedAt  atomic.Int64
+	proxyProfiles            *ProxyProfileService
+	quotaPolicies            *QuotaPolicyService
+	aiProviderNames          *AIProviderNameService
+	codexIdentityOverrides   *CodexIdentityOverrideService
+	globalPolicy             *GlobalPolicyService
+	riskControl              *RiskControlService
+	indexHTML                []byte
+	quiesceOnce              sync.Once
+	quotaResetLocks          [64]sync.Mutex
 }
 
 func NewApp(host AuthHost, indexHTML []byte) *App {
@@ -123,6 +131,11 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	opencode := NewOpenCodeQuotaService()
 	opencodeZen := NewOpenCodeZenService()
 	opencodePricing := NewOpenCodePricingService()
+	selfUpdate := NewSelfUpdateService(PluginVersion)
+	codexFingerprints := NewCodexFingerprintProfileService()
+	codexModelControl := NewCodexModelControlService()
+	opencodeModelControl := NewOpenCodeModelControlService()
+	opencodeModelControlGate := NewOpenCodeModelControl(opencodeModelControl)
 	opencodeSession := NewOpenCodeSessionRouter()
 	opencodeSession.SetEnabled(true)
 	proxyProfiles := NewProxyProfileService()
@@ -160,7 +173,7 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	// Admission must run before observational trackers. A saturated account can
 	// block in the concurrency transformer; recording it as active before that
 	// wait would skew provider runtime metrics and rolling request windows.
-	requestHooks := NewRequestHook(riskControl, quotaGuard, concurrency, providerRuntime, weeklyOverdraft, codexIdentity, opencodeSession)
+	requestHooks := NewRequestHook(riskControl, quotaGuard, concurrency, providerRuntime, weeklyOverdraft, codexIdentity, opencodeModelControlGate, opencodeSession, NewCodexModelControl(codexModelControl))
 	runtimeMarker := ""
 	if provider, ok := host.(interface{ RuntimeProcessMarker() string }); ok {
 		runtimeMarker = provider.RuntimeProcessMarker()
@@ -176,43 +189,48 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	inspection.SetDeleteService(deletions)
 	inspection.SetOperationJournal(operations)
 	app := &App{
-		config:                 normalizeConfig(Config{}),
-		accounts:               accounts,
-		deduplication:          NewAccountDeduplicationService(accounts),
-		deletions:              deletions,
-		tokenRefresh:           NewAccountTokenRefreshService(accounts, host),
-		previews:               NewPreviewService(accounts),
-		jobs:                   jobs,
-		policies:               policies,
-		inspection:             inspection,
-		updates:                updates,
-		force:                  force,
-		imports:                imports,
-		usage:                  usage,
-		creditUsage:            creditUsage,
-		operations:             operations,
-		modelTests:             modelTests,
-		newAccountProbe:        newAccountProbe,
-		quotaBootstrap:         quotaBootstrap,
-		requestHooks:           requestHooks,
-		quotaGuard:             quotaGuard,
-		concurrency:            concurrency,
-		providerRuntime:        providerRuntime,
-		hostSchema:             cpaapi.SchemaVersion,
-		runtime:                runtime,
-		experiments:            experiments,
-		agentIdentity:          agentIdentity,
-		opencode:               opencode,
-		opencodeZen:            opencodeZen,
-		opencodePricing:        opencodePricing,
-		opencodeSession:        opencodeSession,
-		proxyProfiles:          proxyProfiles,
-		quotaPolicies:          quotaPolicies,
-		aiProviderNames:        aiProviderNames,
-		codexIdentityOverrides: codexIdentityOverrides,
-		globalPolicy:           globalPolicy,
-		riskControl:            riskControl,
-		indexHTML:              append([]byte(nil), indexHTML...),
+		config:                   normalizeConfig(Config{}),
+		accounts:                 accounts,
+		deduplication:            NewAccountDeduplicationService(accounts),
+		deletions:                deletions,
+		tokenRefresh:             NewAccountTokenRefreshService(accounts, host),
+		previews:                 NewPreviewService(accounts),
+		jobs:                     jobs,
+		policies:                 policies,
+		inspection:               inspection,
+		updates:                  updates,
+		force:                    force,
+		imports:                  imports,
+		usage:                    usage,
+		creditUsage:              creditUsage,
+		operations:               operations,
+		modelTests:               modelTests,
+		newAccountProbe:          newAccountProbe,
+		quotaBootstrap:           quotaBootstrap,
+		requestHooks:             requestHooks,
+		quotaGuard:               quotaGuard,
+		concurrency:              concurrency,
+		providerRuntime:          providerRuntime,
+		hostSchema:               cpaapi.SchemaVersion,
+		runtime:                  runtime,
+		experiments:              experiments,
+		agentIdentity:            agentIdentity,
+		opencode:                 opencode,
+		opencodeZen:              opencodeZen,
+		opencodePricing:          opencodePricing,
+		selfUpdate:               selfUpdate,
+		codexFingerprints:        codexFingerprints,
+		codexModelControl:        codexModelControl,
+		opencodeModelControl:     opencodeModelControl,
+		opencodeModelControlGate: opencodeModelControlGate,
+		opencodeSession:          opencodeSession,
+		proxyProfiles:            proxyProfiles,
+		quotaPolicies:            quotaPolicies,
+		aiProviderNames:          aiProviderNames,
+		codexIdentityOverrides:   codexIdentityOverrides,
+		globalPolicy:             globalPolicy,
+		riskControl:              riskControl,
+		indexHTML:                append([]byte(nil), indexHTML...),
 	}
 	// OpenCode traffic is valued with OpenCode's own published prices, and the
 	// periodic catalog sync only runs for installations that use OpenCode.
@@ -229,6 +247,9 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	accounts.SetQuotaPolicies(quotaPolicies)
 	accounts.SetCodexIdentityOverrides(codexIdentityOverrides)
 	accounts.SetObserver(accountObserverGroup{newAccountProbe, quotaBootstrap})
+	// The plugin's own state follows the discovered CPA auth directory, exactly like the durable
+	// usage snapshot, so an implicit relative data directory cannot hide it after a restart.
+	accounts.AddUsageStorageDiscoverer(app)
 	policies.SetObserver(newAccountProbe)
 	policies.SetModelPolicyApplier(app.applyConditionalModelPolicy)
 	policies.SetGlobalPolicy(globalPolicy)
@@ -252,6 +273,181 @@ func (a *App) Configure(raw []byte) {
 	a.ConfigureHost(raw, cpaapi.SchemaVersion)
 }
 
+// DiscoverAuthStorage keeps the plugin's private state beside CPA's auth files. The host gives
+// the plugin absolute auth file paths as soon as an account list is read, which is far more
+// stable than the implicit relative data directory that follows the working directory of
+// whoever started CPA. An operator-pinned `data_dir` is never overridden.
+func (a *App) DiscoverAuthStorage(entries []cpaapi.HostAuthFileEntry) {
+	if a == nil {
+		return
+	}
+	authDir := discoverUsageAuthDir(entries)
+	if authDir == "" {
+		return
+	}
+	a.mu.RLock()
+	previousDir := a.authDir
+	configured := a.config
+	reconfigured := a.configErr == "" && configured.DataDir != ""
+	a.mu.RUnlock()
+	if !reconfigured || (previousDir == authDir && !isImplicitStateDir(configured)) {
+		return
+	}
+	a.mu.Lock()
+	a.authDir = authDir
+	a.mu.Unlock()
+	if !isImplicitStateDir(configured) {
+		// The operator pinned a data directory, so only remember the auth dir for reporting.
+		return
+	}
+	resolved := a.resolveStateDirectories(configured, authDir)
+	if resolved.DataDir == configured.DataDir && len(resolved.DataDirAlternates) == len(configured.DataDirAlternates) {
+		return
+	}
+	a.applyResolvedConfig(resolved)
+}
+
+// applyResolvedConfig re-configures every store after the state directory was resolved again,
+// without touching the host schema or the background start-up sequence.
+func (a *App) applyResolvedConfig(config Config) {
+	a.mu.Lock()
+	a.config = config
+	a.mu.Unlock()
+	a.operations.Configure(config)
+	a.opencode.Configure(config)
+	a.opencodeZen.Configure(config)
+	a.opencodeModelControl.Configure(config)
+	a.opencodeSession.Configure(config)
+	a.codexFingerprints.Configure(config)
+	a.codexModelControl.Configure(config)
+	a.selfUpdate.Configure(config)
+	a.creditUsage.Configure(config, a.experiments.Sub2APICreditUsageEnabled())
+	a.providerRuntime.Configure(config)
+	a.usage.Configure(config)
+	a.jobs.Configure(config)
+	a.policies.Configure(config)
+	a.updates.Configure(config)
+	a.proxyProfiles.Configure(config)
+	a.quotaPolicies.Configure(config)
+	a.aiProviderNames.Configure(config)
+	a.codexIdentityOverrides.Configure(config)
+	a.experiments.Configure(config)
+	a.globalPolicy.Configure(config)
+	a.riskControl.Configure(config)
+	a.inspection.Configure(config)
+	a.force.Configure(config)
+	a.newAccountProbe.Configure(config)
+}
+
+// stateDirUnderAuthDir is where plugin state lives when the data directory is implicit: the
+// same hidden folder the durable usage snapshot already uses, inside CPA's auth directory.
+func stateDirUnderAuthDir(authDir string) string {
+	trimmed := strings.TrimSpace(authDir)
+	if trimmed == "" {
+		return ""
+	}
+	return filepath.Join(trimmed, usageDurableDirName)
+}
+
+// isImplicitStateDir reports whether this config still uses the working-directory default.
+func isImplicitStateDir(config Config) bool {
+	return strings.TrimSpace(config.DataDir) == "" || filepath.Clean(config.DataDir) == filepath.Clean(implicitDataDirName)
+}
+
+// resolveStateDirectories decides the effective state directory and the fallbacks to look in.
+// With an implicit data directory the state follows CPA's auth directory; the working-directory
+// default and the directories beside the plugin library stay as fallbacks so existing state is
+// adopted rather than left behind.
+func (a *App) resolveStateDirectories(config Config, authDir string) Config {
+	resolved := config
+	alternates := make([]string, 0, 6)
+	if isImplicitStateDir(config) {
+		if underAuth := stateDirUnderAuthDir(authDir); underAuth != "" {
+			resolved.DataDir = underAuth
+		}
+	}
+	alternates = append(alternates, config.DataDir)
+	alternates = append(alternates, a.dataDirAlternates(resolved.DataDir)...)
+	if !isImplicitStateDir(config) {
+		// A pinned directory is authoritative and needs no fallbacks.
+		alternates = nil
+	}
+	resolved.DataDirAlternates = dedupeDirectories(alternates)
+	return resolved
+}
+
+// dedupeDirectories keeps the first occurrence of each cleaned, absolute directory.
+func dedupeDirectories(directories []string) []string {
+	cleaned := make([]string, 0, len(directories))
+	seen := map[string]struct{}{}
+	for _, directory := range directories {
+		trimmed := strings.TrimSpace(directory)
+		if trimmed == "" {
+			continue
+		}
+		if absolute, errAbs := filepath.Abs(trimmed); errAbs == nil {
+			trimmed = absolute
+		}
+		trimmed = filepath.Clean(trimmed)
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		cleaned = append(cleaned, trimmed)
+	}
+	return cleaned
+}
+
+// dataDirAlternates lists other directories that may hold this plugin's state. The implicit
+// data directory is a relative path, so it follows the working directory of whoever started
+// CPA; looking beside the plugin library and the CPA binary keeps stored credentials visible
+// after a restart from a different directory.
+func (a *App) dataDirAlternates(primary string) []string {
+	if a == nil {
+		return nil
+	}
+	alternates := make([]string, 0, 4)
+	seen := map[string]struct{}{}
+	appendAlternate := func(directory string) {
+		trimmed := strings.TrimSpace(directory)
+		if trimmed == "" {
+			return
+		}
+		if absolute, errAbs := filepath.Abs(trimmed); errAbs == nil {
+			trimmed = absolute
+		}
+		trimmed = filepath.Clean(trimmed)
+		if trimmed == filepath.Clean(primary) {
+			return
+		}
+		if _, exists := seen[trimmed]; exists {
+			return
+		}
+		seen[trimmed] = struct{}{}
+		alternates = append(alternates, trimmed)
+	}
+	// The plugin library lives where the host installed it, which does not move when CPA is
+	// restarted from another working directory.
+	if a.selfUpdate != nil {
+		if pluginFile, errFile := a.selfUpdatePluginFile(); errFile == nil && pluginFile != "" {
+			appendAlternate(filepath.Join(filepath.Dir(pluginFile), implicitDataDirName))
+		}
+	}
+	if executable, errExecutable := os.Executable(); errExecutable == nil {
+		appendAlternate(filepath.Join(filepath.Dir(executable), implicitDataDirName))
+	}
+	return alternates
+}
+
+// selfUpdatePluginFile reports the located plugin library, if any.
+func (a *App) selfUpdatePluginFile() (string, error) {
+	if a == nil || a.selfUpdate == nil {
+		return "", nil
+	}
+	snapshot := a.selfUpdate.Snapshot()
+	return snapshot.PluginFile, nil
+}
+
 func (a *App) ConfigureHost(raw []byte, hostSchema uint32) {
 	if a == nil {
 		return
@@ -263,6 +459,10 @@ func (a *App) ConfigureHost(raw []byte, hostSchema uint32) {
 		a.mu.Unlock()
 		return
 	}
+	a.mu.RLock()
+	authDir := a.authDir
+	a.mu.RUnlock()
+	config = a.resolveStateDirectories(config, authDir)
 	a.mu.Lock()
 	a.config = config
 	a.configErr = ""
@@ -285,6 +485,11 @@ func (a *App) ConfigureHost(raw []byte, hostSchema uint32) {
 	a.opencode.Configure(config)
 	a.opencodeZen.Configure(config)
 	a.opencodePricing.Configure(config)
+	a.selfUpdate.SetManagementDoer(a.managementDoer)
+	a.selfUpdate.Configure(config)
+	a.codexFingerprints.Configure(config)
+	a.codexModelControl.Configure(config)
+	a.opencodeModelControl.Configure(config)
 	a.opencodeSession.Configure(config)
 	a.refreshOpenCodeSessionTargets()
 	a.proxyProfiles.Configure(config)
@@ -408,6 +613,7 @@ func (a *App) quiesceRetiredInstance() {
 		a.newAccountProbe.Shutdown()
 		a.quotaBootstrap.Shutdown()
 		a.opencodePricing.Close()
+		a.selfUpdate.Close()
 		a.updates.Shutdown()
 		a.policies.Shutdown()
 		a.jobs.Shutdown()
@@ -527,14 +733,17 @@ func (a *App) refreshOpenCodeSessionTargetsIfStale() {
 }
 
 // refreshOpenCodeSessionTargets publishes the union of the official OpenCode
-// model ids and every account's cached catalog to the session router, so
-// x-opencode-session is only ever sent for OpenCode models.
+// model ids and every account's cached catalog to the session router and the
+// model-control gate, so both make their attribution decision from the same
+// data and x-opencode-session is only ever sent for OpenCode models.
 func (a *App) refreshOpenCodeSessionTargets() {
 	if a == nil || a.opencodeSession == nil {
 		return
 	}
+	authIndexes := []string(nil)
 	if a.aiProviderNames != nil {
-		a.opencodeSession.SetAuthIndexes(a.aiProviderNames.OpenCodeAuthIndexes())
+		authIndexes = a.aiProviderNames.OpenCodeAuthIndexes()
+		a.opencodeSession.SetAuthIndexes(authIndexes)
 	}
 	targets := make([]string, 0, 256)
 	if a.opencodePricing != nil {
@@ -552,6 +761,12 @@ func (a *App) refreshOpenCodeSessionTargets() {
 		}
 	}
 	a.opencodeSession.SetTargets(targets)
+	if a.opencodeModelControlGate != nil {
+		// The gate shares the router's attribution data, so a disabled model is
+		// blocked exactly on OpenCode traffic and never on another channel.
+		a.opencodeModelControlGate.SetAuthIndexes(authIndexes)
+		a.opencodeModelControlGate.SetTargets(targets)
+	}
 }
 
 func (a *App) RequestInterceptionActive() bool {
@@ -749,6 +964,22 @@ func (a *App) ManagementRegistration() cpaapi.ManagementRegistrationResponse {
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/opencode/session", Description: "Read the per-conversation x-opencode-session routing status."},
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/opencode/channels", Description: "List the CPA AI-provider channels that belong to OpenCode."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/opencode/import", Description: "Import the credential of one existing OpenCode AI-provider channel."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/opencode/storage", Description: "Report the private state directory that holds the OpenCode credentials."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/opencode/model-control", Description: "List the OpenCode models and the globally disabled set."},
+			{Method: http.MethodPut, Path: managementRoutePrefix + "/opencode/model-control", Description: "Replace the globally disabled OpenCode model set."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/self-update", Description: "Read the direct GitHub self-update state."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/codex/overview", Description: "Read the Codex workspace counts and effective convergence mode."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/codex/fingerprint", Description: "Read every editable Codex fingerprint field with its default."},
+			{Method: http.MethodPut, Path: managementRoutePrefix + "/codex/fingerprint", Description: "Update Codex fingerprint fields; an empty value restores a field default."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/codex/fingerprint/reset", Description: "Restore Codex fingerprint fields to their defaults."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/codex/test-targets", Description: "List the credentials the Codex model page can probe, including AI-provider channels."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/codex/model-test", Description: "Probe one model through a saved Codex AI-provider channel."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/codex/models", Description: "List the Codex models and the globally disabled set."},
+			{Method: http.MethodPut, Path: managementRoutePrefix + "/codex/models", Description: "Replace the globally disabled Codex model set."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/self-update/check", Description: "Resolve the latest release from GitHub for the direct self-update path."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/self-update/install", Description: "Download, verify and apply the selected release to the plugin library file."},
+			{Method: http.MethodPut, Path: managementRoutePrefix + "/self-update/settings", Description: "Record the plugin library path used by the direct self-update."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/self-update/reload", Description: "Ask CPA to reinstall and reload this plugin so a replaced library applies without a restart."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/ai-providers/test", Description: "Probe one AI provider channel endpoint with the submitted credential."},
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/ai-providers/runtime", Description: "Read redacted AI provider concurrency, token, and model cost metrics."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/usage/reset", Description: "Reset locally recorded usage for one account or AI provider."},
@@ -782,10 +1013,18 @@ func (a *App) HandleManagement(ctx context.Context, req cpaapi.ManagementRequest
 	}
 	path := normalizedRequestPath(req.Path)
 	if method == http.MethodGet && path == resourceRoutePrefix+"/index.html" {
+		// A self-update may have staged a newer interface next to the private state; serving it
+		// lets interface-only updates take effect on a page refresh instead of a CPA restart.
+		body := a.indexHTML
+		if dataDir := a.configSnapshot().DataDir; dataDir != "" {
+			if staged, ok := readUIOverride(dataDir); ok {
+				body = staged
+			}
+		}
 		return cpaapi.ManagementResponse{
 			StatusCode: http.StatusOK,
 			Headers:    http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
-			Body:       append([]byte(nil), a.indexHTML...),
+			Body:       append([]byte(nil), body...),
 		}
 	}
 	if configErr := a.configError(); configErr != "" {
@@ -992,6 +1231,38 @@ func (a *App) HandleManagement(ctx context.Context, req cpaapi.ManagementRequest
 		return a.handleOpenCodeChannels(ctx, req)
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/opencode/import":
 		return a.handleOpenCodeImport(ctx, req)
+	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/opencode/storage":
+		return a.handleOpenCodeStorage(req)
+	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/opencode/model-control":
+		return a.handleOpenCodeModelControl(ctx, req)
+	case method == http.MethodPut && path == "/v0/management"+managementRoutePrefix+"/opencode/model-control":
+		return a.handleOpenCodeModelControlUpdate(ctx, req)
+	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/self-update":
+		return a.handleSelfUpdate(req)
+	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/self-update/check":
+		return a.handleSelfUpdateCheck(ctx, req)
+	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/self-update/install":
+		return a.handleSelfUpdateInstall(ctx, req)
+	case method == http.MethodPut && path == "/v0/management"+managementRoutePrefix+"/self-update/settings":
+		return a.handleSelfUpdateSettings(req)
+	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/self-update/reload":
+		return a.handleSelfUpdateReload(ctx, req)
+	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/codex/overview":
+		return a.handleCodexOverview(req)
+	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/codex/fingerprint":
+		return a.handleCodexFingerprint(req)
+	case method == http.MethodPut && path == "/v0/management"+managementRoutePrefix+"/codex/fingerprint":
+		return a.handleCodexFingerprintUpdate(req)
+	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/codex/fingerprint/reset":
+		return a.handleCodexFingerprintReset(req)
+	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/codex/test-targets":
+		return a.handleCodexTestTargets(ctx, req)
+	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/codex/model-test":
+		return a.handleCodexModelTest(ctx, req)
+	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/codex/models":
+		return a.handleCodexModels(ctx, req)
+	case method == http.MethodPut && path == "/v0/management"+managementRoutePrefix+"/codex/models":
+		return a.handleCodexModelsUpdate(ctx, req)
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/opencode/zen/probe-account":
 		return a.handleOpenCodeZenProbeAccount(ctx, req)
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/ai-providers/test":

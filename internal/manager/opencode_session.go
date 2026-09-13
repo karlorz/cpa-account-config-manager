@@ -65,6 +65,13 @@ type OpenCodeSessionSnapshot struct {
 	InjectedRequests  int64     `json:"injected_requests"`
 	DistinctSessions  int64     `json:"distinct_sessions"`
 	LastInjectedAt    time.Time `json:"last_injected_at,omitempty"`
+	// Attribution breakdown: how each injected request was recognised, and why
+	// other requests were skipped.
+	AttributedByAuthIndex  int64 `json:"attributed_by_auth_index"`
+	AttributedByModel      int64 `json:"attributed_by_model"`
+	SkippedOtherChannel    int64 `json:"skipped_other_channel"`
+	SkippedCodexRequests   int64 `json:"skipped_codex_requests"`
+	SkippedUntargetedModel int64 `json:"skipped_untargeted_model"`
 }
 
 // OpenCodeSessionRouter injects x-opencode-session into requests that CPA routed
@@ -77,15 +84,23 @@ type OpenCodeSessionSnapshot struct {
 // the request metadata names a CPA auth index that the plugin recorded for a
 // channel whose base URL is an OpenCode gateway.
 type OpenCodeSessionRouter struct {
-	mu           sync.Mutex
-	enabled      bool
-	targets      map[string]struct{}
-	authIndexes  map[string]struct{}
-	salt         []byte
-	injected     int64
-	distinct     map[[sha256.Size]byte]struct{}
-	lastInjected time.Time
-	storageErr   string
+	mu          sync.Mutex
+	enabled     bool
+	targets     map[string]struct{}
+	authIndexes map[string]struct{}
+	salt        []byte
+	injected    int64
+	// Attribution counters explain why a request was or was not given a session
+	// header, which is what an operator needs when an upstream reports a missing
+	// x-opencode-session.
+	attributedByAuthIndex int64
+	attributedByModel     int64
+	skippedOtherChannel   int64
+	skippedCodexRequest   int64
+	skippedUntargeted     int64
+	distinct              map[[sha256.Size]byte]struct{}
+	lastInjected          time.Time
+	storageErr            string
 }
 
 // NewOpenCodeSessionRouter creates a disabled router without a salt. Configure
@@ -190,15 +205,16 @@ func (r *OpenCodeSessionRouter) SetAuthIndexes(indexes []string) {
 }
 
 // RequestInterceptionActive implements the request transformer gate. Injection
-// is impossible without a loaded salt and a known OpenCode channel, so the
-// router stays inactive until both exist.
+// needs a loaded salt and at least one known OpenCode model; the channel
+// allow-list refines attribution but must never disable injection on its own,
+// because CPA does not always report an auth index for an API-key channel.
 func (r *OpenCodeSessionRouter) RequestInterceptionActive() bool {
 	if r == nil {
 		return false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.enabled && len(r.salt) > 0 && len(r.authIndexes) > 0
+	return r.enabled && len(r.salt) > 0 && (len(r.targets) > 0 || len(r.authIndexes) > 0)
 }
 
 // RequestInterceptionAcceptsFormat accepts every source format: the header is
@@ -208,25 +224,49 @@ func (r *OpenCodeSessionRouter) RequestInterceptionAcceptsFormat(string) bool {
 	return r != nil
 }
 
-// InterceptRequest injects the resolved conversation session when the request
-// is attributed to an OpenCode channel and the router is active.
+// InterceptRequest injects the resolved conversation session when the request is
+// attributed to OpenCode and the router is active.
+//
+// Attribution has two layers. When CPA reports an auth index and the plugin has
+// recorded which indexes belong to OpenCode channels, that mapping is
+// authoritative. When it does not (older hosts, or a channel the plugin could not
+// map), the request is attributed by model: the model must be published by
+// OpenCode and the request must not be Codex traffic, which is the only family
+// whose model ids overlap with the OpenCode catalog.
 func (r *OpenCodeSessionRouter) InterceptRequest(request cpaapi.RequestInterceptRequest) (cpaapi.RequestInterceptResponse, bool) {
 	if r == nil {
 		return cpaapi.RequestInterceptResponse{}, false
 	}
 	authIndex := normalizeOpenCodeSessionAuthIndex(openCodeSessionAuthIndexFromMetadata(request.Metadata))
-	if authIndex == "" {
-		return cpaapi.RequestInterceptResponse{}, false
-	}
+	model := normalizeOpenCodeSessionModel(firstNonEmpty(request.Model, request.RequestedModel))
 	r.mu.Lock()
 	enabled, salt := r.enabled, r.salt
-	_, attributed := r.authIndexes[authIndex]
+	_, targeted := r.targets[model]
+	_, allowedIndex := r.authIndexes[authIndex]
+	channelListKnown := len(r.authIndexes) > 0
 	r.mu.Unlock()
-	if !enabled || len(salt) == 0 || !attributed {
+
+	switch {
+	case !enabled || len(salt) == 0:
 		return cpaapi.RequestInterceptResponse{}, false
+	case authIndex != "" && channelListKnown && !allowedIndex:
+		// The request provably belongs to a different channel.
+		r.recordSkip("other_channel")
+		return cpaapi.RequestInterceptResponse{}, false
+	case authIndex != "" && channelListKnown && allowedIndex:
+		// Authoritative: an OpenCode channel credential was selected.
+		r.recordAttribution("auth_index")
+	case isCodexFamilyRequest(request):
+		r.recordSkip("codex_request")
+		return cpaapi.RequestInterceptResponse{}, false
+	case !targeted:
+		r.recordSkip("untargeted_model")
+		return cpaapi.RequestInterceptResponse{}, false
+	default:
+		r.recordAttribution("model")
 	}
 
-	value := resolveOpenCodeSessionValue(request.Headers, request.Body, salt)
+	value := resolveOpenCodeSessionValueWithFallback(request.Headers, request.Body, salt, openCodeSessionFallbackSeed(request))
 	if value == "" {
 		return cpaapi.RequestInterceptResponse{}, false
 	}
@@ -255,14 +295,50 @@ func (r *OpenCodeSessionRouter) Snapshot() OpenCodeSessionSnapshot {
 	}
 	sort.Strings(models)
 	return OpenCodeSessionSnapshot{
-		Enabled:           r.enabled,
-		SaltReady:         len(r.salt) > 0,
-		TargetModels:      models,
-		TargetAuthIndexes: len(r.authIndexes),
-		InjectedRequests:  r.injected,
-		DistinctSessions:  int64(len(r.distinct)),
-		LastInjectedAt:    r.lastInjected,
+		Enabled:                r.enabled,
+		SaltReady:              len(r.salt) > 0,
+		TargetModels:           models,
+		TargetAuthIndexes:      len(r.authIndexes),
+		InjectedRequests:       r.injected,
+		DistinctSessions:       int64(len(r.distinct)),
+		LastInjectedAt:         r.lastInjected,
+		AttributedByAuthIndex:  r.attributedByAuthIndex,
+		AttributedByModel:      r.attributedByModel,
+		SkippedOtherChannel:    r.skippedOtherChannel,
+		SkippedCodexRequests:   r.skippedCodexRequest,
+		SkippedUntargetedModel: r.skippedUntargeted,
 	}
+}
+
+// recordAttribution counts which signal attributed one injected request.
+func (r *OpenCodeSessionRouter) recordAttribution(source string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	if source == "auth_index" {
+		r.attributedByAuthIndex++
+	} else {
+		r.attributedByModel++
+	}
+	r.mu.Unlock()
+}
+
+// recordSkip counts why a request was left untouched.
+func (r *OpenCodeSessionRouter) recordSkip(reason string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	switch reason {
+	case "other_channel":
+		r.skippedOtherChannel++
+	case "codex_request":
+		r.skippedCodexRequest++
+	default:
+		r.skippedUntargeted++
+	}
+	r.mu.Unlock()
 }
 
 func (r *OpenCodeSessionRouter) recordInjection(value string) {
@@ -285,6 +361,56 @@ func (r *OpenCodeSessionRouter) recordInjection(value string) {
 // caller already sent and only falls back to a salted digest when nothing
 // usable is present.
 func resolveOpenCodeSessionValue(headers http.Header, body []byte, salt []byte) string {
+	return resolveOpenCodeSessionValueWithFallback(headers, body, salt, "")
+}
+
+// resolveOpenCodeSessionValueWithFallback resolves the conversation id and always
+// returns a usable value when the caller can supply a stable fallback seed. An
+// upstream that requires x-opencode-session rejects the request outright, so a body
+// the plugin cannot parse must degrade to a stable id rather than to no header.
+func resolveOpenCodeSessionValueWithFallback(headers http.Header, body []byte, salt []byte, fallbackSeed string) string {
+	value := resolveStructuredOpenCodeSessionValue(headers, body, salt)
+	if value != "" {
+		return value
+	}
+	// (e) A body shape the structured reader does not understand still carries a
+	// stable conversation prefix in its first bytes, so digest a bounded window.
+	if len(body) > 0 {
+		if value := openCodeSessionDigestValue(salt, "body:"+string(openCodeSessionBodyWindow(body))); value != "" {
+			return value
+		}
+	}
+	// (f) Last resort: a caller-supplied stable seed (the account identity and the
+	// model). It is coarser than a conversation id, but it keeps the request
+	// routable instead of failing it upstream.
+	if strings.TrimSpace(fallbackSeed) != "" {
+		return openCodeSessionDigestValue(salt, "request:"+fallbackSeed)
+	}
+	return ""
+}
+
+// openCodeSessionBodyWindow returns a bounded prefix of the raw body. The first
+// turns of a conversation are stable, so a digest over this window stays stable
+// for the same conversation while later turns append past it.
+func openCodeSessionBodyWindow(body []byte) []byte {
+	const window = 2048
+	if len(body) <= window {
+		return body
+	}
+	return body[:window]
+}
+
+func openCodeSessionDigestValue(salt []byte, seed string) string {
+	if len(salt) == 0 || strings.TrimSpace(seed) == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, salt)
+	mac.Write([]byte(seed))
+	digest := mac.Sum(nil)
+	return openCodeSessionValuePrefix + hex.EncodeToString(digest[:16])
+}
+
+func resolveStructuredOpenCodeSessionValue(headers http.Header, body []byte, salt []byte) string {
 	// (a) A client-provided OpenCode session is authoritative; never replace it.
 	if value := validOpenCodeSessionValue(headerValue(headers, openCodeSessionHeader)); value != "" {
 		return value
@@ -305,6 +431,21 @@ func resolveOpenCodeSessionValue(headers http.Header, body []byte, salt []byte) 
 		return value
 	}
 	return openCodeSessionFallbackValue(salt, decoded)
+}
+
+// openCodeSessionFallbackSeed derives the coarse last-resort seed: the selected
+// credential plus the routed model identifies the channel a request belongs to, so
+// an unparseable body still produces a stable id instead of no header at all.
+func openCodeSessionFallbackSeed(request cpaapi.RequestInterceptRequest) string {
+	identity := strings.TrimSpace(openCodeSessionAuthIndexFromMetadata(request.Metadata))
+	if identity == "" {
+		identity = strings.TrimSpace(firstNonEmpty(headerValue(request.Headers, "x-opencode-client"), ""))
+	}
+	model := normalizeOpenCodeSessionModel(firstNonEmpty(request.Model, request.RequestedModel))
+	if identity == "" && model == "" {
+		return ""
+	}
+	return identity + "|" + model
 }
 
 // openCodeSessionBodyValue looks for a client session identifier at the JSON
@@ -528,8 +669,16 @@ func normalizeOpenCodeSessionAuthIndex(index string) string {
 	return strings.ToLower(strings.TrimSpace(index))
 }
 
+// normalizeOpenCodeSessionModel folds a routed model name to the catalog key. A
+// channel prefix ("opencode-go/qwen3.7-max") and separator drift must not hide a
+// model, because an unmatched model would silently skip the session header the
+// upstream requires.
 func normalizeOpenCodeSessionModel(model string) string {
-	return strings.ToLower(strings.TrimSpace(model))
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	if slash := strings.LastIndex(normalized, "/"); slash >= 0 {
+		normalized = normalized[slash+1:]
+	}
+	return strings.TrimSpace(strings.ReplaceAll(normalized, "_", "-"))
 }
 
 // loadOrCreateOpenCodeSessionSalt reuses a valid persisted salt and otherwise
