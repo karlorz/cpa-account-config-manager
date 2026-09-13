@@ -19,7 +19,10 @@ const (
 	inspectionStartupDelay = 100 * time.Millisecond
 )
 
-var inspectionPersistRetryDelay = 30 * time.Second
+var (
+	inspectionPersistRetryDelay   = 30 * time.Second
+	inspectionScanListAuthTimeout = 15 * time.Second
+)
 
 type InspectionEngine struct {
 	mu                         sync.RWMutex
@@ -1631,7 +1634,9 @@ func (e *InspectionEngine) scanWithMode(ctx context.Context, scheduled, manualPr
 	}
 
 	summary := InspectionRunSummary{StartedAt: startedAt}
-	accounts, errAccounts := e.accounts.baseAccounts(ctx)
+	listCtx, listCancel := context.WithTimeout(ctx, inspectionScanListAuthTimeout)
+	defer listCancel()
+	accounts, errAccounts := e.accounts.baseAccounts(listCtx)
 	if errAccounts != nil {
 		if ctx.Err() != nil {
 			return false

@@ -13,16 +13,33 @@ type hostAdapter struct{}
 
 func (hostAdapter) RuntimeProcessMarker() string { return sharedRuntimeProcessMarker() }
 
-func (hostAdapter) ListAuth(context.Context) ([]cpaapi.HostAuthFileEntry, error) {
-	result, errCall := callHost(cpaapi.MethodHostAuthList, map[string]any{})
-	if errCall != nil {
-		return nil, errCall
+func (hostAdapter) ListAuth(ctx context.Context) ([]cpaapi.HostAuthFileEntry, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	var response cpaapi.HostAuthListResponse
-	if errUnmarshal := json.Unmarshal(result, &response); errUnmarshal != nil {
-		return nil, fmt.Errorf("decode host auth list: %w", errUnmarshal)
+	type callResult struct {
+		result []byte
+		err    error
 	}
-	return response.Files, nil
+	done := make(chan callResult, 1)
+	go func() {
+		res, err := callHost(cpaapi.MethodHostAuthList, map[string]any{})
+		done <- callResult{result: res, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-done:
+		if res.err != nil {
+			return nil, res.err
+		}
+		var response cpaapi.HostAuthListResponse
+		if errUnmarshal := json.Unmarshal(res.result, &response); errUnmarshal != nil {
+			return nil, fmt.Errorf("decode host auth list: %w", errUnmarshal)
+		}
+		return response.Files, nil
+	}
 }
 
 func (hostAdapter) GetAuth(_ context.Context, authIndex string) (cpaapi.HostAuthGetResponse, error) {

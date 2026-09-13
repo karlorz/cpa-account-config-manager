@@ -193,3 +193,55 @@ inspection_policy:
 		t.Fatal("ConfigureHost reconfigure blocked when inspection policy changed on hanging host ListAuth")
 	}
 }
+
+func TestInspectionStartupScanClearsBusyWhenListAuthBlocks(t *testing.T) {
+	origTimeout := inspectionScanListAuthTimeout
+	inspectionScanListAuthTimeout = 200 * time.Millisecond
+	defer func() {
+		inspectionScanListAuthTimeout = origTimeout
+	}()
+
+	dataDir := t.TempDir()
+	policy := defaultInspectionPolicy()
+	policy.AutoEnable = true
+	state := persistedInspectionState{
+		Version: inspectionStoreVersion,
+		Policy:  policy,
+		Records: map[string]inspectionRecord{},
+	}
+	if errSave := saveInspectionState(inspectionStorePath(dataDir), state); errSave != nil {
+		t.Fatalf("save cold-start inspection state: %v", errSave)
+	}
+
+	host := &blockingListAuthHost{
+		started: make(chan struct{}),
+	}
+	app := NewApp(host, []byte("index"))
+	defer app.Close()
+
+	configYAML := []byte("data_dir: " + dataDir)
+
+	// ConfigureHost initializes components and starts inspection scanLoop
+	app.ConfigureHost(configYAML, cpaapi.SchemaVersion)
+
+	// Wait until startup scan has entered ListAuth
+	select {
+	case <-host.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for host ListAuth to be entered")
+	}
+
+	// Snapshot() must become !Running && !Pending within ~2s
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := app.inspection.Snapshot()
+		if !snapshot.Running && !snapshot.Pending {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	snapshot := app.inspection.Snapshot()
+	t.Fatalf("inspection snapshot stayed busy: running=%t pending=%t", snapshot.Running, snapshot.Pending)
+}
+
