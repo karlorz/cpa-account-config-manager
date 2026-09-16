@@ -31,6 +31,10 @@ interface CodexFetchMockOptions {
   disabled?: string[];
   fields?: Array<Record<string, unknown>>;
   overview?: Record<string, unknown>;
+  /** Answer the experiments snapshot with nothing, like an unreadable payload. */
+  noExperiments?: boolean;
+  /** Provider runtime snapshots, which carry the Codex usage totals on the overview. */
+  runtime?: unknown;
 }
 
 describe("CodexWorkspace", () => {
@@ -118,16 +122,19 @@ describe("CodexWorkspace", () => {
       if (url.endsWith("/codex/fingerprint")) {
         return jsonResponse({ profile: { overridden_fields: 1, fields: options.fields ?? fingerprintFields } });
       }
+      if (url.endsWith("/ai-providers/runtime")) return jsonResponse(options.runtime ?? { snapshots: [], updated_at: new Date().toISOString() });
+      if (options.noExperiments && url.endsWith("/experiments")) return jsonResponse({});
       if (url.endsWith("/experiments") && init.method === "PUT") {
         return jsonResponse({ settings: {
-          weekly_overdraft_enabled: true, agent_identity_enabled: false, auto_model_whitelist_enabled: true,
+          weekly_overdraft_enabled: true, agent_identity_enabled: false, auto_model_whitelist_enabled: false,
           sub2api_credit_usage_enabled: true,
           codex_identity: { outbound_convergence_enabled: true, convergence_mode: "session", ingress_gate_enabled: false, allow_app_server_clients: false },
         } });
       }
       if (url.endsWith("/experiments")) {
         return jsonResponse({ settings: {
-          weekly_overdraft_enabled: false, agent_identity_enabled: false, auto_model_whitelist_enabled: true,
+          // The automatic allow-list is off in the served snapshot; the view must echo it unchanged.
+          weekly_overdraft_enabled: false, agent_identity_enabled: false, auto_model_whitelist_enabled: false,
           sub2api_credit_usage_enabled: true,
           codex_identity: { outbound_convergence_enabled: false, ingress_gate_enabled: false, allow_app_server_clients: false },
         } });
@@ -255,6 +262,54 @@ describe("CodexWorkspace", () => {
     expect(await within(dialog).findByText("模型可用")).toBeInTheDocument();
   });
 
+  // The reported case: an installation with a Codex account AND a Codex channel offers two
+  // targets, and the dialog opened with no target selected while the picker displayed the first
+  // one, so the start button stayed disabled until the operator re-picked the target already shown.
+  it("starts on the first target and keeps the start button usable", async () => {
+    const user = userEvent.setup();
+    const requests = codexFetchMock({ channels: ["my-codex-channel"] });
+
+    render(<CodexWorkspace refreshRevision={0} onAPIError={() => undefined} onNotice={() => undefined} />);
+    await user.click(await screen.findByRole("tab", { name: "模型与价格" }));
+    const panel = await screen.findByRole("tabpanel", { name: "模型与价格" });
+    await user.click(within(panel).getByRole("button", { name: "测试 gpt-5.4-codex" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "模型可用性测试" });
+    // Two credentials are offered, so the picker is a select and it starts on a real selection.
+    const picker = await within(dialog).findByRole("combobox", { name: "测试目标" });
+    expect(picker).toHaveValue("account:acct-codex-1");
+    expect((picker as HTMLSelectElement).selectedOptions[0].textContent).toContain("codex-one.json");
+
+    // The button must already be usable without touching the picker.
+    const start = within(dialog).getByRole("button", { name: "开始测试" });
+    expect(start).toBeEnabled();
+    await user.click(start);
+
+    await waitFor(() => expect(requests.some(({ url, init }) => url.endsWith("/accounts/model-test") && init.method === "POST")).toBe(true));
+    const probe = requests.find(({ url, init }) => url.endsWith("/accounts/model-test") && init.method === "POST");
+    expect(JSON.parse(String(probe?.init.body))).toMatchObject({ account_id: "acct-codex-1", model: "gpt-5.4-codex" });
+  });
+
+  // Switching the picker still probes the credential the operator chose.
+  it("probes the target the operator picks", async () => {
+    const user = userEvent.setup();
+    const requests = codexFetchMock({ channels: ["my-codex-channel"] });
+
+    render(<CodexWorkspace refreshRevision={0} onAPIError={() => undefined} onNotice={() => undefined} />);
+    await user.click(await screen.findByRole("tab", { name: "模型与价格" }));
+    const panel = await screen.findByRole("tabpanel", { name: "模型与价格" });
+    await user.click(within(panel).getByRole("button", { name: "测试 gpt-5.4-codex" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "模型可用性测试" });
+    const picker = await within(dialog).findByRole("combobox", { name: "测试目标" });
+    await user.selectOptions(picker, "channel:0");
+    await user.click(within(dialog).getByRole("button", { name: "开始测试" }));
+
+    await waitFor(() => expect(requests.some(({ url, init }) => url.endsWith("/codex/model-test") && init.method === "POST")).toBe(true));
+    const probe = requests.find(({ url, init }) => url.endsWith("/codex/model-test") && init.method === "POST");
+    expect(JSON.parse(String(probe?.init.body))).toEqual({ channel_index: 0, model: "gpt-5.4-codex" });
+  });
+
   it("shows the plugin price table rates and marks an unpriced model", async () => {
     const user = userEvent.setup();
     codexFetchMock();
@@ -351,13 +406,66 @@ describe("CodexWorkspace", () => {
     const saveRequest = requests.find(({ url, init }) => url.endsWith("/experiments") && init.method === "PUT");
     const body = JSON.parse(String(saveRequest?.init.body)) as Record<string, unknown>;
     // The experiment values are echoed from the snapshot so saving here cannot
-    // clear what the experimental settings panel configured.
-    expect(body).toMatchObject({ weekly_overdraft_enabled: false, agent_identity_enabled: false, auto_model_whitelist_enabled: true });
+    // clear (or enable) what the experimental settings panel configured; the
+    // served snapshot leaves the automatic allow-list off.
+    expect(body).toMatchObject({ weekly_overdraft_enabled: false, agent_identity_enabled: false, auto_model_whitelist_enabled: false });
     expect((body.codex_identity as Record<string, unknown>).outbound_convergence_enabled).toBe(false);
     await waitFor(() => expect(onNotice).toHaveBeenCalledWith("实验性设置已保存"));
+  });
+
+  it("never enables the automatic allow-list experiment from an unread snapshot", async () => {
+    const user = userEvent.setup();
+    // The experiments payload is unreadable, so the view has no value to echo and
+    // cannot save the identity policy at all.
+    const requests = codexFetchMock({ noExperiments: true });
+
+    render(<CodexWorkspace refreshRevision={0} onAPIError={() => undefined} onNotice={() => undefined} />);
+
+    const panel = await screen.findByRole("tabpanel", { name: "总览" });
+    const save = within(panel).getByRole("button", { name: "保存设置" });
+    await waitFor(() => expect(save).toBeDisabled());
+    await user.click(save);
+
+    // Without a save request there is no payload that could switch the experiment on.
+    expect(requests.some(({ url, init }) => url.endsWith("/experiments") && init.method === "PUT")).toBe(false);
+  });
+
+  // "codex" provider, so the panel sums those runtime snapshots. Without them it must say so
+  // rather than showing zeroes that read like measured emptiness.
+  it("shows the Codex usage totals on the overview and says when none are recorded", async () => {
+    codexFetchMock({
+      runtime: {
+        snapshots: [
+          { provider: "codex", auth_index: "a", identity: "credential:one", credential_backed: true, supported: true, active: 0, waiting: 0, limit: 0, request_limit: 0, request_window_seconds: 0, used_requests: 0, limit_15s: 0, used_60s: 0, used_15s: 0, input_tokens: 300_000_000, output_tokens: 17_000_000, reasoning_tokens: 0, cached_tokens: 1_000_000, total_tokens: 317_000_000, amount_usd: 386.5, rated_requests: 2760, unrated_requests: 4, quota: { five_hour_amount_usd: 0, seven_day_amount_usd: 0 }, models: [], updated_at: "2026-09-16T00:00:00Z" },
+          { provider: "openai-compatible-other", auth_index: "b", identity: "credential:two", credential_backed: true, supported: true, active: 0, waiting: 0, limit: 0, request_limit: 0, request_window_seconds: 0, used_requests: 0, limit_15s: 0, used_60s: 0, used_15s: 0, input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, cached_tokens: 0, total_tokens: 2, amount_usd: 9, rated_requests: 1, unrated_requests: 0, quota: { five_hour_amount_usd: 0, seven_day_amount_usd: 0 }, models: [], updated_at: "2026-09-16T00:00:00Z" },
+        ],
+        updated_at: "2026-09-16T00:00:00Z",
+      },
+    });
+
+    render(<CodexWorkspace refreshRevision={0} onAPIError={() => undefined} onNotice={() => undefined} />);
+
+    const panel = await screen.findByRole("tabpanel", { name: "总览" });
+    const totals = await within(panel).findByRole("group", { name: "Codex 累计用量" });
+    // Only the codex provider counts: the other provider's 2 tokens and $9 stay out.
+    expect(within(totals).getByText("317,000,000")).toBeInTheDocument();
+    expect(within(totals).getByText("$386.5")).toBeInTheDocument();
+    expect(within(totals).getByText("2,764")).toBeInTheDocument();
+    expect(within(totals).getByText("未计价 4")).toBeInTheDocument();
+  });
+
+  it("states that no Codex usage is recorded instead of showing zeroes", async () => {
+    codexFetchMock();
+
+    render(<CodexWorkspace refreshRevision={0} onAPIError={() => undefined} onNotice={() => undefined} />);
+
+    const panel = await screen.findByRole("tabpanel", { name: "总览" });
+    const totals = await within(panel).findByRole("group", { name: "Codex 累计用量" });
+    expect(within(totals).getByText("尚未记录到 Codex 供应商流量")).toBeInTheDocument();
   });
 });
 
 function originatorRow(panel: HTMLElement): HTMLElement {
   return within(panel).getByLabelText("Originator").closest(".codex-fingerprint-row") as HTMLElement;
 }
+

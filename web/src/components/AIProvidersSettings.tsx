@@ -209,6 +209,16 @@ function listToArray(text: string): string[] {
 function arrayToList(items: string[] | undefined): string {
   return (items ?? []).join("\n");
 }
+
+/**
+ * True when a matched channel reported requests but priced none of them. The token counters are
+ * real while the money is not, so the row names the unpriced requests instead of printing a
+ * "$0.00" that reads like free traffic.
+ */
+function usageHasNoRate(snapshot: AIProviderRuntimeSnapshot | undefined): boolean {
+  if (!snapshot || snapshot.amount_usd > 0) return false;
+  return snapshot.rated_requests === 0 && snapshot.unrated_requests > 0;
+}
 type ProviderIdentitySource = Pick<AIProviderChannelEntry, "index" | "name" | "base_url" | "auth_index" | "account_id" | "workspace_id" | "api_key_entries">;
 
 function providerStableIdentity(entry: ProviderIdentitySource): string {
@@ -855,12 +865,13 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
       const authIndex = (keyEntry.auth_index ?? "").trim();
       if (authIndex) authIndexes.add(authIndex);
     }
-    if (authIndexes.size === 0) return undefined;
     const blockedAccountIdentities = new Set(accountIdentities.map((identity) => identity.trim()).filter(Boolean));
     // The channel record carries the usage identities resolved from the base URL
     // and credential digest, so history keeps matching after an auth-index change
     // or an API key rotation; the auth-index match stays as a fallback for
-    // channels the plugin cannot identify (for example OpenCode entries).
+    // channels whose row names no index at all. Neither signal may be required on
+    // its own: CPA leaves the auth index off an OpenAI-compatible row until it
+    // assigns one, and the plugin still records that channel's usage.
     const channelIdentities = new Set(
       (providerAssignment(providerNames, kind, entry)?.identities ?? []).map((identity) => identity.trim()).filter(Boolean),
     );
@@ -1707,7 +1718,7 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
                     <div className="ai-provider-detail-row"><span>{tx("ui.ai_provider_estimated_cost")}</span><strong>{formatAmount(runtime.amount_usd)}</strong></div>
                   </> : null}
                   {runtime?.models && runtime.models.length > 0 ? (
-                    <table className="account-table ai-provider-runtime-models"><thead><tr><th>{tx("ui.ai_provider_model")}</th><th>{tx("ui.ai_provider_input_tokens")}</th><th>{tx("ui.ai_provider_output_tokens")}</th><th>{tx("ui.ai_provider_total")}</th><th>{tx("ui.ai_provider_cost")}</th></tr></thead><tbody>{runtime.models.map((model) => <tr key={model.model}><td>{model.model}</td><td>{formatTokens(model.input_tokens)}</td><td>{formatTokens(model.output_tokens)}</td><td>{formatTokens(model.total_tokens)}</td><td>{formatAmount(model.amount_usd)}</td></tr>)}</tbody></table>
+                    <table className="account-table ai-provider-runtime-models"><thead><tr><th>{tx("ui.ai_provider_model")}</th><th>{tx("ui.ai_provider_input_tokens")}</th><th>{tx("ui.ai_provider_output_tokens")}</th><th>{tx("ui.ai_provider_total")}</th><th>{tx("ui.ai_provider_cost")}</th></tr></thead><tbody>{runtime.models.map((model) => <tr key={model.model}><td data-label={tx("ui.ai_provider_model")}>{model.model}</td><td data-label={tx("ui.ai_provider_input_tokens")}>{formatTokens(model.input_tokens)}</td><td data-label={tx("ui.ai_provider_output_tokens")}>{formatTokens(model.output_tokens)}</td><td data-label={tx("ui.ai_provider_total")}>{formatTokens(model.total_tokens)}</td><td data-label={tx("ui.ai_provider_cost")}>{formatAmount(model.amount_usd)}</td></tr>)}</tbody></table>
                   ) : runtime ? <div className="ai-provider-field-note">{tx("ui.ai_provider_no_usage")}</div> : null}
                 </div>
               );
@@ -1820,10 +1831,10 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
                 ] : []),
                 ...channel.entries.map((entry) => (
                 <tr key={`${channel.kind}-${entry.index}`}>
-                  <td><span className="provider-tag">{tx(channelLabelKey(channel.kind))}</span></td>
-                  <td><div className="identity-cell"><strong>{providerLabel(channel.kind, entry)}</strong></div></td>
-                  <td>{entry.disabled ? <span className="ai-provider-entry-badge is-disabled">{tx("ui.disabled")}</span> : <span className="ai-provider-entry-badge">{tx("ui.enabled")}</span>}</td>
-                  <td><strong className="ai-provider-model-count">{entry.models?.length ?? 0}</strong></td>
+                  <td data-label={tx("ui.ai_provider_type")}><span className="provider-tag">{tx(channelLabelKey(channel.kind))}</span></td>
+                  <td data-label={tx("ui.ai_provider_name")}><div className="identity-cell"><strong>{providerLabel(channel.kind, entry)}</strong></div></td>
+                  <td data-label={tx("ui.status")}>{entry.disabled ? <span className="ai-provider-entry-badge is-disabled">{tx("ui.disabled")}</span> : <span className="ai-provider-entry-badge">{tx("ui.enabled")}</span>}</td>
+                  <td data-label={tx("ui.ai_provider_model_count")}><strong className="ai-provider-model-count">{entry.models?.length ?? 0}</strong></td>
                   {(() => {
                     const runtime = runtimeForEntry(channel.kind, entry);
                     return <>
@@ -1837,24 +1848,24 @@ export function AIProvidersSettings({ refreshRevision, onAPIError, onNotice, acc
                           return `${Math.min(999, usedAmount / window.budget_amount_usd * 100).toFixed(1)}% / ${window.limit_percent ?? 100}%`;
                         };
                         return <>
-                          <td className="ai-provider-runtime-cell" title={tx("ui.ai_provider_quota_settings_description")}>
+                          <td className="ai-provider-runtime-cell" data-label={tx("ui.ai_provider_concurrency")} title={tx("ui.ai_provider_quota_settings_description")}>
                             <div className="ai-provider-runtime-concurrency" title={runtime?.supported && runtime.concurrency_configurable === true ? (runtimeUpdatedAt ? `${tx("ui.ai_provider_updated_at")}: ${runtimeUpdatedAt}` : tx("ui.ai_provider_concurrency_observable_only")) : tx("ui.ai_provider_concurrency_observable_only")}>
                               <small>{tx("ui.ai_provider_concurrency_active_short", { value: `${Math.max(0, runtime?.active ?? 0)} / ${configuredConcurrencyLimit && configuredConcurrencyLimit > 0 ? configuredConcurrencyLimit : runtime?.limit && runtime.limit > 0 ? runtime.limit : "∞"}` })}</small>
                               <small>{tx("ui.ai_provider_concurrency_request_short", { seconds: providerRequestWindowSeconds(policy?.concurrency_window_seconds, runtime?.request_window_seconds), value: formatConcurrencyWindow(runtime?.used_requests, configuredRequestLimit, runtime?.request_limit, runtime?.supported === true) })}</small>
                               <small>{tx("ui.ai_provider_concurrency_queue_short", { value: Math.max(0, runtime?.waiting ?? 0) })}</small>
                             </div>
                           </td>
-                          <td className="ai-provider-runtime-cell" title={tx("ui.ai_provider_quota_settings_description")}>
+                          <td className="ai-provider-runtime-cell" data-label={tx("ui.ai_provider_usage")} title={tx("ui.ai_provider_quota_settings_description")}>
                             <div className="ai-provider-runtime-usage">
-                              {runtime ? <><strong>{formatTokens(runtime.total_tokens)}</strong><small>{formatAmount(runtime.amount_usd)} · {tx("ui.quota_window_five_hour")} {budget(policy?.five_hour ?? {}, runtime.quota?.five_hour_amount_usd)} · {tx("ui.quota_window_seven_day")} {budget(policy?.seven_day ?? {}, runtime.quota?.seven_day_amount_usd)}</small></> : <strong title={runtimeError || tx("ui.ai_provider_identity_unavailable")}>{tx("ui.ai_provider_no_usage")}</strong>}
+                              {runtime ? <><strong>{formatTokens(runtime.total_tokens)}</strong><small>{formatAmount(runtime.amount_usd)} · {tx("ui.quota_window_five_hour")} {budget(policy?.five_hour ?? {}, runtime.quota?.five_hour_amount_usd)} · {tx("ui.quota_window_seven_day")} {budget(policy?.seven_day ?? {}, runtime.quota?.seven_day_amount_usd)}{usageHasNoRate(runtime) ? ` · ${tx("ui.unrated_requests_count", { count: String(runtime.unrated_requests) })}` : ""}</small></> : <strong title={runtimeError || tx("ui.ai_provider_identity_unavailable")}>{tx("ui.ai_provider_no_usage")}</strong>}
                             </div>
                           </td>
                         </>;
                       })()}
                     </>;
                   })()}
-                  <td className="ai-provider-table-url">{entry.base_url || entry.workspace_id || "-"}</td>
-                  <td className="ai-provider-table-secret">{maskSecret(entry.api_key) || (channel.kind === "opencode-go" ? tx("ui.opencode_auth_cookie") : channel.kind === "opencode-zen" ? (entry.key_set ? "••••" : "-") : "-")}</td>
+                  <td className="ai-provider-table-url" data-label={tx("ui.ai_provider_base_url")}>{entry.base_url || entry.workspace_id || "-"}</td>
+                  <td className="ai-provider-table-secret" data-label={tx("ui.ai_provider_api_key")}>{maskSecret(entry.api_key) || (channel.kind === "opencode-go" ? tx("ui.opencode_auth_cookie") : channel.kind === "opencode-zen" ? (entry.key_set ? "••••" : "-") : "-")}</td>
                   <td className="actions-cell ai-provider-table-actions">
                     <div className="row-actions">
                       <IconButton label={tx("ui.view_ai_provider", { name: providerLabel(channel.kind, entry) })} onClick={() => { setError(""); setViewing({ kind: channel.kind, entry }); }}><Eye size={15} /></IconButton>

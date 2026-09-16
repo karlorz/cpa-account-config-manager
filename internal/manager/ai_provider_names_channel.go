@@ -40,12 +40,49 @@ func (a *App) channelIdentityFor(kind string, entry map[string]any) aiProviderCh
 	identity.provider = aiProviderRuntimeProviderName(kind)
 	identity.credentialKey = a.aiProviderNames.CredentialKey(kind, identity.baseURL, aiProviderChannelCredential(entry))
 	identity.urlKey = a.aiProviderNames.URLKey(kind, identity.baseURL)
-	identity.runtimeID = aiProviderRuntimeCredentialIdentity(identity.provider, aiProviderChannelCredential(entry))
+	// The identity the dashboard matches a usage snapshot by must be the one CPA
+	// actually sends, which for an OpenAI-compatible row is its per-channel provider
+	// key rather than the kind's name; otherwise a channel row that names no auth
+	// index has no way to reach its own usage.
+	identity.runtimeID = aiProviderRuntimeCredentialIdentity(aiProviderUsageProviderName(kind, entry), aiProviderChannelCredential(entry))
 	return identity
 }
 
-// aiProviderRuntimeProviderName maps a CPA channel kind to the provider name CPA
-// reports in usage callbacks, which is the namespace the runtime tracker uses.
+// aiProviderUsageProviderName returns the provider name CPA actually sends in a
+// usage callback for one channel row.
+//
+// For an OpenAI-compatible channel that is NOT the kind's name: CPA registers such a
+// channel under its own provider key, "openai-compatible-" plus the lower-cased
+// channel name (internal/util.OpenAICompatibleProviderKey in CLIProxyAPI), and a
+// callback carries that key. The operator's server shows exactly that shape:
+// "openai-compatible-cline pass", "openai-compatible-opencode go wrk_01…".
+// Keying the channel index by a kind-derived name instead ("openai") made every
+// lookup miss: usage could not be attributed to a credential and the orphan repair
+// compared two spellings of the same channel and found no candidate, so it silently
+// did nothing. A row without a name keeps CPA's own fallback, "openai-compatibility".
+func aiProviderUsageProviderName(kind string, entry map[string]any) string {
+	if !strings.EqualFold(strings.TrimSpace(kind), "openai-compatibility") {
+		return aiProviderRuntimeProviderName(kind)
+	}
+	// The row's configured name, not its display fallback: CPA keys the provider by
+	// the configured name alone, so a nameless row uses its own fallback string.
+	name := ""
+	if raw, isText := entry["name"].(string); isText {
+		name = strings.ToLower(strings.TrimSpace(raw))
+	}
+	switch {
+	case name == "":
+		return "openai-compatibility"
+	case name == "openai-compatibility", strings.HasPrefix(name, "openai-compatible-"):
+		return name
+	default:
+		return "openai-compatible-" + name
+	}
+}
+
+// aiProviderRuntimeProviderName maps a CPA channel kind to the provider name a
+// usage callback uses for that kind. It is the kind-level answer; the provider of a
+// specific channel row can differ (see aiProviderUsageProviderName).
 func aiProviderRuntimeProviderName(kind string) string {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "openai-compatibility", "openai-compatible":
@@ -200,7 +237,98 @@ func (a *App) syncAIProviderChannelBindings(kind string, entries []map[string]an
 	if errPrune := a.aiProviderNames.PruneKind(kind, keep); errPrune != nil {
 		a.aiProviderNames.noteStorageError("AI provider name state could not be persisted")
 	}
+
+	// CPA omits the API key from a usage callback for a provider channel, so the
+	// auth index each row carries is the only way back to the channel credential.
+	// A live list has just been read, which makes this the moment to publish the
+	// index and to recover history an earlier release stranded under a stale
+	// "auth-index:" identity.
+	a.registerProviderChannelAuthIndex(kind, entries)
 	return assignments
+}
+
+// registerProviderChannelAuthIndex publishes one channel list's auth indexes to
+// the runtime tracker and asks it to recover stranded usage history. The raw key
+// never leaves this call: the tracker hashes it immediately, keeps it in memory
+// only, and never logs or persists it.
+func (a *App) registerProviderChannelAuthIndex(kind string, entries []map[string]any) {
+	if a == nil || a.providerRuntime == nil {
+		return
+	}
+	credentials := make([]providerChannelCredential, 0, len(entries)*2)
+	for _, entry := range entries {
+		credentials = append(credentials, aiProviderChannelAuthCredentials(kind, entry)...)
+	}
+	a.providerRuntime.SetProviderChannelCredentials(kind, credentials)
+	a.providerRuntime.RepairOrphanedAuthIndexAggregates()
+}
+
+// aiProviderChannelAuthCredentials reads every credential of one CPA channel row
+// together with the auth index CPA assigned to it, which is what a usage callback
+// names for that channel. The host JSON spells the index with a hyphen
+// ("auth-index") inside the weighted key list; a host that writes the underscore
+// spelling, or that only sets the row-level index, is accepted too.
+//
+// The provider recorded here is the name CPA sends in a usage callback, which is
+// what the runtime tracker and the repair both key by. It is NOT always the name
+// of the channel kind: see aiProviderUsageProviderName.
+func aiProviderChannelAuthCredentials(kind string, entry map[string]any) []providerChannelCredential {
+	if entry == nil {
+		return nil
+	}
+	provider := aiProviderUsageProviderName(kind, entry)
+	baseURL := aiProviderChannelBaseURL(entry)
+	credentials := make([]providerChannelCredential, 0, 2)
+	if list, isList := entry["api-key-entries"].([]any); isList {
+		for _, item := range list {
+			record, isRecord := item.(map[string]any)
+			if !isRecord {
+				continue
+			}
+			apiKey := channelEntryCredentialString(record, "api-key", "api_key")
+			if apiKey == "" {
+				continue
+			}
+			credentials = append(credentials, providerChannelCredential{
+				AuthIndex: channelEntryCredentialString(record, "auth-index", "auth_index"),
+				APIKey:    apiKey,
+				BaseURL:   baseURL,
+				Kind:      kind,
+				Provider:  provider,
+			})
+		}
+	}
+	// The row-level index is the one CPA reports for the whole row, so it is
+	// registered as the primary index of the row's credential.
+	rowKey := channelEntryCredentialString(entry, "api-key", "api_key")
+	if rowKey == "" && len(credentials) > 0 {
+		rowKey = credentials[0].APIKey
+	}
+	if rowAuthIndex := channelEntryCredentialString(entry, "auth-index", "auth_index"); rowAuthIndex != "" && rowKey != "" {
+		credentials = append(credentials, providerChannelCredential{
+			AuthIndex: rowAuthIndex,
+			APIKey:    rowKey,
+			BaseURL:   baseURL,
+			Kind:      kind,
+			Provider:  provider,
+			Primary:   true,
+		})
+	}
+	return credentials
+}
+
+// channelEntryCredentialString returns the first non-empty string field of a
+// channel record, so both the hyphenated host spelling and the underscore one
+// resolve to the same value.
+func channelEntryCredentialString(record map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, isText := record[key].(string); isText {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
 }
 
 // openCodeChannelAuthIdentity returns the binding identity that records a CPA
@@ -292,15 +420,37 @@ func (a *App) assignAIProviderChannelName(ctx context.Context, managementKey, ki
 		return errAIProviderNameEntryStale
 	}
 	// Reconcile first so the binding exists with its current identity, then write
-	// the label onto both the credential and URL records.
+	// the label onto the record that belongs to this entry.
 	a.syncAIProviderChannelBindings(kind, entries)
 	identity := a.channelIdentityFor(kind, entry)
 	keys := []string{identity.credentialKey}
 	if aiProviderChannelCredential(entry) == "" {
+		// Only a channel with no credential at all is identified by its base URL.
 		keys = []string{identity.urlKey}
-	} else {
+	} else if aiProviderChannelBaseURLOwners(entries, entry) == 1 {
+		// The URL record is what lets a rotated credential inherit the name the
+		// operator gave this channel earlier. It is shared by every channel with
+		// that base URL, so it may only be written while exactly one channel owns
+		// it: writing it while siblings share the base URL renamed all of them,
+		// which is the bug this guards against.
 		keys = append(keys, identity.urlKey)
 	}
 	_, errAssign := a.aiProviderNames.Assign(keys, name)
 	return errAssign
+}
+
+// aiProviderChannelBaseURLOwners counts the channel entries that share one entry's canonical base
+// URL. It answers whether that base URL identifies this channel unambiguously.
+func aiProviderChannelBaseURLOwners(entries []map[string]any, entry map[string]any) int {
+	target := canonicalProviderBaseURL(aiProviderChannelBaseURL(entry))
+	if target == "" {
+		return 0
+	}
+	owners := 0
+	for _, candidate := range entries {
+		if canonicalProviderBaseURL(aiProviderChannelBaseURL(candidate)) == target {
+			owners++
+		}
+	}
+	return owners
 }

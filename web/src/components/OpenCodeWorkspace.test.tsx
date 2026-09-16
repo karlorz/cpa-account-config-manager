@@ -1,220 +1,14 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { _resetSessionForTest, setSession } from "../store/session";
+import { billingPricingFixture, CHANNEL_GO_BASE, CHANNEL_ZEN_BASE, channelView, goAccountView, GO_ACCOUNT_ID, GO_WORKSPACE, resetWorkspaceTestSession, selectTab, stubWorkspaceFetch, UNRENDERED_SECRET, WorkspaceFetchMockOptions, ZEN_ACCOUNT_ID, zenAccountView } from "../test/workspaceFetchMock";
 import { OpenCodeWorkspace } from "./OpenCodeWorkspace";
 
-const GO_ACCOUNT_ID = "acc_go_1";
-const GO_WORKSPACE = "wrk_test";
-const ZEN_ACCOUNT_ID = "zen_1";
-const CHANNEL_ZEN_BASE = "https://opencode.ai/zen/v1";
-const CHANNEL_GO_BASE = "https://opencode.ai/zen/go/v1";
-// Canary that must never be rendered: responses only ever expose `key_set`.
-const UNRENDERED_SECRET = "sk-opencode-canary-secret-1234";
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-}
-
-function goAccountView(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    id: GO_ACCOUNT_ID,
-    workspace_id: GO_WORKSPACE,
-    key_set: true,
-    cookie_set: true,
-    models: ["gpt-5.1", "claude-sonnet-4", "gemini-2.5-pro", "o4-mini"],
-    models_error: "",
-    models_fetched_at: "2026-09-01T00:00:00Z",
-    created_at: "2026-09-01T00:00:00Z",
-    updated_at: "2026-09-01T00:00:00Z",
-    ...overrides,
-  };
-}
-
-function zenAccountView(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    id: ZEN_ACCOUNT_ID,
-    name: "Zen mirror",
-    base_url: "https://opencode.ai/zen",
-    key_set: true,
-    models: ["zen-model-a"],
-    models_error: "",
-    models_fetched_at: "2026-09-01T00:00:00Z",
-    ...overrides,
-  };
-}
-
-/** One row of `GET /opencode/channels`: an AI-provider channel that belongs to OpenCode. */
-function channelView(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    kind: "zen",
-    name: "Zen channel",
-    base_url: CHANNEL_ZEN_BASE,
-    key_set: true,
-    models: 3,
-    source: "ai_provider",
-    imported: false,
-    ...overrides,
-  };
-}
-
-/** Pricing snapshot with the official-docs billing block and per-model Go allowances. */
-function billingPricingFixture(): Record<string, unknown> {
-  return {
-    source: "models.dev (OpenCode Zen and OpenCode Go)",
-    updated_at: "2026-09-11T00:00:00Z",
-    docs_updated_at: "2026-09-12T00:00:00Z",
-    billing: [
-      {
-        kind: "zen",
-        metered: true,
-        docs_url: "https://opencode.ai/docs/zen/",
-        summary: "Pay-as-you-go per 1M tokens; balance auto-reloads below $5 (default $20) and a monthly workspace limit can cap spend.",
-      },
-      {
-        kind: "go",
-        metered: false,
-        subscription_usd_per_month: 10,
-        five_hour_fraction: 0.2,
-        weekly_fraction: 0.5,
-        docs_url: "https://opencode.ai/docs/go/",
-        summary: "$10/month subscription; each model has a monthly USD allowance split 20% / 50% / 100%.",
-      },
-    ],
-    go: [
-      {
-        id: "longcat-2.0",
-        name: "LongCat-2.0",
-        input_usd_per_million: 0.3,
-        output_usd_per_million: 1.2,
-        context_tokens: 1000000,
-        monthly_limit_usd: 60,
-        estimated_requests: { five_hour: 1830, weekly: 4580, monthly: 9150 },
-      },
-      {
-        id: "legacy-mini",
-        name: "Legacy Mini",
-        input_usd_per_million: 1,
-        output_usd_per_million: 2,
-        context_tokens: 200000,
-        monthly_limit_usd: 20,
-        deprecated_at: "January 2026",
-      },
-    ],
-    zen: [
-      {
-        id: "gemini-3.1-pro",
-        name: "Gemini 3.1 Pro",
-        input_usd_per_million: 2,
-        output_usd_per_million: 12,
-        cache_read_usd_per_million: 0.2,
-        tiers: [{ min_context_tokens: 200000, input_usd_per_million: 4 }],
-      },
-    ],
-  };
-}
-
-interface OpenCodeFetchMockOptions {
-  accounts?: Array<Record<string, unknown>>;
-  accountsStatus?: number;
-  accountsErrorBody?: Record<string, unknown>;
-  zenAccounts?: Array<Record<string, unknown>>;
-  channels?: Array<Record<string, unknown>>;
-  importResponse?: Record<string, unknown>;
-  importStatus?: number;
-  importErrorBody?: Record<string, unknown>;
-  quota?: Record<string, Record<string, unknown>>;
-  quotaRefresh?: Record<string, unknown>;
-  modelsResponse?: Record<string, unknown>;
-  modelTestResponse?: Record<string, unknown>;
-  bindResponse?: Record<string, unknown>;
-  pricing?: Record<string, unknown>;
-  modelControl?: Record<string, unknown>;
-  pricingRefresh?: Record<string, unknown>;
-  session?: Record<string, unknown>;
-}
-
 describe("OpenCodeWorkspace", () => {
-  beforeEach(() => {
-    _resetSessionForTest();
-    localStorage.clear();
-    setSession("", "management-secret");
-    vi.restoreAllMocks();
-  });
+  beforeEach(resetWorkspaceTestSession);
 
-  function openCodeFetchMock(options: OpenCodeFetchMockOptions = {}) {
-    const requests: Array<{ url: string; init: RequestInit }> = [];
-    let disabledModels = [...((options.modelControl?.disabled as string[] | undefined) ?? [])];
-    const controlRows = (disabled: string[]) => [
-      { id: "qwen3.7-max", disabled: disabled.includes("qwen3.7-max"), accounts: 1, channels: 1, priced: true, input_usd_per_million: 2.5, output_usd_per_million: 7.5 },
-      { id: "gpt-5.6-luna", disabled: disabled.includes("gpt-5.6-luna"), accounts: 1, channels: 0, priced: true, input_usd_per_million: 0.2, output_usd_per_million: 1.2 },
-      { id: "unpriced-opencode", disabled: disabled.includes("unpriced-opencode"), accounts: 0, channels: 0, priced: false },
-    ];
-    const modelControlBody = (opts: OpenCodeFetchMockOptions) => ({
-      storage_error: "",
-      pricing_source: "Sub2API / Wei-Shaw model-price-repo",
-      ...(opts.modelControl ?? {}),
-    });
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
-      const url = String(input);
-      requests.push({ url, init });
-      if (url.endsWith("/opencode/zen/accounts") && init.method === "POST") {
-        return jsonResponse({ account: zenAccountView(), result: { success: true } });
-      }
-      if (url.endsWith("/opencode/zen/accounts")) return jsonResponse({ accounts: options.zenAccounts ?? [] });
-      if (url.endsWith("/opencode/channels")) return jsonResponse({ channels: options.channels ?? [] });
-      if (url.endsWith("/opencode/import") && init.method === "POST") {
-        if (options.importStatus) {
-          return jsonResponse(options.importErrorBody ?? { error: "opencode import failed" }, options.importStatus);
-        }
-        return jsonResponse({
-          import: options.importResponse ?? {
-            kind: "zen",
-            action: "create_zen",
-            account_id: ZEN_ACCOUNT_ID,
-            name: "Zen mirror",
-            base_url: CHANNEL_ZEN_BASE,
-          },
-        });
-      }
-      if (url.endsWith("/opencode/accounts") && init.method === "POST") {
-        return jsonResponse({ account: goAccountView(), result: { success: true } });
-      }
-      if (url.includes("/opencode/accounts?") && init.method === "DELETE") return jsonResponse({ removed: true });
-      if (url.endsWith("/opencode/accounts")) {
-        if (options.accountsStatus) {
-          return jsonResponse(options.accountsErrorBody ?? { error: "opencode accounts failed" }, options.accountsStatus);
-        }
-        return jsonResponse({ accounts: options.accounts ?? [goAccountView()] });
-      }
-      if (url.includes("/opencode/refresh-account?") && init.method === "POST") {
-        return jsonResponse({ result: options.quotaRefresh ?? {} });
-      }
-      if (url.endsWith("/opencode/quota")) return jsonResponse({ results: options.quota ?? {}, storage_error: "" });
-      if (url.endsWith("/opencode/models")) return jsonResponse(options.modelsResponse ?? { account: goAccountView() });
-      if (url.endsWith("/opencode/model-test")) return jsonResponse(options.modelTestResponse ?? {});
-      if (url.endsWith("/opencode/bind")) return jsonResponse(options.bindResponse ?? {});
-      if (url.endsWith("/opencode/pricing/refresh") && init.method === "POST") {
-        return jsonResponse({ changed: true, pricing: options.pricingRefresh ?? options.pricing ?? {} });
-      }
-      if (url.endsWith("/opencode/pricing")) return jsonResponse({ pricing: options.pricing ?? {} });
-      if (url.endsWith("/opencode/model-control") && init.method === "PUT") {
-        const body = JSON.parse(String(init.body ?? "{}")) as { disabled?: string[] };
-        disabledModels = body.disabled ?? [];
-        return jsonResponse({ ...modelControlBody(options), disabled: disabledModels, models: controlRows(disabledModels) });
-      }
-      if (url.endsWith("/opencode/model-control")) {
-        return jsonResponse({ ...modelControlBody(options), disabled: disabledModels, models: controlRows(disabledModels) });
-      }
-      if (url.endsWith("/opencode/session")) return jsonResponse({ session: options.session ?? {} });
-      return jsonResponse({});
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    return requests;
-  }
-
-  async function selectTab(user: ReturnType<typeof userEvent.setup>, name: string) {
-    await user.click(screen.getByRole("tab", { name }));
+  function openCodeFetchMock(options: WorkspaceFetchMockOptions = {}) {
+    return stubWorkspaceFetch(options);
   }
 
   async function findGoRow(section: HTMLElement): Promise<HTMLElement> {
@@ -240,6 +34,7 @@ describe("OpenCodeWorkspace", () => {
     render(<OpenCodeWorkspace refreshRevision={0} onAPIError={() => undefined} onNotice={() => undefined} />);
 
     const tablist = await screen.findByRole("tablist", { name: "OpenCode" });
+    // Cline Pass has its own top-level menu, so an OpenCode page must not offer its tab.
     expect(within(tablist).getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "总览",
       "Go 账号",
@@ -247,6 +42,7 @@ describe("OpenCodeWorkspace", () => {
       "渠道",
       "模型与价格",
     ]);
+    expect(within(tablist).queryByRole("tab", { name: "Cline Pass 账号" })).not.toBeInTheDocument();
     expect(within(tablist).getByRole("tab", { name: "总览" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tabpanel", { name: "总览" })).toBeInTheDocument();
     expect(screen.queryByRole("tabpanel", { name: "Go 账号" })).not.toBeInTheDocument();
@@ -277,9 +73,14 @@ describe("OpenCodeWorkspace", () => {
     const section = await screen.findByRole("region", { name: "OpenCode Go 工作区" });
     const row = await findGoRow(section);
     expect(within(row).getByText(GO_WORKSPACE)).toBeInTheDocument();
-    expect(within(row).getByText(/5 小时额度: 42\.5% · 60 分钟/)).toBeInTheDocument();
-    expect(within(row).getByText(/7 天额度: 10\.0% · 120 分钟/)).toBeInTheDocument();
-    expect(within(row).getByText(/30 天额度: 3\.3% · -/)).toBeInTheDocument();
+    // Each window is its own labelled bar row with a readable countdown, so the three can be
+    // compared instead of running together as one sentence.
+    expect(within(row).getByRole("img", { name: "5 小时 43%" })).toBeInTheDocument();
+    expect(within(row).getByText("42.5%")).toBeInTheDocument();
+    expect(within(row).getByText("1 小时后重置")).toBeInTheDocument();
+    expect(within(row).getByText("10.0%")).toBeInTheDocument();
+    expect(within(row).getByText("2 小时后重置")).toBeInTheDocument();
+    expect(within(row).getByText("3.3%")).toBeInTheDocument();
     expect(within(row).getByText("4")).toBeInTheDocument();
     expect(row.textContent).toContain("gpt-5.1, claude-sonnet-4, gemini-2.5-pro …");
 
@@ -569,13 +370,15 @@ describe("OpenCodeWorkspace", () => {
     await user.click(within(row).getByRole("button", { name: `拉取 ${GO_WORKSPACE} 的模型列表` }));
     await waitFor(() => expect(within(row).getByText("2")).toBeInTheDocument());
 
+
     await user.click(within(row).getByRole("button", { name: `测试 ${GO_WORKSPACE} 的模型` }));
 
-    // The tester lives on the Models tab, so opening it switches the active tab.
+    // The tester is the same dialog every other model page uses, and it lives on the Models tab,
+    // so opening it switches the active tab.
     expect(screen.getByRole("tab", { name: "模型与价格" })).toHaveAttribute("aria-selected", "true");
-    const tester = await screen.findByRole("region", { name: "模型测试" });
-    expect(within(tester).getByRole("combobox")).toHaveValue("gpt-5.1");
-    await user.click(within(tester).getByRole("button", { name: "测试" }));
+    const dialog = await screen.findByRole("dialog", { name: "模型可用性测试" });
+    expect(within(dialog).getByRole("combobox")).toHaveValue("gpt-5.1");
+    await user.click(within(dialog).getByRole("button", { name: "开始测试" }));
 
     await waitFor(() => expect(requests.some(({ url, init }) => url.endsWith("/opencode/model-test") && init.method === "POST")).toBe(true));
     const request = requests.find(({ url, init }) => url.endsWith("/opencode/model-test") && init.method === "POST");
@@ -585,8 +388,8 @@ describe("OpenCodeWorkspace", () => {
       model: "gpt-5.1",
       timeout_seconds: 30,
     });
-    expect(await within(tester).findByText("模型不可用")).toBeInTheDocument();
-    expect(within(tester).getByText(/model_not_found/)).toBeInTheDocument();
+    expect(await within(dialog).findByText("模型不可用")).toBeInTheDocument();
+    expect(within(dialog).getByText(/model_not_found/)).toBeInTheDocument();
   });
 
   it("binds a Go workspace through the bind route and reports the channel base URL", async () => {
@@ -650,7 +453,10 @@ describe("OpenCodeWorkspace", () => {
     await user.click(within(row).getByRole("button", { name: "刷新 OpenCode 额度" }));
 
     await waitFor(() => expect(requests.some(({ url, init }) => url.includes(`/opencode/refresh-account?account_id=${GO_ACCOUNT_ID}`) && init.method === "POST")).toBe(true));
-    expect(await within(row).findByText(/5 小时额度: 5\.0% · 5 分钟/)).toBeInTheDocument();
+    // The refreshed window is the bar the operator reads, not a bare sentence.
+    expect(await within(row).findByRole("img", { name: "5 小时 5%" })).toBeInTheDocument();
+    expect(within(row).getByText("5.0%")).toBeInTheDocument();
+    expect(within(row).getByText("5 分钟后重置")).toBeInTheDocument();
   });
 
   it("renders the detected channels and imports one through the import route", async () => {
@@ -937,4 +743,5 @@ describe("OpenCodeWorkspace", () => {
     const section = await screen.findByRole("region", { name: "OpenCode 官方价格" });
     expect(within(section).getByText(/官方文档同步/)).toBeInTheDocument();
   });
+
 });

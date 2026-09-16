@@ -23,6 +23,7 @@ import type {
 	GlobalPolicySnapshot,
 	ExperimentalSettings,
 	ExperimentalSettingsSnapshot,
+	AutoModelWhitelistResponse,
 	AgentIdentitySessionLoginResponse,
 	OpenCodeAccountSaveResponse,
 	OpenCodeAccountsResponse,
@@ -148,7 +149,7 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}, query?: URLSearchParams, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
+export async function request<T>(path: string, init: RequestInit = {}, query?: URLSearchParams, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   const session = getSession();
   if (!session) throw new APIError(401, "ui.management_key_is_not_set");
   const headers = new Headers(init.headers);
@@ -164,7 +165,7 @@ async function request<T>(path: string, init: RequestInit = {}, query?: URLSearc
   return parseJSONResponse<T>(response);
 }
 
-async function requestRecord<T>(path: string, init: RequestInit = {}, query?: URLSearchParams, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
+export async function requestRecord<T>(path: string, init: RequestInit = {}, query?: URLSearchParams, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   const response = await request<unknown>(path, init, query, timeoutMs);
   if (!isRecord(response)) {
     throw new APIError(502, "ui.invalid_json_response");
@@ -316,11 +317,11 @@ function finiteNonNegativeInteger(value: unknown, fallback: number, max: number)
   return Math.min(max, Math.max(0, Math.floor(number)));
 }
 
-function isFiniteNonNegativeNumber(value: unknown): value is number {
+export function isFiniteNonNegativeNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-function isFiniteNonNegativeInteger(value: unknown): value is number {
+export function isFiniteNonNegativeInteger(value: unknown): value is number {
   return isFiniteNonNegativeNumber(value) && Number.isInteger(value);
 }
 
@@ -354,7 +355,7 @@ function normalizeAccountConcurrencySummary(value: NonNullable<AccountEditableCo
   };
 }
 
-function isNonEmptyString(value: unknown): value is string {
+export function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
@@ -364,7 +365,7 @@ function isNonEmptyString(value: unknown): value is string {
  * malformed rows is different: callers must surface that as a broken API
  * response instead of replacing valid UI state with an apparently empty list.
  */
-function nullableRecordArray(value: unknown): Record<string, unknown>[] | undefined {
+export function nullableRecordArray(value: unknown): Record<string, unknown>[] | undefined {
   if (value === null) return [];
   if (!Array.isArray(value) || value.some((item) => !isRecord(item))) return undefined;
   return value as Record<string, unknown>[];
@@ -838,13 +839,13 @@ function optionalNonNegativeInteger(item: Record<string, unknown>, key: string):
 }
 
 function isValidInspectionResultRecord(item: Record<string, unknown>): boolean {
-  // Go encodes unset classification strings as "" (no omitempty). Empty must not
-  // fail the whole list. Older builds also omit newer inspection fields.
+  // Older CPA builds omit fields introduced by newer inspection/remediation versions.
+  // Validate every field that is present, but do not turn a compatible legacy row into an empty result set.
   return isNonEmptyString(item.id)
-    && optionalString(item, "health")
-    && optionalString(item, "reason_code")
-    && optionalString(item, "confidence")
-    && optionalString(item, "recommendation")
+    && (!("health" in item) || isNonEmptyString(item.health))
+    && (!("reason_code" in item) || isNonEmptyString(item.reason_code))
+    && (!("confidence" in item) || isNonEmptyString(item.confidence))
+    && (!("recommendation" in item) || isNonEmptyString(item.recommendation))
     && optionalBoolean(item, "disabled")
     && optionalBoolean(item, "editable")
     && optionalBoolean(item, "auto_disable_eligible")
@@ -896,7 +897,7 @@ function isValidInspectionActionRecord(item: Record<string, unknown>): boolean {
     && isNonEmptyString(item.account_id)
     && (!("action" in item) || (typeof item.action === "string" && INSPECTION_ACTION_VALUES.has(item.action)))
     && (!("status" in item) || (typeof item.status === "string" && INSPECTION_ACTION_STATUS_VALUES.has(item.status)))
-    && optionalString(item, "reason_code")
+    && (!("reason_code" in item) || isNonEmptyString(item.reason_code))
     && optionalString(item, "created_at")
     && optionalString(item, "name")
     && optionalString(item, "provider")
@@ -1075,6 +1076,15 @@ export async function saveExperimentalSettings(settings: Partial<ExperimentalSet
 	});
 }
 
+/**
+ * Read-only activity of the experimental automatic Codex model allow-list. The endpoint is
+ * paginated; the panel only renders the newest page, so the query keeps the contract defaults.
+ */
+export async function getAutoModelWhitelist(signal?: AbortSignal, page = 1, pageSize = 20): Promise<AutoModelWhitelistResponse> {
+	const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+	return requestRecord<AutoModelWhitelistResponse>("/experiments/auto-model-whitelist", { signal }, query);
+}
+
 export async function completeAgentIdentitySessionLogin(state: string, sessionJSON: string): Promise<AgentIdentitySessionLoginResponse> {
 	return requestRecord<AgentIdentitySessionLoginResponse>("/experiments/agent-identity/session-login", {
 		method: "POST",
@@ -1114,7 +1124,7 @@ function normalizeOpenCodeAccountsResponse(response: unknown): OpenCodeAccountsR
 }
 
 /** Parse an optional string array without rejecting the whole response. */
-function stringArrayOrUndefined(value: unknown): string[] | undefined {
+export function stringArrayOrUndefined(value: unknown): string[] | undefined {
 	if (!Array.isArray(value)) return undefined;
 	return value.filter((item): item is string => typeof item === "string" && item.trim() !== "");
 }
@@ -1171,8 +1181,8 @@ export async function saveOpenCodeModelControl(disabled: string[]): Promise<impo
  * Create or update the CPA OpenAI-compatible channel that routes one OpenCode
  * credential, so its models become reachable through CPA.
  */
-export async function bindOpenCodeChannel(kind: "go" | "zen", accountID: string): Promise<{ binding: import("../types").OpenCodeBindingResult }> {
-	return requestRecord<{ binding: import("../types").OpenCodeBindingResult }>("/opencode/bind", {
+export async function bindOpenCodeChannel(kind: "go" | "zen", accountID: string): Promise<{ binding: import("../types").ProviderChannelBindingResult }> {
+	return requestRecord<{ binding: import("../types").ProviderChannelBindingResult }>("/opencode/bind", {
 		method: "POST",
 		body: JSON.stringify({ kind, account_id: accountID }),
 	});
@@ -1322,6 +1332,7 @@ export async function probeOpenCodeZenAccount(accountID: string): Promise<OpenCo
 		method: "POST",
 	});
 }
+
 /** List the CPA AI-provider channels that belong to OpenCode so they can be imported. */
 export async function getOpenCodeChannels(signal?: AbortSignal): Promise<{ channels: import("../types").OpenCodeChannelView[] }> {
 	return requestRecord<{ channels: import("../types").OpenCodeChannelView[] }>("/opencode/channels", { signal });
@@ -1416,73 +1427,73 @@ export async function getPluginStore(signal?: AbortSignal): Promise<PluginStoreR
   if (source.plugins !== null && pluginValues === null) {
     throw new APIError(502, "ui.invalid_api_response");
   }
-  // Skip malformed sibling rows instead of failing the whole store. A single
-  // bad catalog entry previously made Other Settings /updates report
-  // "plugin store metadata is unavailable" even when the karlorz CPA entry
-  // was valid. Missing fork rows still surface via reconcileUpdateStatus.
-  const plugins = pluginValues === null
-    ? null
-    : pluginValues.filter((plugin) => {
-      if (!isRecord(plugin)) return false;
-      return typeof plugin.id === "string" && plugin.id.trim() !== ""
-        && typeof plugin.version === "string" && plugin.version.trim() !== "";
-    }) as unknown as NonNullable<PluginStoreResponse["plugins"]>;
-  return {
-    plugins_enabled: source.plugins_enabled,
-    plugins,
-  };
+  // A row without an id is a protocol violation and still fails loudly: silently
+  // dropping it could hide this plugin and report a false "no update" state.
+  //
+  // CPA only resolves a release version for plugins it considers installed and
+  // whose update source is reachable, so a catalog row may legitimately carry an
+  // empty `version`. Failing the whole listing over such a row reported a false
+  // "no store metadata" state for every plugin, so the row is kept as-is and the
+  // caller decides whether the missing version matters.
+  const plugins: PluginStoreEntry[] = [];
+  for (const value of pluginValues ?? []) {
+    if (!isRecord(value)) throw new APIError(502, "ui.invalid_api_response");
+    const id = typeof value.id === "string" ? value.id.trim() : "";
+    if (id === "") throw new APIError(502, "ui.invalid_api_response");
+    plugins.push({
+      id,
+      version: typeof value.version === "string" ? value.version.trim() : "",
+      installed: value.installed === true,
+      installed_version: typeof value.installed_version === "string" ? value.installed_version.trim() : "",
+      update_available: value.update_available === true,
+    });
+  }
+  return { plugins_enabled: source.plugins_enabled, plugins };
 }
 
 const pluginID = "cpa-account-config-manager";
-const pluginReleaseBaseURL = "https://github.com/karlorz/cpa-account-config-manager/releases/tag/v";
-const forkRepository = "https://github.com/karlorz/cpa-account-config-manager";
-const forkRegistryURL = "https://raw.githubusercontent.com/karlorz/cpa-account-config-manager/main/registry.json";
+const pluginReleaseBaseURL = "https://github.com/Mxucc/cpa-account-config-manager/releases/tag/v";
 
-function normalizeLookupURL(value: string | undefined): string {
-  return (value ?? "").trim().replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
-}
-
-function canonicalizeGitHubRawURL(value: string | undefined): string {
-  return normalizeLookupURL(value).replace("/refs/heads/", "/");
-}
-
-function isForkStoreEntry(entry: PluginStoreEntry | undefined): boolean {
-  if (!entry || entry.id !== pluginID) return false;
-  if (normalizeLookupURL(entry.repository) === normalizeLookupURL(forkRepository)) return true;
-  return canonicalizeGitHubRawURL(entry.source_url) === canonicalizeGitHubRawURL(forkRegistryURL);
-}
-
-function selectForkStorePlugin(store: PluginStoreResponse | null): PluginStoreEntry | undefined {
-  if (!store?.plugins_enabled) return undefined;
-  return arrayOrEmpty(store.plugins).find((entry) => isForkStoreEntry(entry));
-}
-
-function normalizedPluginVersion(value: string | undefined): { value: string; parts: [number, number, number, number] } | null {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.+-]+))?$/.exec((value ?? "").trim());
+function normalizedStableVersion(value: string | undefined): { value: string; parts: [number, number, number] } | null {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec((value ?? "").trim());
   if (!match) return null;
-  const seriesToken = match[4];
-  const keepSeries = seriesToken !== undefined && /^\d+$/.test(seriesToken);
-  const parts = [Number(match[1]), Number(match[2]), Number(match[3]), keepSeries ? Number(seriesToken) : 0] as [number, number, number, number];
+  const parts = [Number(match[1]), Number(match[2]), Number(match[3])] as [number, number, number];
   if (parts.some((part) => !Number.isSafeInteger(part))) return null;
-  return {
-    value: keepSeries ? `${parts[0]}.${parts[1]}.${parts[2]}-${parts[3]}` : `${parts[0]}.${parts[1]}.${parts[2]}`,
-    parts,
-  };
+  return { value: parts.join("."), parts };
 }
 
-function comparePluginVersions(left: [number, number, number, number], right: [number, number, number, number]): number {
+function compareStableVersions(left: [number, number, number], right: [number, number, number]): number {
   for (let index = 0; index < left.length; index += 1) {
     if (left[index] !== right[index]) return left[index] - right[index];
   }
   return 0;
 }
 
-function storeLookupError(store: PluginStoreResponse | null, storeError: string, hasForkVersion: boolean): string {
-  if (storeError || !store?.plugins_enabled || hasForkVersion) return "plugin store metadata is unavailable";
-  return "fork update channel is not configured";
-}
+/** Reported when the store answered but does not offer this plugin at all. */
+export const pluginStoreNotListedError = "plugin store does not list this plugin";
+/** Reported when the store lists this plugin but carries no usable version for it. */
+export const pluginStoreVersionMissingError = "plugin store did not report a version for this plugin";
+/** Reported when CPA has turned its plugin store off. */
+export const pluginStoreDisabledError = "the CPA plugin store is disabled";
 
-export function reconcileUpdateStatus(status: UpdateSnapshot, store: PluginStoreResponse | null, storeError = ""): UpdateSnapshot {
+/**
+ * Reconciles the plugin's own update-check status with the CPA plugin store.
+ *
+ * The store is only one resolver. CPA resolves a release version while listing
+ * plugins it considers installed whose update source is reachable, and otherwise
+ * falls back to the registry entry, which can be stale or absent. The plugin also
+ * resolves its own GitHub releases independently, so the newer of the two known
+ * versions wins and a store listing that reports no version cannot dress itself up
+ * as "up to date". Ties keep the store, because that is the channel an install
+ * goes through, and `directLatestVersion` is only supplied once the store has
+ * already failed to name a version.
+ */
+export function reconcileUpdateStatus(
+  status: UpdateSnapshot,
+  store: PluginStoreResponse | null,
+  storeError = "",
+  directLatestVersion = "",
+): UpdateSnapshot {
   const obsoleteDirectCheckErrors = new Set([
     "release metadata request failed",
     "release metadata response was invalid",
@@ -1491,9 +1502,15 @@ export function reconcileUpdateStatus(status: UpdateSnapshot, store: PluginStore
   ]);
   const statusError = status.error?.trim() || "";
   const retainedError = obsoleteDirectCheckErrors.has(statusError) ? "" : statusError;
-  const currentVersion = normalizedPluginVersion(status.current_version);
-  const plugin = selectForkStorePlugin(store);
-  const storeVersion = normalizedPluginVersion(plugin?.version);
+  const currentVersion = normalizedStableVersion(status.current_version);
+  const plugin = store?.plugins_enabled ? arrayOrEmpty(store.plugins).find((entry) => entry?.id === pluginID) : undefined;
+  const storeVersion = normalizedStableVersion(plugin?.version);
+  const directVersion = normalizedStableVersion(directLatestVersion);
+  let latest: { value: string; parts: [number, number, number]; source: UpdateSnapshot["release_source"] } | null = null;
+  if (storeVersion) latest = { ...storeVersion, source: "plugin_store" };
+  if (directVersion && (!latest || compareStableVersions(directVersion.parts, latest.parts) > 0)) {
+    latest = { ...directVersion, source: "github_release" };
+  }
   const base: UpdateSnapshot = {
     policy: status.policy,
     current_version: status.current_version,
@@ -1507,33 +1524,44 @@ export function reconcileUpdateStatus(status: UpdateSnapshot, store: PluginStore
     runtime: status.runtime,
   };
 
-  if (!storeVersion) {
+  if (!latest) {
     return {
       ...base,
-      error: retainedError || storeLookupError(store, storeError, Boolean(plugin && !storeVersion)),
+      error: retainedError || unresolvedLatestVersionError(store, storeError),
     };
   }
   if (!currentVersion) {
     return {
       ...base,
-      latest_version: storeVersion.value,
-      release_url: `${pluginReleaseBaseURL}${storeVersion.value}`,
-      release_source: "fork_store",
+      latest_version: latest.value,
+      release_url: `${pluginReleaseBaseURL}${latest.value}`,
+      release_source: latest.source,
       // Do not claim an update when the installed version is unknown.
       update_available: false,
       error: retainedError || "current plugin version is unavailable",
     };
   }
-  const storeIsNewer = comparePluginVersions(storeVersion.parts, currentVersion.parts) > 0;
 
   return {
     ...base,
-    latest_version: storeVersion.value,
-    update_available: storeIsNewer,
-    release_url: `${pluginReleaseBaseURL}${storeVersion.value}`,
-    release_source: "fork_store",
+    latest_version: latest.value,
+    update_available: compareStableVersions(latest.parts, currentVersion.parts) > 0,
+    release_url: `${pluginReleaseBaseURL}${latest.value}`,
+    release_source: latest.source,
     error: retainedError || undefined,
   };
+}
+
+/**
+ * Explains why no latest version could be resolved. "The store is unreachable" and
+ * "the store answered but carries no version for this plugin" are different
+ * problems, and a single message for both sent operators after the wrong cause.
+ */
+function unresolvedLatestVersionError(store: PluginStoreResponse | null, storeError: string): string {
+  if (storeError || !store) return "plugin store metadata is unavailable";
+  if (!store.plugins_enabled) return pluginStoreDisabledError;
+  const listed = arrayOrEmpty(store.plugins).some((entry) => entry?.id === pluginID);
+  return listed ? pluginStoreVersionMissingError : pluginStoreNotListedError;
 }
 
 async function loadPluginStore(signal?: AbortSignal): Promise<{ response: PluginStoreResponse | null; error: string }> {
@@ -1609,13 +1637,36 @@ async function getEffectiveUpdateStatusUnshared(checkNow: boolean, signal?: Abor
     }
   }
   const store = await loadPluginStore(signal);
+  const storeEntry = arrayOrEmpty(store.response?.plugins ?? null).find((entry) => entry?.id === pluginID);
+  // Only pay for a second request when the store could not answer with a version
+  // for this plugin: that is the case the plugin's own release check covers. A
+  // store version that is merely older is left to reconcileUpdateStatus.
+  if (store.response?.plugins_enabled && !normalizedStableVersion(storeEntry?.version)) {
+    return reconcileUpdateStatus(status, store.response, store.error, await loadDirectLatestVersion(signal));
+  }
   return reconcileUpdateStatus(status, store.response, store.error);
+}
+
+/**
+ * Reads the latest release the plugin resolved for itself. The direct path never
+ * depends on the CPA store, so it is the fallback whenever the store listing
+ * cannot name a version. Any failure is reported as "unknown" rather than thrown:
+ * a missing fallback must not cost the operator the store part of the status.
+ */
+async function loadDirectLatestVersion(signal?: AbortSignal): Promise<string> {
+  try {
+    const snapshot = await getSelfUpdate(signal);
+    return typeof snapshot.latest_version === "string" ? snapshot.latest_version : "";
+  } catch (error) {
+    if (error instanceof APIError && error.status === 401) throw error;
+    return "";
+  }
 }
 
 const pluginInstallInFlight = new Map<string, Promise<PluginInstallResult>>();
 
 export function installPluginUpdate(version: string): Promise<PluginInstallResult> {
-  const normalized = normalizedPluginVersion(version);
+  const normalized = normalizedStableVersion(version);
   const key = normalized?.value ?? `invalid:${version.trim()}`;
   const pending = pluginInstallInFlight.get(key);
   if (pending) return pending;
@@ -1628,24 +1679,31 @@ export function installPluginUpdate(version: string): Promise<PluginInstallResul
 
 async function installPluginUpdateOnce(version: string): Promise<PluginInstallResult> {
   try {
-    const requestedVersion = normalizedPluginVersion(version);
+    const requestedVersion = normalizedStableVersion(version);
     if (!requestedVersion) {
       throw new APIError(400, "plugin store install response was invalid");
     }
     const store = await getPluginStore();
-    const plugin = selectForkStorePlugin(store);
-    const storeVersion = normalizedPluginVersion(plugin?.version);
-    const sourceID = plugin?.source_id?.trim() || "";
-    if (!plugin || !storeVersion || !sourceID || comparePluginVersions(storeVersion.parts, requestedVersion.parts) !== 0) {
+    const plugin = store.plugins_enabled ? arrayOrEmpty(store.plugins).find((entry) => entry.id === pluginID) : undefined;
+    const storeVersion = normalizedStableVersion(plugin?.version);
+    // The store must still list the plugin, because CPA resolves the install
+    // target from its own catalog. Refuse when the store names a *different*
+    // version than the one requested: that means this page and the store disagree,
+    // and installing anyway would install a release the store did not offer. A
+    // store that reports no version at all (CPA only resolves release versions for
+    // plugins whose update source is reachable) is not evidence against an exact
+    // version the plugin already resolved for itself.
+    const storeContradicts = storeVersion !== null && compareStableVersions(storeVersion.parts, requestedVersion.parts) !== 0;
+    if (!plugin || storeContradicts) {
       throw new APIError(404, "ui.the_account_manager_plugin_was_not_found_in_the_plugin_store");
     }
-    const installed = await managementRequest<PluginInstallResult>(`/plugin-store/cpa-account-config-manager/install?source=${encodeURIComponent(sourceID)}`, {
+    const installed = await managementRequest<PluginInstallResult>("/plugin-store/cpa-account-config-manager/install", {
       method: "POST",
       body: JSON.stringify({ version: requestedVersion.value }),
     });
-    const installedVersion = normalizedPluginVersion(installed.version);
+    const installedVersion = normalizedStableVersion(installed.version);
     if (installed.status !== "installed" || installed.id !== pluginID || !installedVersion ||
-      comparePluginVersions(installedVersion.parts, requestedVersion.parts) !== 0) {
+      compareStableVersions(installedVersion.parts, requestedVersion.parts) !== 0) {
       throw new APIError(502, "plugin store install response was invalid");
     }
     const result: PluginInstallResult = {
@@ -1977,7 +2035,7 @@ export const AI_PROVIDER_CHANNELS: Array<{ kind: AIProviderChannelKind; labelKey
   { kind: "opencode-zen", labelKey: "ui.ai_provider_channel_opencode_zen", apiPath: "" },
 ];
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 

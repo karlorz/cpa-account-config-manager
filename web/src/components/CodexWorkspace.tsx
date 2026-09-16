@@ -4,11 +4,13 @@ import * as api from "../api/client";
 import { operatorMessage } from "../format/operatorMessage";
 import { useI18n } from "../i18n";
 import type { UIMessageKey } from "../i18n/uiText";
-import type { Account, CodexFingerprintField, CodexModelProbeResult, CodexTestTargetOption, CodexFingerprintProfile, CodexModelControlSnapshot, CodexOverview, ExperimentalCodexIdentitySettings, ExperimentalSettings, ModelTestResult, ModelTestStatus } from "../types";
+import type { Account, AIProviderRuntimeSnapshot, CodexFingerprintField, CodexModelProbeResult, CodexTestTargetOption, CodexFingerprintProfile, CodexModelControlSnapshot, CodexOverview, ExperimentalCodexIdentitySettings, ExperimentalSettings, ModelTestResult, ModelTestStatus } from "../types";
 import { CodexIdentityPolicyEditor } from "./CodexIdentityPolicyEditor";
 import { ModelProbeDialog, ModelProbeOutcome } from "./ModelProbeDialog";
 import { IconButton } from "./IconButton";
 
+import { UsageMetricCards } from "./UsageMetricCards";
+import { formatReferenceUSD } from "../format/currency";
 interface CodexWorkspaceProps {
   refreshRevision: number;
   onAPIError: (error: unknown) => void;
@@ -74,7 +76,7 @@ function draftFor(field: CodexFingerprintField, drafts: Record<string, string>):
  * the global model control, and the request fingerprint profile.
  */
 export function CodexWorkspace({ refreshRevision, onAPIError, onNotice }: CodexWorkspaceProps) {
-  const { locale, tx, formatDateTime } = useI18n();
+  const { locale, tx, formatDateTime, formatNumber } = useI18n();
   const [activeTab, setActiveTab] = useState<CodexTab>("overview");
   const [overview, setOverview] = useState<CodexOverview | null>(null);
   const [modelControl, setModelControl] = useState<CodexModelControlSnapshot | null>(null);
@@ -96,6 +98,8 @@ export function CodexWorkspace({ refreshRevision, onAPIError, onNotice }: CodexW
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [storageError, setStorageError] = useState("");
+  /** Provider runtime snapshots, used for the Codex usage totals on the overview. */
+  const [providerRuntime, setProviderRuntime] = useState<AIProviderRuntimeSnapshot[]>([]);
   const [fingerprintSaved, setFingerprintSaved] = useState(false);
   const request = useRef(0);
 
@@ -113,11 +117,15 @@ export function CodexWorkspace({ refreshRevision, onAPIError, onNotice }: CodexW
     setLoading(true);
     setError("");
     try {
-      const [overviewSnapshot, modelsSnapshot, fingerprintSnapshot, experimentsSnapshot] = await Promise.all([
+      const [overviewSnapshot, modelsSnapshot, fingerprintSnapshot, experimentsSnapshot, runtimeSnapshot] = await Promise.all([
         api.getCodexOverview(signal),
         api.getCodexModels(signal),
         api.getCodexFingerprint(signal),
         api.getExperimentalSettings(signal),
+        // The Codex usage totals live in the provider runtime: CPA reports provider traffic
+        // there, keyed by the "codex" provider name. A failure must not blank the workspace,
+        // so it degrades to "no totals" instead of failing the load.
+        api.getAIProviderRuntime(signal).catch(() => ({ snapshots: [], updated_at: "" })),
       ]);
       if (requestID !== request.current) return;
       setOverview(overviewSnapshot.overview ?? null);
@@ -125,6 +133,7 @@ export function CodexWorkspace({ refreshRevision, onAPIError, onNotice }: CodexW
       setProfile(fingerprintSnapshot.profile ?? null);
       setExperiments(experimentsSnapshot.settings ?? null);
       setStorageError(fingerprintSnapshot.profile?.storage_error || modelsSnapshot.storage_error || "");
+      setProviderRuntime(runtimeSnapshot.snapshots ?? []);
     } catch (caught) {
       if (signal?.aborted || (caught instanceof DOMException && caught.name === "AbortError")) return;
       if (requestID === request.current) handleError(caught);
@@ -176,7 +185,7 @@ export function CodexWorkspace({ refreshRevision, onAPIError, onNotice }: CodexW
       // Their current values are echoed back so saving here never clears them.
       weekly_overdraft_enabled: experiments?.weekly_overdraft_enabled ?? false,
       agent_identity_enabled: experiments?.agent_identity_enabled ?? false,
-      auto_model_whitelist_enabled: experiments?.auto_model_whitelist_enabled ?? true,
+      auto_model_whitelist_enabled: experiments?.auto_model_whitelist_enabled ?? false,
       sub2api_credit_usage_enabled: experiments?.sub2api_credit_usage_enabled ?? true,
       codex_identity: codexIdentity,
     });
@@ -277,9 +286,14 @@ export function CodexWorkspace({ refreshRevision, onAPIError, onNotice }: CodexW
         .map((target) => ({ id: target.id, label: `${target.label} · ${tx("ui.codex_test_channel_suffix")}` }));
       const candidates = [...accountTargets, ...channelTargets];
       setTestAccounts(candidates);
-      if (candidates.length === 1) {
-        setTestAccountID(candidates[0].id);
-        runModelTest(model, candidates[0].id);
+      // The target list is a picker, so it must start on a real credential: leaving the selection
+      // empty showed the first option's label while the start button stayed disabled, and the
+      // operator had to re-pick the very target the dialog already displayed. With a single
+      // credential the probe also runs immediately, which is what the operator asked for.
+      const [preferred] = candidates;
+      if (preferred) {
+        setTestAccountID(preferred.id);
+        if (candidates.length === 1) runModelTest(model, preferred.id);
       }
     } catch (caught) {
       setTestAccounts([]);
@@ -339,6 +353,27 @@ export function CodexWorkspace({ refreshRevision, onAPIError, onNotice }: CodexW
       default: return tx("ui.manual_confirmation_required");
     }
   };
+
+  /**
+   * The Codex usage totals shown on the overview. CPA records provider traffic under the
+   * "codex" provider name (and it is the same name for every Codex channel row), so the totals
+   * are the sum of those snapshots: tokens, the reference-priced amount and the request split.
+   * A missing snapshot means "no Codex traffic recorded yet", which the panel states instead of
+   * printing zeroes that would read as measured emptiness.
+   */
+  const codexUsage = useMemo(() => {
+    const snapshots = providerRuntime.filter((snapshot) => (snapshot.provider ?? "").trim().toLowerCase() === "codex");
+    return snapshots.reduce((totals, snapshot) => ({
+      available: true,
+      input: totals.input + (snapshot.input_tokens ?? 0),
+      output: totals.output + (snapshot.output_tokens ?? 0),
+      cached: totals.cached + (snapshot.cached_tokens ?? 0),
+      total: totals.total + (snapshot.total_tokens ?? 0),
+      amountUSD: totals.amountUSD + (snapshot.amount_usd ?? 0),
+      requests: totals.requests + (snapshot.rated_requests ?? 0) + (snapshot.unrated_requests ?? 0),
+      unpriced: totals.unpriced + (snapshot.unrated_requests ?? 0),
+    }), { available: snapshots.length > 0, input: 0, output: 0, cached: 0, total: 0, amountUSD: 0, requests: 0, unpriced: 0 });
+  }, [providerRuntime]);
   const groups = useMemo(() => {
     const known = GROUP_ORDER.filter((group) => fields.some((field) => field.group === group));
     const rest = fields.map((field) => field.group).filter((group) => !known.includes(group));
@@ -395,6 +430,19 @@ export function CodexWorkspace({ refreshRevision, onAPIError, onNotice }: CodexW
 
       {activeTab === "overview" ? (
         <section className="codex-tab-panel" role="tabpanel" aria-label={tabLabel("overview")}>
+          {/* Codex usage totals: CPA reports this traffic as the "codex" provider, so the
+              overview sums those runtime snapshots instead of leaving the page with counts
+              only. When nothing has been recorded the panel says so rather than showing 0. */}
+          <UsageMetricCards
+            label={tx("ui.codex_usage_totals")}
+            metrics={codexUsage.available ? [
+              { key: "tokens", icon: <Activity size={18} />, label: tx("ui.total_tokens"), value: formatNumber(codexUsage.total), note: tx("ui.overview_usage_tokens", { input: formatNumber(codexUsage.input), output: formatNumber(codexUsage.output), cached: formatNumber(codexUsage.cached) }) },
+              { key: "requests", icon: <Activity size={18} />, label: tx("ui.overview_requests"), value: formatNumber(codexUsage.requests), note: codexUsage.unpriced > 0 ? tx("ui.unrated_requests_count", { count: String(codexUsage.unpriced) }) : "" },
+              { key: "amount", icon: <Activity size={18} />, label: tx("ui.codex_usage_reference_amount"), value: formatReferenceUSD(codexUsage.amountUSD, formatNumber), note: tx("ui.codex_usage_reference_note"), tone: "accent" as const },
+            ] : [
+              { key: "empty", icon: <Activity size={18} />, label: tx("ui.total_tokens"), value: "-", note: tx("ui.codex_usage_unavailable") },
+            ]}
+          />
           <dl className="codex-counts">
             <div><dt>{tx("ui.codex_counts_accounts")}</dt><dd>{overview?.accounts ?? "-"}</dd></div>
             <div><dt>{tx("ui.codex_counts_channels")}</dt><dd>{overview?.channels ?? "-"}</dd></div>
@@ -503,7 +551,7 @@ export function CodexWorkspace({ refreshRevision, onAPIError, onNotice }: CodexW
                         onChange={() => toggleModelSelection(row.id)}
                       />
                     </td>
-                    <td>
+                    <td data-label={tx("ui.model")}>
                       <div className="codex-model-cell">
                         <strong>{row.id}</strong>
                         {row.long_context_threshold_tokens && (row.long_context_input_multiplier ?? 0) > 1 ? (
@@ -514,12 +562,12 @@ export function CodexWorkspace({ refreshRevision, onAPIError, onNotice }: CodexW
                         ) : null}
                       </div>
                     </td>
-                    <td>{row.priced ? formatCodexPrice(row.input_usd_per_million) : tx("ui.codex_models_unpriced")}</td>
-                    <td>{formatCodexPrice(row.output_usd_per_million)}</td>
-                    <td>{formatCodexPrice(row.cache_read_usd_per_million)}</td>
-                    <td>{row.accounts}</td>
-                    <td>{row.channels}</td>
-                    <td><span className={row.disabled ? "codex-model-state disabled" : "codex-model-state enabled"}>{tx(row.disabled ? "ui.disabled" : "ui.enabled")}</span></td>
+                    <td data-label={tx("ui.codex_models_input_price")}>{row.priced ? formatCodexPrice(row.input_usd_per_million) : tx("ui.codex_models_unpriced")}</td>
+                    <td data-label={tx("ui.codex_models_output_price")}>{formatCodexPrice(row.output_usd_per_million)}</td>
+                    <td data-label={tx("ui.codex_models_cache_read_price")}>{formatCodexPrice(row.cache_read_usd_per_million)}</td>
+                    <td data-label={tx("ui.codex_models_accounts_count")}>{row.accounts}</td>
+                    <td data-label={tx("ui.codex_models_channels_count")}>{row.channels}</td>
+                    <td data-label={tx("ui.status")}><span className={row.disabled ? "codex-model-state disabled" : "codex-model-state enabled"}>{tx(row.disabled ? "ui.disabled" : "ui.enabled")}</span></td>
                     <td className="actions-cell">
                       <div className="row-actions" role="group" aria-label={tx("ui.model_actions", { model: row.id })}>
                         <IconButton label={tx("ui.model_test_action", { model: row.id })} disabled={busy === "model-test"} onClick={() => openModelTest(row.id)}>

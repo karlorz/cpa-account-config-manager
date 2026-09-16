@@ -56,28 +56,31 @@ type RegistrationCapabilities struct {
 }
 
 type App struct {
-	mu                       sync.RWMutex
-	config                   Config
-	configErr                string
-	accounts                 *AccountService
-	deduplication            *AccountDeduplicationService
-	deletions                *AccountDeleteService
-	tokenRefresh             *AccountTokenRefreshService
-	previews                 *PreviewService
-	jobs                     *JobEngine
-	policies                 *PolicyEngine
-	inspection               *InspectionEngine
-	updates                  *UpdateChecker
-	force                    *ForceSyncEngine
-	imports                  *ImportService
-	usage                    *UsageTracker
-	creditUsage              *Sub2APICreditUsage
-	operations               *OperationJournal
-	modelTests               *ModelTestService
-	newAccountProbe          *newAccountModelProbeEngine
-	quotaBootstrap           *accountQuotaMetadataBootstrap
-	managementDoer           HTTPDoer
-	authDir                  string
+	mu              sync.RWMutex
+	config          Config
+	configErr       string
+	configureErr    string
+	accounts        *AccountService
+	deduplication   *AccountDeduplicationService
+	deletions       *AccountDeleteService
+	tokenRefresh    *AccountTokenRefreshService
+	previews        *PreviewService
+	jobs            *JobEngine
+	policies        *PolicyEngine
+	inspection      *InspectionEngine
+	updates         *UpdateChecker
+	force           *ForceSyncEngine
+	imports         *ImportService
+	usage           *UsageTracker
+	creditUsage     *Sub2APICreditUsage
+	operations      *OperationJournal
+	modelTests      *ModelTestService
+	newAccountProbe *newAccountModelProbeEngine
+	quotaBootstrap  *accountQuotaMetadataBootstrap
+	managementDoer  HTTPDoer
+	authDir         string
+	// stateAdoptionNote is the latest sanitized state-adoption notice, guarded by mu.
+	stateAdoptionNote        string
 	requestHooks             *RequestHook
 	quotaGuard               *AccountQuotaGuard
 	concurrency              *AccountConcurrencyService
@@ -88,6 +91,7 @@ type App struct {
 	agentIdentity            *AgentIdentityExperiment
 	opencode                 *OpenCodeQuotaService
 	opencodeZen              *OpenCodeZenService
+	clinePass                *ClinePassService
 	opencodePricing          *OpenCodePricingService
 	selfUpdate               *SelfUpdateService
 	codexFingerprints        *CodexFingerprintProfileService
@@ -106,6 +110,27 @@ type App struct {
 	indexHTML                []byte
 	quiesceOnce              sync.Once
 	quotaResetLocks          [64]sync.Mutex
+	// State-directory reconfigure coalescing. DiscoverAuthStorage can run on a stack that already
+	// holds a service lock (the inspection scan holds scanMu while it reads accounts), so the
+	// service reconfiguration is applied by one background worker instead of inline.
+	reconfigureMu      sync.Mutex
+	reconfigurePending configReconfigureRequest
+	reconfigureQueued  bool
+	// Cline Pass auto-bind throttling: a page load that finds an account unbound publishes
+	// its channel once, so a credential rotation never leaves the operator clicking a bind
+	// button, while a dead credential costs one attempt per cooldown instead of one per read.
+	clinePassAutoBindMu sync.Mutex
+	clinePassAutoBindAt map[string]time.Time
+	reconfigureRunning  bool
+	reconfigureCycle    chan struct{}
+	// configApplyMu serializes every service configuration, so a deferred configure and a host
+	// reconfigure never mutate the services at the same time.
+	configApplyMu sync.Mutex
+	// effectiveDataDir is the state directory the services were last configured with. It is
+	// guarded by configApplyMu, so adoption can tell a real directory change from a repeat.
+	effectiveDataDir string
+	// testServiceConfigurer replaces the service configuration applier in tests.
+	testServiceConfigurer serviceConfigureApplier
 }
 
 func NewApp(host AuthHost, indexHTML []byte) *App {
@@ -130,6 +155,7 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	quotaBootstrap := NewAccountQuotaMetadataBootstrap()
 	opencode := NewOpenCodeQuotaService()
 	opencodeZen := NewOpenCodeZenService()
+	clinePass := NewClinePassService()
 	opencodePricing := NewOpenCodePricingService()
 	selfUpdate := NewSelfUpdateService(PluginVersion)
 	codexFingerprints := NewCodexFingerprintProfileService()
@@ -217,6 +243,7 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 		agentIdentity:            agentIdentity,
 		opencode:                 opencode,
 		opencodeZen:              opencodeZen,
+		clinePass:                clinePass,
 		opencodePricing:          opencodePricing,
 		selfUpdate:               selfUpdate,
 		codexFingerprints:        codexFingerprints,
@@ -273,10 +300,31 @@ func (a *App) Configure(raw []byte) {
 	a.ConfigureHost(raw, cpaapi.SchemaVersion)
 }
 
+// configReconfigureRequest carries one queued state-directory reconfiguration. previousDir is the
+// directory that was effective before the change, so the worker can adopt state that was already
+// written there instead of leaving it behind.
+type configReconfigureRequest struct {
+	config      Config
+	previousDir string
+}
+
+// serviceConfigureApplier runs the service side of one host configuration. Production code uses
+// the App itself; tests substitute a deliberately blocking collaborator to exercise the bounded
+// ConfigureHostBounded path without driving the real services.
+type serviceConfigureApplier interface {
+	applyServiceConfig(config Config, hostSchema uint32)
+}
+
 // DiscoverAuthStorage keeps the plugin's private state beside CPA's auth files. The host gives
 // the plugin absolute auth file paths as soon as an account list is read, which is far more
 // stable than the implicit relative data directory that follows the working directory of
 // whoever started CPA. An operator-pinned `data_dir` is never overridden.
+//
+// This runs on AccountService.baseAccounts, which the inspection scan calls while it already
+// holds InspectionEngine.scanMu. The expensive service reconfiguration is therefore never applied
+// on the caller's stack: re-entering InspectionEngine.Configure here would self-deadlock on the
+// non-reentrant mutex and wedge CPA startup (GitHub issue #7). Only the resolved directories are
+// recorded inline, and one coalesced worker applies the rest off this stack.
 func (a *App) DiscoverAuthStorage(entries []cpaapi.HostAuthFileEntry) {
 	if a == nil {
 		return
@@ -304,18 +352,127 @@ func (a *App) DiscoverAuthStorage(entries []cpaapi.HostAuthFileEntry) {
 	if resolved.DataDir == configured.DataDir && len(resolved.DataDirAlternates) == len(configured.DataDirAlternates) {
 		return
 	}
-	a.applyResolvedConfig(resolved)
+	// Record the resolved directories immediately so the change is visible to every reader of the
+	// config snapshot, then let the coalesced worker re-open the stores from the new paths.
+	a.mu.Lock()
+	a.config = resolved
+	a.mu.Unlock()
+	a.scheduleResolvedConfigReconfigure(resolved, configured.DataDir)
+}
+
+// scheduleResolvedConfigReconfigure queues one state-directory reconfiguration and starts the
+// single worker when none is running. Repeated calls coalesce into one pending apply, so there is
+// never more than one reconfigure goroutine per app.
+func (a *App) scheduleResolvedConfigReconfigure(config Config, previousDir string) {
+	if a == nil {
+		return
+	}
+	a.reconfigureMu.Lock()
+	// Keep the directory of the first queued change: coalesced changes are applied in one hop,
+	// and the state that must be adopted comes from the directory that was effective first.
+	if !a.reconfigureQueued {
+		a.reconfigurePending.previousDir = previousDir
+	}
+	a.reconfigurePending.config = config
+	a.reconfigureQueued = true
+	if a.reconfigureRunning {
+		a.reconfigureMu.Unlock()
+		return
+	}
+	a.reconfigureRunning = true
+	cycle := make(chan struct{})
+	a.reconfigureCycle = cycle
+	a.reconfigureMu.Unlock()
+	go a.runReconfigureWorker(cycle)
+}
+
+// runReconfigureWorker applies the latest queued configuration until the queue drains, then
+// reports idle. It is the only goroutine that runs applyResolvedConfig.
+func (a *App) runReconfigureWorker(cycle chan struct{}) {
+	defer close(cycle)
+	for {
+		a.reconfigureMu.Lock()
+		config := a.reconfigurePending.config
+		previousDir := a.reconfigurePending.previousDir
+		queued := a.reconfigureQueued
+		a.reconfigureQueued = false
+		if !queued {
+			a.reconfigureRunning = false
+			a.reconfigureCycle = nil
+			a.reconfigureMu.Unlock()
+			return
+		}
+		a.reconfigureMu.Unlock()
+		a.applyResolvedConfigSafely(config, previousDir)
+	}
+}
+
+// applyResolvedConfigSafely contains a panic so a failed reconfiguration can never take down CPA,
+// and records the sanitized diagnostic.
+func (a *App) applyResolvedConfigSafely(config Config, previousDir string) {
+	defer func() {
+		if recover() != nil {
+			a.noteConfigureFailure()
+		}
+	}()
+	a.applyResolvedConfig(config, previousDir)
+}
+
+// ReconfigurePending reports whether a state-directory reconfiguration is queued or in flight.
+func (a *App) ReconfigurePending() bool {
+	if a == nil {
+		return false
+	}
+	a.reconfigureMu.Lock()
+	defer a.reconfigureMu.Unlock()
+	return a.reconfigureRunning || a.reconfigureQueued
+}
+
+// WaitForReconfigure waits until no state-directory reconfiguration is queued or in flight, or
+// until timeout elapses. It is the bounded observability hook for the asynchronous worker.
+func (a *App) WaitForReconfigure(timeout time.Duration) bool {
+	if a == nil {
+		return true
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		a.reconfigureMu.Lock()
+		cycle := a.reconfigureCycle
+		running := a.reconfigureRunning
+		a.reconfigureMu.Unlock()
+		if !running || cycle == nil {
+			return true
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		select {
+		case <-cycle:
+		case <-time.After(remaining):
+			return false
+		}
+	}
 }
 
 // applyResolvedConfig re-configures every store after the state directory was resolved again,
-// without touching the host schema or the background start-up sequence.
-func (a *App) applyResolvedConfig(config Config) {
+// without touching the host schema or the background start-up sequence. It runs on the coalesced
+// reconfigure worker, never on a caller stack that may already hold a service lock.
+func (a *App) applyResolvedConfig(config Config, previousDir string) {
+	a.configApplyMu.Lock()
+	defer a.configApplyMu.Unlock()
+	// Adopt the state of the previously effective directory before any store re-opens there, so
+	// a directory change never makes already-written credentials look deleted.
+	adoption := a.adoptStateDirectoryChange(previousDir, config)
 	a.mu.Lock()
 	a.config = config
 	a.mu.Unlock()
 	a.operations.Configure(config)
+	// The journal now points at the target directory, so the adoption entry is durable there.
+	a.recordStateAdoptionResult(adoption)
 	a.opencode.Configure(config)
 	a.opencodeZen.Configure(config)
+	a.clinePass.Configure(config)
 	a.opencodeModelControl.Configure(config)
 	a.opencodeSession.Configure(config)
 	a.codexFingerprints.Configure(config)
@@ -448,27 +605,61 @@ func (a *App) selfUpdatePluginFile() (string, error) {
 	return snapshot.PluginFile, nil
 }
 
+// ConfigureHost applies a host lifecycle configuration synchronously. CPA's register and
+// reconfigure path uses ConfigureHostBounded so a wedged service can never block the host.
 func (a *App) ConfigureHost(raw []byte, hostSchema uint32) {
 	if a == nil {
 		return
 	}
+	config, resolvedSchema, ok := a.applyHostIdentity(raw, hostSchema)
+	if !ok {
+		return
+	}
+	a.applyServiceConfig(config, resolvedSchema)
+}
+
+// applyHostIdentity parses the lifecycle configuration and records the host identity (config and
+// host schema) so Registration reports the correct capabilities even when the service side is
+// deferred. It never touches a service lock, so it is safe on any caller stack.
+func (a *App) applyHostIdentity(raw []byte, hostSchema uint32) (Config, uint32, bool) {
 	config, errConfig := ParseConfigStrict(raw)
 	if errConfig != nil {
 		a.mu.Lock()
 		a.configErr = "plugin configuration is invalid"
 		a.mu.Unlock()
-		return
+		return Config{}, hostSchema, false
 	}
+	// Resolve CPA's auth directory deterministically from its own configuration before any host
+	// auth-list read; the later discovery may still refine it with a directory verified on disk.
+	resolvedAuthDir := resolveAuthDirectory()
 	a.mu.RLock()
 	authDir := a.authDir
 	a.mu.RUnlock()
+	if resolvedAuthDir != "" {
+		authDir = resolvedAuthDir
+	}
 	config = a.resolveStateDirectories(config, authDir)
 	a.mu.Lock()
+	if resolvedAuthDir != "" {
+		a.authDir = resolvedAuthDir
+	}
 	a.config = config
 	a.configErr = ""
+	a.configureErr = ""
 	a.hostSchema = normalizeHostSchemaVersion(hostSchema)
-	hostSchema = a.hostSchema
+	resolvedSchema := a.hostSchema
 	a.mu.Unlock()
+	return config, resolvedSchema, true
+}
+
+// applyServiceConfig runs the full service configuration for one host identity. It serializes on
+// configApplyMu so a deferred configure and a host reconfigure never mutate the services at once.
+func (a *App) applyServiceConfig(config Config, hostSchema uint32) {
+	a.configApplyMu.Lock()
+	defer a.configApplyMu.Unlock()
+	// A host reconfigure can resolve a different state directory without passing through the
+	// coalesced worker, so it runs the same adoption step before the first service Configure.
+	adoption := a.adoptStateDirectoryChange(a.effectiveDataDir, config)
 	a.concurrency.Configure(config, hostSchema)
 	a.runtime.Configure(config)
 	if a.runtime.Snapshot().Superseded {
@@ -482,8 +673,11 @@ func (a *App) ConfigureHost(raw []byte, hostSchema uint32) {
 	a.quotaBootstrap.SetBackgroundWorkOwner(a.runtime)
 	a.force.SetBackgroundWorkOwner(a.runtime)
 	a.operations.Configure(config)
+	// The journal already points at the target directory, so the adoption entry is durable there.
+	a.recordStateAdoptionResult(adoption)
 	a.opencode.Configure(config)
 	a.opencodeZen.Configure(config)
+	a.clinePass.Configure(config)
 	a.opencodePricing.Configure(config)
 	a.selfUpdate.SetManagementDoer(a.managementDoer)
 	a.selfUpdate.Configure(config)
@@ -522,6 +716,113 @@ func (a *App) ConfigureHost(raw []byte, hostSchema uint32) {
 	a.force.Configure(config)
 	a.usage.Configure(config)
 	a.reconcileOperationSources()
+	// A completed configure clears the diagnostic recorded by an earlier bounded-configure
+	// timeout or panic, so the status output stops reporting a degraded lifecycle.
+	a.mu.Lock()
+	a.configureErr = ""
+	a.mu.Unlock()
+}
+
+// configureHostBound is the default upper bound ConfigureHostBounded gives the service
+// configuration. It is a package var so tests can shrink it; a healthy configure finishes far
+// sooner and is therefore unaffected.
+var configureHostBound = 25 * time.Second
+
+// configureTimeoutMessage and configureFailureMessage are fixed, sanitized, operator-visible
+// diagnostics. They never contain configuration values, credentials, headers or tokens.
+const (
+	configureTimeoutMessage = "plugin configuration did not finish within the startup deadline"
+	configureFailureMessage = "plugin configuration aborted unexpectedly"
+)
+
+// ConfigureHostBounded applies a host lifecycle configuration without blocking the caller for
+// longer than bound. The host identity (config and schema version) is always applied first, so
+// Registration reports the correct capabilities; the service configuration then runs on a
+// panic-safe background goroutine that keeps going even after the bound elapses, so a later
+// reconfigure or the finishing work converges. A bound <= 0 selects configureHostBound. The
+// boolean reports whether the service configuration finished within the bound.
+func (a *App) ConfigureHostBounded(raw []byte, hostSchema uint32, bound time.Duration) bool {
+	if a == nil {
+		return false
+	}
+	config, resolvedSchema, ok := a.applyHostIdentity(raw, hostSchema)
+	if !ok {
+		return false
+	}
+	if bound <= 0 {
+		bound = configureHostBound
+	}
+	return a.applyServiceConfigBounded(config, resolvedSchema, bound)
+}
+
+// applyServiceConfigBounded runs one service configuration on a background goroutine and waits at
+// most bound for it. A panic is contained and recorded instead of crashing the host.
+func (a *App) applyServiceConfigBounded(config Config, hostSchema uint32, bound time.Duration) bool {
+	if a == nil {
+		return false
+	}
+	done := make(chan struct{})
+	go func() {
+		// Contain a panic before signalling done, so the wait below still returns and a goroutine
+		// panic can never reach the host process.
+		defer func() {
+			if recover() != nil {
+				a.noteConfigureFailure()
+			}
+			close(done)
+		}()
+		a.serviceConfigurer().applyServiceConfig(config, hostSchema)
+	}()
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		a.noteConfigureTimeout()
+		return false
+	}
+}
+
+// serviceConfigurer returns the object that runs the service configuration, honouring the test
+// seam when one is installed.
+func (a *App) serviceConfigurer() serviceConfigureApplier {
+	if a == nil {
+		return nil
+	}
+	if a.testServiceConfigurer != nil {
+		return a.testServiceConfigurer
+	}
+	return a
+}
+
+// noteConfigureTimeout records the sanitized diagnostic for a bounded configure that timed out.
+func (a *App) noteConfigureTimeout() {
+	a.noteConfigureDiagnostic(configureTimeoutMessage, "plugin_configure_timeout")
+}
+
+// noteConfigureFailure records the sanitized diagnostic for a service configuration that panicked.
+func (a *App) noteConfigureFailure() {
+	a.noteConfigureDiagnostic(configureFailureMessage, "operation_failed")
+}
+
+// noteConfigureDiagnostic publishes the operator-visible config error and journals the event. Both
+// strings are fixed and allow-listed, so no configuration value or secret can leak through here.
+func (a *App) noteConfigureDiagnostic(message, reason string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.configureErr = message
+	a.mu.Unlock()
+	if a.operations == nil {
+		return
+	}
+	a.operations.Record(OperationEntry{
+		Category: OperationCategoryPlugin, Action: OperationActionPluginConfigure,
+		Status: OperationStatusFailed, Source: OperationSourceBackground, Scope: OperationScopeSystem,
+		ReasonCode: reason,
+	})
 }
 
 // mergeLegacyCodexIdentityOverrides removes per-account identity overrides that
@@ -551,12 +852,28 @@ func (a *App) configError() string {
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.configErr
+	if a.configErr != "" {
+		return a.configErr
+	}
+	return a.configureErr
 }
 
 // isAIProviderUsageRecord distinguishes API-key provider traffic from native
 // OAuth account traffic before it reaches the provider-only runtime dashboard.
 // CPA delivers both through the same usage callback.
+func (a *App) isKnownAccountUsageRecord(record cpaapi.UsageRecord) bool {
+	if a == nil || a.usage == nil {
+		return false
+	}
+	for _, identifier := range []string{record.AuthIndex, record.AuthID} {
+		resolved := a.usage.ResolveAuthIndex(identifier)
+		if resolved != "" && a.usage.UsageIdentity(resolved) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func isAIProviderUsageRecord(record cpaapi.UsageRecord) bool {
 	switch strings.ToLower(strings.TrimSpace(record.AuthType)) {
 	case "oauth", "oauth2":
@@ -577,7 +894,15 @@ func (a *App) HandleUsage(record cpaapi.UsageRecord) {
 	if a.runtimeSuperseded() {
 		return
 	}
-	if isAIProviderUsageRecord(record) {
+	if a.clinePass != nil {
+		// Cline Pass is an OpenAI-compatible channel, so its traffic arrives on
+		// this same usage callback. The record feeds the reference-priced quota
+		// windows; no additional host callback or observer is registered, and the
+		// tracker itself decides whether the record is Cline Pass traffic.
+		a.clinePass.ObserveUsage(record)
+	}
+	record = a.attributeProviderChannelCredential(record)
+	if !a.isKnownAccountUsageRecord(record) && isAIProviderUsageRecord(record) {
 		// Provider credentials and native OAuth accounts share CPA's usage
 		// callback. Never put provider traffic into the account usage store: an
 		// API-key channel can expose an auth index, and that index may collide
@@ -587,6 +912,42 @@ func (a *App) HandleUsage(record cpaapi.UsageRecord) {
 		a.usage.Observe(record)
 		a.inspection.Observe(record)
 	}
+}
+
+// attributeProviderChannelCredential resolves the credential of a CPA provider
+// channel from the auth index a usage callback carries. CPA's callback for an
+// openai-compatibility or codex-api-key channel names the auth index CPA assigned
+// to the channel row but omits the API key, so the record has no credential
+// identity: the runtime dashboard refuses such a snapshot and pricing cannot
+// resolve the channel. The index is only filled in when the plugin verified that
+// the auth index belongs to a live provider channel row, which is provenance
+// enough to attribute the record. A record that already carries a key, one that
+// names an index no channel row owns, and native account telemetry are all
+// returned unchanged. The key stays inside this process and is hashed by the
+// tracker immediately: it is never logged or persisted.
+func (a *App) attributeProviderChannelCredential(record cpaapi.UsageRecord) cpaapi.UsageRecord {
+	if a == nil || a.providerRuntime == nil || strings.TrimSpace(record.APIKey) != "" {
+		return record
+	}
+	switch strings.ToLower(strings.TrimSpace(record.AuthType)) {
+	case "oauth", "oauth2":
+		// Native account telemetry stays account telemetry.
+		return record
+	}
+	apiKey, provider := a.providerRuntime.ProviderCredentialForAuthIndex(record.AuthIndex)
+	if apiKey == "" {
+		return record
+	}
+	record.APIKey = apiKey
+	// The provider name is the namespace the tracker and the pricing lookup both
+	// key the credential identity by, so the channel's name wins over whatever a
+	// callback reports: the identity must be the one the channel is known under.
+	if provider != "" {
+		record.Provider = provider
+	}
+	// Keep the record on the provider path even when the host omitted AuthType.
+	record.AuthType = "api_key"
+	return record
 }
 
 func (a *App) Close() {
@@ -933,6 +1294,7 @@ func (a *App) ManagementRegistration() cpaapi.ManagementRegistrationResponse {
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/updates/check", Description: "Record an immediate CPA plugin-store update check."},
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/experiments", Description: "Read removable experimental feature settings."},
 			{Method: http.MethodPut, Path: managementRoutePrefix + "/experiments", Description: "Persist removable experimental feature settings."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/experiments/auto-model-whitelist", Description: "Read the Codex automatic model allow-list experiment status and recent detections."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/experiments/agent-identity/session-login", Description: "Convert one explicitly submitted ChatGPT Session JSON into a pending Agent Identity login credential."},
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/risk-control", Description: "Read the redacted plugin-native risk-control configuration, status, and events."},
 			{Method: http.MethodPut, Path: managementRoutePrefix + "/risk-control", Description: "Validate and persist plugin-native risk-control settings."},
@@ -967,8 +1329,22 @@ func (a *App) ManagementRegistration() cpaapi.ManagementRegistrationResponse {
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/opencode/storage", Description: "Report the private state directory that holds the OpenCode credentials."},
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/opencode/model-control", Description: "List the OpenCode models and the globally disabled set."},
 			{Method: http.MethodPut, Path: managementRoutePrefix + "/opencode/model-control", Description: "Replace the globally disabled OpenCode model set."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/opencode/cline-pass/accounts", Description: "List redacted bound Cline Pass accounts."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/opencode/cline-pass/accounts", Description: "Save or update one Cline Pass account credential."},
+			{Method: http.MethodDelete, Path: managementRoutePrefix + "/opencode/cline-pass/accounts", Description: "Remove one bound Cline Pass account."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/opencode/cline-pass/catalog", Description: "Read the allow-listed Cline Pass model catalog."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/opencode/cline-pass/login/start", Description: "Start a Cline Pass sign-in: browser device flow, Cline CLI reuse or API key."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/opencode/cline-pass/login/poll", Description: "Poll one pending Cline Pass sign-in."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/opencode/cline-pass/login/cancel", Description: "Cancel one pending Cline Pass sign-in."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/opencode/cline-pass/refresh", Description: "Rotate one Cline Pass OAuth token and optionally republish its CPA channel."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/opencode/cline-pass/models", Description: "Validate one Cline Pass credential against the gateway model catalog."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/opencode/cline-pass/model-test", Description: "Probe one Cline Pass model through a stored credential."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/opencode/cline-pass/bind", Description: "Create or update the OpenAI-compatible CPA channel that routes one Cline Pass account."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/opencode/cline-pass/settings", Description: "Read the Cline Pass model publishing settings."},
+			{Method: http.MethodPut, Path: managementRoutePrefix + "/opencode/cline-pass/settings", Description: "Persist the Cline Pass model publishing settings and republish every stored account."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/opencode/cline-pass/models", Description: "List the Cline Pass models with their client-facing ids and publication state."},
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/self-update", Description: "Read the direct GitHub self-update state."},
-			{Method: http.MethodGet, Path: managementRoutePrefix + "/codex/overview", Description: "Read the Codex workspace counts and effective convergence mode."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/codex/overview", Description: "Read the Codex workspace counts: host Codex accounts, Codex channels, and effective convergence mode."},
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/codex/fingerprint", Description: "Read every editable Codex fingerprint field with its default."},
 			{Method: http.MethodPut, Path: managementRoutePrefix + "/codex/fingerprint", Description: "Update Codex fingerprint fields; an empty value restores a field default."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/codex/fingerprint/reset", Description: "Restore Codex fingerprint fields to their defaults."},
@@ -1163,6 +1539,8 @@ func (a *App) HandleManagement(ctx context.Context, req cpaapi.ManagementRequest
 		return jsonResponse(http.StatusOK, a.experiments.Snapshot())
 	case method == http.MethodPut && path == "/v0/management"+managementRoutePrefix+"/experiments":
 		return a.handlePutExperimentalSettings(req)
+	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/experiments/auto-model-whitelist":
+		return a.handleAutoModelWhitelistStatus(ctx, req)
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/experiments/agent-identity/session-login":
 		return a.handleAgentIdentitySessionLogin(ctx, req)
 	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/risk-control":
@@ -1237,6 +1615,32 @@ func (a *App) HandleManagement(ctx context.Context, req cpaapi.ManagementRequest
 		return a.handleOpenCodeModelControl(ctx, req)
 	case method == http.MethodPut && path == "/v0/management"+managementRoutePrefix+"/opencode/model-control":
 		return a.handleOpenCodeModelControlUpdate(ctx, req)
+	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/opencode/cline-pass/accounts":
+		return a.handleClinePassAccounts(ctx, req)
+	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/opencode/cline-pass/accounts":
+		return a.handleClinePassAccounts(ctx, req)
+	case method == http.MethodDelete && path == "/v0/management"+managementRoutePrefix+"/opencode/cline-pass/accounts":
+		return a.handleClinePassAccounts(ctx, req)
+	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/opencode/cline-pass/catalog":
+		return a.handleClinePassCatalog(req)
+	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/opencode/cline-pass/login/start":
+		return a.handleClinePassLoginStart(ctx, req)
+	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/opencode/cline-pass/login/poll":
+		return a.handleClinePassLoginPoll(ctx, req)
+	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/opencode/cline-pass/login/cancel":
+		return a.handleClinePassLoginCancel(req)
+	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/opencode/cline-pass/refresh":
+		return a.handleClinePassRefresh(ctx, req)
+	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/opencode/cline-pass/models":
+		return a.handleClinePassModels(ctx, req)
+	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/opencode/cline-pass/model-test":
+		return a.handleClinePassModelTest(ctx, req)
+	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/opencode/cline-pass/bind":
+		return a.handleClinePassBind(ctx, req)
+	case (method == http.MethodGet || method == http.MethodPut) && path == "/v0/management"+managementRoutePrefix+"/opencode/cline-pass/settings":
+		return a.handleClinePassSettings(ctx, req)
+	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/opencode/cline-pass/models":
+		return a.handleClinePassModelPage(ctx, req)
 	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/self-update":
 		return a.handleSelfUpdate(req)
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/self-update/check":
@@ -1248,7 +1652,7 @@ func (a *App) HandleManagement(ctx context.Context, req cpaapi.ManagementRequest
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/self-update/reload":
 		return a.handleSelfUpdateReload(ctx, req)
 	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/codex/overview":
-		return a.handleCodexOverview(req)
+		return a.handleCodexOverview(ctx, req)
 	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/codex/fingerprint":
 		return a.handleCodexFingerprint(req)
 	case method == http.MethodPut && path == "/v0/management"+managementRoutePrefix+"/codex/fingerprint":
