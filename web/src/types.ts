@@ -782,7 +782,7 @@ export type ResultExportFormat = "json" | "csv" | "jsonl";
 
 export type ExportFormat = AccountExportFormat | ResultExportFormat;
 
-export type OperationCategory = "account" | "batch" | "import" | "export" | "default_policy" | "inspection" | "update" | "journal" | "opencode";
+export type OperationCategory = "account" | "batch" | "import" | "export" | "default_policy" | "inspection" | "update" | "journal" | "opencode" | "plugin";
 export type OperationStatus = "running" | "succeeded" | "partial" | "failed" | "interrupted" | "warning" | "skipped";
 export type OperationSource = "manual" | "background" | "default_policy" | "inspection" | "import" | "plugin_store";
 export type OperationExportFormat = "json" | "csv" | "jsonl";
@@ -1148,7 +1148,7 @@ export interface UpdateSnapshot {
   pending: boolean;
   checked_at?: string;
   error?: string;
-  release_source?: "fork_store" | "plugin_store" | "none";
+  release_source?: "fork_store" | "plugin_store" | "github_release" | "none";
   store_error?: string;
   runtime?: {
     active: boolean;
@@ -1292,6 +1292,31 @@ export interface ExperimentalSettings {
 export interface ExperimentalSettingsSnapshot {
   settings: ExperimentalSettings;
   storage_error?: string;
+}
+
+/** One recorded automatic model allow-list detection shown by the observability panel. */
+export interface AutoModelWhitelistEvent {
+  account_id: string;
+  /** Display label (usually the account email); the panel falls back to the id when it is empty. */
+  label?: string;
+  /** "applied" when the allow-list was written; any other value means the policy was left unchanged. */
+  status: string;
+  reason_code?: string;
+  at?: string;
+}
+
+export interface AutoModelWhitelistSnapshot {
+  enabled: boolean;
+  /** Codex accounts the experiment considered. */
+  accounts: number;
+  /** Codex accounts currently limited by the automatic allow-list. */
+  limited: number;
+  last_detected_at?: string;
+  recent: AutoModelWhitelistEvent[];
+}
+
+export interface AutoModelWhitelistResponse {
+  auto_model_whitelist: AutoModelWhitelistSnapshot;
 }
 
 /** One editable Codex request-fingerprint field returned by GET /codex/fingerprint. */
@@ -1443,14 +1468,14 @@ export interface OpenCodeModelTestResult {
   tested_at?: string;
 }
 
-/** CPA channel written by the bind action so the models become routable. */
-export interface OpenCodeBindingResult {
+/** CPA channel written by a bind so the models become routable. Shared by every provider. */
+export interface ProviderChannelBindingResult {
   kind: string;
   base_url: string;
   index: number;
   created: boolean;
   channel_key: string;
-  /** Number of model rows published on the CPA channel. */
+  /** Number of distinct upstream model ids published as channel rows on the CPA channel. */
   models: number;
 }
 

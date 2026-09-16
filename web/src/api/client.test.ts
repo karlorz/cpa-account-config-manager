@@ -739,38 +739,6 @@ describe("management API client", () => {
     });
   });
 
-  it("accepts inspection rows with empty Go zero-value classification strings", async () => {
-    setSession("", "management-secret");
-    const summary = {
-      actionable: 0, suggested_delete: 0, suggested_disable: 0, suggested_enable: 0,
-      reauth: 0, deletable_reauth: 0, review: 0, keep: 0, handled: 0,
-      editable_enabled: 0, editable_disabled: 0,
-    };
-    vi.stubGlobal("fetch", vi.fn()
-      .mockResolvedValueOnce(jsonResponse({
-        results: [{ id: "stub-1", health: "", reason_code: "", confidence: "", recommendation: "" }],
-        summary,
-        total: 1,
-        page: 1,
-        page_size: 50,
-        pages: 1,
-      }))
-      .mockResolvedValueOnce(jsonResponse({
-        policy: {},
-        last_run: {},
-        live_results: [{ id: "live-1", health: "", reason_code: "" }],
-      }))
-      .mockResolvedValueOnce(jsonResponse({
-        actions: [{ id: "act-1", account_id: "stub-1", action: "disable", status: "succeeded", reason_code: "" }],
-      })));
-
-    await expect(listInspectionResults(1, 50)).resolves.toMatchObject({ total: 1, results: [{ id: "stub-1" }] });
-    await expect(getLiveInspection()).resolves.toMatchObject({ live_results: [{ id: "live-1" }] });
-    await expect(listInspectionActions()).resolves.toEqual([
-      { id: "act-1", account_id: "stub-1", action: "disable", status: "succeeded", reason_code: "" },
-    ]);
-  });
-
   it("normalizes nullable inspection and operation lists from older backends", async () => {
     setSession("", "management-secret");
     const inspectionSummary = {
@@ -1205,7 +1173,7 @@ describe("management API client", () => {
       policy: {
         enabled: true, scan_interval_minutes: 30,
         model_probe_enabled: true, model_probe_full_sweep: true, scan_manually_disabled: true, model_probe_interval_minutes: 60, model_probe_batch_size: 20,
-        model_probe_models: { codex: "gpt-5.4", openai: "gpt-5.4", claude: "claude-sonnet-4-5-20250929", gemini: "gemini-2.0-flash", antigravity: "gemini-3.7-flash-high", xai: "grok-4" },
+        model_probe_models: { codex: "gpt-5.4", openai: "gpt-5.4", claude: "claude-sonnet-4-5-20250929", gemini: "gemini-2.0-flash", antigravity: "gemini-3-flash", xai: "grok-4" },
         failure_threshold: 3, recovery_threshold: 2, auto_disable: true, auto_enable: true,
         auto_delete: true, auto_delete_invalid_credentials: true, delete_grace_hours: 168, delete_batch_size: 10,
         anomaly_trigger_enabled: true, anomaly_threshold_percent: 50, anomaly_minimum_accounts: 10, anomaly_cooldown_minutes: 60,
@@ -1224,9 +1192,9 @@ describe("management API client", () => {
       .mockResolvedValueOnce(jsonResponse(inspectionSnapshot))
 			.mockResolvedValueOnce(jsonResponse({ status: "ok" }))
       .mockResolvedValueOnce(jsonResponse(updateSnapshot))
-      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.3.0")] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.0", installed: true, installed_version: "0.2.0", update_available: true }] }))
       .mockResolvedValueOnce(jsonResponse({ attempted: 0, succeeded: 0, failed: 0, skipped: 0 }))
-      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.3.0")] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.0", installed: true, installed_version: "0.2.0", update_available: true }] }))
       .mockResolvedValueOnce(jsonResponse({ status: "installed", id: "cpa-account-config-manager", version: "0.3.0", restart_required: false }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -1265,7 +1233,7 @@ describe("management API client", () => {
     expect(new Headers(storeInit.headers).get("Authorization")).toBe("Bearer management-secret");
 
 		const [installURL, installInit] = fetchMock.mock.calls[7] as [string, RequestInit];
-    expect(installURL).toBe("/v0/management/plugin-store/cpa-account-config-manager/install?source=source-karlorz");
+    expect(installURL).toBe("/v0/management/plugin-store/cpa-account-config-manager/install");
     expect(JSON.parse(String(installInit.body))).toEqual({ version: "0.3.0" });
     expect(new Headers(installInit.headers).get("Authorization")).toBe("Bearer management-secret");
 		await vi.waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(8));
@@ -1280,7 +1248,7 @@ describe("management API client", () => {
 		const inspectionPolicy = {
 			enabled: true, scan_interval_minutes: 30,
 			model_probe_enabled: true, model_probe_full_sweep: true, scan_manually_disabled: true, model_probe_interval_minutes: 60, model_probe_batch_size: 20,
-			model_probe_models: { codex: "gpt-5.4", openai: "gpt-5.4", claude: "claude-sonnet-4-5-20250929", gemini: "gemini-2.0-flash", antigravity: "gemini-3.7-flash-high", xai: "grok-4" },
+			model_probe_models: { codex: "gpt-5.4", openai: "gpt-5.4", claude: "claude-sonnet-4-5-20250929", gemini: "gemini-2.0-flash", antigravity: "gemini-3-flash", xai: "grok-4" },
 			failure_threshold: 3, recovery_threshold: 2, passive_circuit_enabled: true, passive_failure_threshold: 5,
 			passive_failure_window_minutes: 180, passive_circuit_minutes: 15, auto_disable: true, auto_enable: true,
 			auto_delete: false, auto_delete_invalid_credentials: false, delete_grace_hours: 168, delete_batch_size: 10,
@@ -1375,29 +1343,29 @@ describe("management API client", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/v0/management/plugin-store") {
-        return jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.3.0")] });
+        return jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.0", installed: true }] });
       }
-      if (url.includes("/plugin-store/cpa-account-config-manager/install?source=source-karlorz")) return installResponse;
+      if (url.endsWith("/plugin-store/cpa-account-config-manager/install")) return installResponse;
       return jsonResponse({ recorded: true });
     });
     vi.stubGlobal("fetch", fetchMock);
 
     const first = installPluginUpdate("0.3.0");
     const second = installPluginUpdate("v0.3.0");
-    await vi.waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/install?source=source-karlorz"))).toBe(true));
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/install"))).toBe(true));
     releaseInstall?.(jsonResponse({ status: "installed", id: "cpa-account-config-manager", version: "0.3.0", restart_required: false }));
 
     await expect(Promise.all([first, second])).resolves.toEqual([
       expect.objectContaining({ version: "0.3.0" }),
       expect.objectContaining({ version: "0.3.0" }),
     ]);
-    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/install?source=source-karlorz"))).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/install"))).toHaveLength(1);
   });
 
   it("preserves the stable restart-required plugin-store error code", async () => {
     setSession("", "management-secret");
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.3.0")] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.0", installed: true, installed_version: "0.2.0", update_available: true }] }))
       .mockResolvedValueOnce(jsonResponse({ error: "plugin_update_requires_restart", message: "loaded plugin cannot be overwritten while running" }, 409));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -1414,7 +1382,7 @@ describe("management API client", () => {
       { name: "legacy response without restart flag", response: { status: "installed", id: "cpa-account-config-manager", version: "0.3.0" }, wantRestart: false, wantStatus: "succeeded" },
     ]) {
       const fetchMock = vi.fn()
-        .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.3.0")] }))
+        .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.0", installed: true, installed_version: "0.2.0", update_available: true }] }))
         .mockResolvedValueOnce(jsonResponse(test.response))
         .mockResolvedValueOnce(jsonResponse({}));
       vi.stubGlobal("fetch", fetchMock);
@@ -1437,28 +1405,18 @@ describe("management API client", () => {
     await expect(getPluginStore()).rejects.toMatchObject({ status: 502, message: "ui.invalid_api_response" });
   });
 
-  it("skips malformed plugin-store sibling rows instead of failing the whole store", async () => {
+  it("rejects malformed plugin-store rows instead of treating the plugin as absent", async () => {
     setSession("", "management-secret");
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
-      plugins_enabled: true,
       plugins: [
-        { id: "cpa-account-config-manager", version: "0.3.1403-0", repository: "https://github.com/karlorz/cpa-account-config-manager" },
+        { id: "cpa-account-config-manager", version: "0.3.0" },
         "invalid-entry",
         null,
-        { id: "", version: "1.0.0" },
-        { id: "other-plugin", version: "  " },
-        { id: "ok-sibling", version: "1.2.3" },
       ],
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(getPluginStore()).resolves.toEqual({
-      plugins_enabled: true,
-      plugins: [
-        { id: "cpa-account-config-manager", version: "0.3.1403-0", repository: "https://github.com/karlorz/cpa-account-config-manager" },
-        { id: "ok-sibling", version: "1.2.3" },
-      ],
-    });
+    await expect(getPluginStore()).rejects.toMatchObject({ status: 502, message: "ui.invalid_api_response" });
   });
 
   it("rejects a self-update response without the snapshot envelope", async () => {
@@ -1508,7 +1466,7 @@ describe("management API client", () => {
   it("rejects unverified versions and malformed plugin-store install responses", async () => {
     setSession("", "management-secret");
     const mismatchedStore = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.3.1")] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.1", installed: true, installed_version: "0.2.0", update_available: true }] }))
       .mockResolvedValueOnce(jsonResponse({}));
     vi.stubGlobal("fetch", mismatchedStore);
     await expect(installPluginUpdate("0.3.0")).rejects.toMatchObject({ status: 404 });
@@ -1516,7 +1474,7 @@ describe("management API client", () => {
     expect(String(mismatchedStore.mock.calls[1][0])).toContain("/operations/record");
 
     const malformedInstall = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.3.0")] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.0", installed: true, installed_version: "0.2.0", update_available: true }] }))
       .mockResolvedValueOnce(jsonResponse({ status: "installed", id: "another-plugin", version: "0.3.0", restart_required: false }))
       .mockResolvedValueOnce(jsonResponse({}));
     vi.stubGlobal("fetch", malformedInstall);
@@ -1526,11 +1484,39 @@ describe("management API client", () => {
     });
   });
 
+  it("installs an exact version when the store lists the plugin without a version", async () => {
+    setSession("", "management-secret");
+    // CPA resolves release versions only for plugins whose update source is
+    // reachable, so the listing may name no version even though the plugin's own
+    // release check already confirmed one. That is not evidence against it.
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "", installed: true, installed_version: "0.3.1434", update_available: false }] }))
+      .mockResolvedValueOnce(jsonResponse({ status: "installed", id: "cpa-account-config-manager", version: "0.3.1440", restart_required: true }))
+      .mockResolvedValueOnce(jsonResponse({}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(installPluginUpdate("0.3.1440")).resolves.toEqual({
+      status: "installed", id: "cpa-account-config-manager", version: "0.3.1440", restart_required: true,
+    });
+    expect(JSON.parse(String((fetchMock.mock.calls[1] as [string, RequestInit])[1].body))).toEqual({ version: "0.3.1440" });
+  });
+
+  it("refuses to install when the store names a different version", async () => {
+    setSession("", "management-secret");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.1440", installed: true, installed_version: "0.3.1434", update_available: true }] }))
+      .mockResolvedValueOnce(jsonResponse({}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(installPluginUpdate("0.3.1434")).rejects.toMatchObject({ status: 404 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("uses authenticated plugin-store metadata as the sole update source", async () => {
     setSession("", "management-secret");
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ policy: { check_enabled: true, check_interval_hours: 24, auto_update: false }, current_version: "0.2.3", update_available: false, checking: false, pending: false, error: "release metadata request failed" }))
-      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.2.4")] }));
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.2.4", installed: true, installed_version: "0.2.3", update_available: true }] }));
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await getEffectiveUpdateStatus();
@@ -1539,7 +1525,7 @@ describe("management API client", () => {
       current_version: "0.2.3",
       latest_version: "0.2.4",
       update_available: true,
-      release_source: "fork_store",
+      release_source: "plugin_store",
     });
     expect(result.error).toBeUndefined();
     expect(result).not.toHaveProperty("github_error");
@@ -1556,7 +1542,9 @@ describe("management API client", () => {
         policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
         current_version: "0.3.0", update_available: false, checking: false, pending: false,
       })))
-      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [forkStorePlugin("0.3.0")] }));
+      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [{
+        id: "cpa-account-config-manager", version: "0.3.0", installed: true, installed_version: "0.3.0",
+      }] }));
     vi.stubGlobal("fetch", fetchMock);
 
     const firstController = new AbortController();
@@ -1567,7 +1555,7 @@ describe("management API client", () => {
     releaseStatus();
 
     await expect(first).rejects.toMatchObject({ name: "AbortError" });
-    await expect(second).resolves.toMatchObject({ current_version: "0.3.0", release_source: "fork_store" });
+    await expect(second).resolves.toMatchObject({ current_version: "0.3.0", release_source: "plugin_store" });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -1576,26 +1564,139 @@ describe("management API client", () => {
       policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
       current_version: "0.2.3", update_available: false, checking: false, pending: false,
       error: "release metadata request failed",
-    }, { plugins_enabled: true, plugins: [forkStorePlugin("v0.2.3")] });
+    }, { plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "v0.2.3", installed: true, installed_version: "0.2.3", update_available: false }] });
 
-    expect(result).toMatchObject({ latest_version: "0.2.3", update_available: false, release_source: "fork_store" });
+    expect(result).toMatchObject({ latest_version: "0.2.3", update_available: false, release_source: "plugin_store" });
     expect(result.error).toBeUndefined();
   });
 
-  it("reports a stable plugin-store error when store metadata is missing or invalid", () => {
+  it("names the exact reason no plugin-store version could be used", () => {
     const status = {
       policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
       current_version: "0.2.3", update_available: false, checking: false, pending: false,
       error: "release metadata request failed",
     };
-    expect(reconcileUpdateStatus(status, null).error).toBe("plugin store metadata is unavailable");
-    expect(reconcileUpdateStatus(status, { plugins_enabled: true, plugins: [forkStorePlugin("latest")] }).error).toBe("plugin store metadata is unavailable");
-    for (const store of [{ plugins_enabled: true, plugins: null }, { plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "latest", installed: true, installed_version: "0.2.3", update_available: true }] }]) {
-      const result = reconcileUpdateStatus(status, store);
-      expect(result.release_source).toBe("none");
-      expect(result.error).toBe("fork update channel is not configured");
-      expect(result.update_available).toBe(false);
+    // "The store is unreachable" and "the store answered without a version for this
+    // plugin" are different problems, and one message for both sent operators after
+    // the wrong cause. Every case still reports no source and no update.
+    for (const test of [
+      { store: null, want: "plugin store metadata is unavailable" },
+      { store: { plugins_enabled: true, plugins: null } as never, want: "plugin store does not list this plugin" },
+      { store: { plugins_enabled: true, plugins: [] } as never, want: "plugin store does not list this plugin" },
+      { store: { plugins_enabled: false, plugins: [] } as never, want: "the CPA plugin store is disabled" },
+      { store: { plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "", installed: true, installed_version: "0.2.3", update_available: true }] } as never, want: "plugin store did not report a version for this plugin" },
+      { store: { plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "latest", installed: true, installed_version: "0.2.3", update_available: true }] } as never, want: "plugin store did not report a version for this plugin" },
+    ]) {
+      const result = reconcileUpdateStatus(status, test.store);
+      expect(result.release_source, test.want).toBe("none");
+      expect(result.error, test.want).toBe(test.want);
+      expect(result.update_available, test.want).toBe(false);
+      expect(result.latest_version, test.want).toBeUndefined();
     }
+  });
+
+  it("accepts a catalog row whose store version is unresolved", async () => {
+    setSession("", "management-secret");
+    // CPA resolves a release version only for plugins whose update source is
+    // reachable, so an uninstalled row with no registry version legitimately
+    // carries an empty version. One such row must not invalidate the listing.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse({
+      plugins_enabled: true,
+      plugins: [
+        { id: "privacyfilter", version: "", installed: false, installed_version: "", update_available: false },
+        { id: "cpa-account-config-manager", version: "0.3.1434", installed: true, installed_version: "0.3.1434", update_available: false },
+      ],
+    })));
+
+    await expect(getPluginStore()).resolves.toEqual({
+      plugins_enabled: true,
+      plugins: [
+        { id: "privacyfilter", version: "", installed: false, installed_version: "", update_available: false },
+        { id: "cpa-account-config-manager", version: "0.3.1434", installed: true, installed_version: "0.3.1434", update_available: false },
+      ],
+    });
+  });
+
+  it("keeps the update panel working when other catalog rows carry no version", async () => {
+    setSession("", "management-secret");
+    // The shipped CPA changed the listing so that a plugin's version is only
+    // resolved for plugins whose update source is reachable. The upstream registry
+    // leaves `version` out for a third of its entries, so a real listing mixes
+    // rows with and without one. Before this was tolerated, a single such row made
+    // the panel report "CPA 插件商店中没有可用的版本信息" with a blank latest
+    // version, even though this plugin's own row it was about was fine.
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
+        current_version: "0.3.1434", update_available: false, checking: false, pending: false,
+        checked_at: "2026-09-15T06:57:00Z",
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugins_enabled: true,
+        plugins: [
+          { id: "privacyfilter", version: "", installed: false, installed_version: "", update_available: false },
+          { id: "model-router", version: "", installed: false, installed_version: "", update_available: false },
+          { id: "cpa-account-config-manager", version: "0.3.1440", installed: true, installed_version: "0.3.1434", update_available: true },
+        ],
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getEffectiveUpdateStatus();
+
+    expect(result).toMatchObject({
+      current_version: "0.3.1434",
+      latest_version: "0.3.1440",
+      update_available: true,
+      release_source: "plugin_store",
+      checked_at: "2026-09-15T06:57:00Z",
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.store_error).toBeUndefined();
+    // The happy path stays at two requests: no fallback is fetched when the store
+    // already named a version for this plugin.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to the plugin's own release check when the store names no version", async () => {
+    setSession("", "management-secret");
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/updates")) {
+        return jsonResponse({ policy: { check_enabled: true, check_interval_hours: 24, auto_update: false }, current_version: "0.3.1434", update_available: false, checking: false, pending: false });
+      }
+      if (url.endsWith("/plugin-store")) {
+        return jsonResponse({ plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "", installed: true, installed_version: "0.3.1434", update_available: false }] });
+      }
+      if (url.endsWith("/self-update")) {
+        return jsonResponse({ self_update: { current_version: "0.3.1434", latest_version: "0.3.1440", source: "github_api", can_install: true } });
+      }
+      throw new Error(`unexpected request ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getEffectiveUpdateStatus()).resolves.toMatchObject({
+      current_version: "0.3.1434",
+      latest_version: "0.3.1440",
+      update_available: true,
+      release_source: "github_release",
+    });
+  });
+
+  it("prefers the newer of the store version and the plugin's own release check", () => {
+    const status = {
+      policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
+      current_version: "0.3.1434", update_available: false, checking: false, pending: false,
+    };
+    const store = { plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.3.1372", installed: true, installed_version: "0.3.1434", update_available: false }] } as never;
+
+    // A stale registry fallback in the store listing must not hide a real update.
+    expect(reconcileUpdateStatus(status, store, "", "0.3.1440")).toMatchObject({
+      latest_version: "0.3.1440", update_available: true, release_source: "github_release",
+    });
+    // A tie keeps the store, which is the channel an install goes through.
+    expect(reconcileUpdateStatus(status, store, "", "0.3.1372")).toMatchObject({
+      latest_version: "0.3.1372", update_available: false, release_source: "plugin_store",
+    });
   });
 
   it("ignores stale direct-release metadata when the plugin store has an older stable version", () => {
@@ -1603,103 +1704,10 @@ describe("management API client", () => {
       policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
       current_version: "0.2.3", latest_version: "9.9.9", update_available: true,
       release_url: "https://example.invalid/release", checking: false, pending: false,
-    }, { plugins_enabled: true, plugins: [forkStorePlugin("0.2.4")] });
+    }, { plugins_enabled: true, plugins: [{ id: "cpa-account-config-manager", version: "0.2.4", installed: true, installed_version: "0.2.3", update_available: true }] });
 
-    expect(result).toMatchObject({ latest_version: "0.2.4", update_available: true, release_source: "fork_store" });
-    expect(result.release_url).toBe("https://github.com/karlorz/cpa-account-config-manager/releases/tag/v0.2.4");
-  });
-
-  it("treats a later fork series as an update and ignores official store versions", () => {
-    const status = {
-      policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
-      current_version: "0.3.1332-3", update_available: false, checking: false, pending: false,
-    };
-    const update = reconcileUpdateStatus(status, {
-      plugins_enabled: true,
-      plugins: [
-        officialStorePlugin("0.3.1333"),
-        forkStorePlugin("0.3.1332-4"),
-      ],
-    });
-    expect(update).toMatchObject({
-      latest_version: "0.3.1332-4",
-      update_available: true,
-      release_source: "fork_store",
-      release_url: "https://github.com/karlorz/cpa-account-config-manager/releases/tag/v0.3.1332-4",
-    });
-    expect(update.error).toBeUndefined();
-
-    const current = reconcileUpdateStatus(status, {
-      plugins_enabled: true,
-      plugins: [forkStorePlugin("0.3.1332-3")],
-    });
-    expect(current).toMatchObject({ latest_version: "0.3.1332-3", update_available: false, release_source: "fork_store" });
-
-    const officialOnly = reconcileUpdateStatus(status, {
-      plugins_enabled: true,
-      plugins: [officialStorePlugin("0.3.1333")],
-    });
-    expect(officialOnly).toMatchObject({
-      update_available: false,
-      release_source: "none",
-      error: "fork update channel is not configured",
-    });
-    expect(officialOnly.latest_version).toBeUndefined();
-  });
-
-  it("treats the GitHub refs/heads raw registry URL as the karlorz fork channel", () => {
-    const status = {
-      policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
-      current_version: "0.3.1332-5", update_available: false, checking: false, pending: false,
-    };
-    const result = reconcileUpdateStatus(status, {
-      plugins_enabled: true,
-      plugins: [{
-        id: "cpa-account-config-manager",
-        version: "0.3.1332-6",
-        installed: true,
-        installed_version: "0.3.1332-5",
-        update_available: true,
-        source_id: "source-d7c43a219e2a",
-        source_url: "https://raw.githubusercontent.com/karlorz/cpa-account-config-manager/refs/heads/main/registry.json",
-      }],
-    });
-    expect(result).toMatchObject({
-      latest_version: "0.3.1332-6",
-      update_available: true,
-      release_source: "fork_store",
-      release_url: "https://github.com/karlorz/cpa-account-config-manager/releases/tag/v0.3.1332-6",
-    });
-    expect(result.error).toBeUndefined();
-  });
-
-  it("installs the matching fork-channel version through the selected store source", async () => {
-    setSession("", "management-secret");
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({
-        plugins_enabled: true,
-        plugins: [officialStorePlugin("0.3.1333"), forkStorePlugin("0.3.1332-4")],
-      }))
-      .mockResolvedValueOnce(jsonResponse({ status: "installed", id: "cpa-account-config-manager", version: "0.3.1332-4", restart_required: false }))
-      .mockResolvedValueOnce(jsonResponse({}));
-    vi.stubGlobal("fetch", fetchMock);
-
-    const result = await installPluginUpdate("0.3.1332-4");
-    expect(result).toEqual({ status: "installed", id: "cpa-account-config-manager", version: "0.3.1332-4", restart_required: false });
-    expect(String(fetchMock.mock.calls[1][0])).toBe("/v0/management/plugin-store/cpa-account-config-manager/install?source=source-karlorz");
-    expect(JSON.parse(String((fetchMock.mock.calls[1] as [string, RequestInit])[1].body))).toEqual({ version: "0.3.1332-4" });
-  });
-
-  it("does not install from the official store when the fork channel is missing", async () => {
-    setSession("", "management-secret");
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ plugins_enabled: true, plugins: [officialStorePlugin("0.3.1333")] }))
-      .mockResolvedValueOnce(jsonResponse({}));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(installPluginUpdate("0.3.1333")).rejects.toMatchObject({ status: 404 });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(String(fetchMock.mock.calls[1][0])).toContain("/operations/record");
+    expect(result).toMatchObject({ latest_version: "0.2.4", update_available: true, release_source: "plugin_store" });
+    expect(result.release_url).toBe("https://github.com/Mxucc/cpa-account-config-manager/releases/tag/v0.2.4");
   });
 
   it("hides CPA plugin runtime state if an older host leaks it as an account", async () => {
@@ -1863,32 +1871,6 @@ describe("management API client", () => {
   });
 
 });
-
-function forkStorePlugin(version: string) {
-  return {
-    id: "cpa-account-config-manager",
-    version,
-    installed: true,
-    installed_version: "0.3.1332-3",
-    update_available: true,
-    source_id: "source-karlorz",
-    source_url: "https://raw.githubusercontent.com/karlorz/cpa-account-config-manager/main/registry.json",
-    repository: "https://github.com/karlorz/cpa-account-config-manager",
-  };
-}
-
-function officialStorePlugin(version: string) {
-  return {
-    id: "cpa-account-config-manager",
-    version,
-    installed: true,
-    installed_version: "0.3.1332-3",
-    update_available: true,
-    source_id: "official",
-    source_url: "https://raw.githubusercontent.com/router-for-me/CLIProxyAPI-Plugins-Store/main/registry.json",
-    repository: "https://github.com/Mxucc/cpa-account-config-manager",
-  };
-}
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });

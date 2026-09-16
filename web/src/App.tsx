@@ -30,6 +30,7 @@ import {
   ShieldAlert,
   CircleDollarSign,
   SlidersHorizontal,
+  Terminal,
   Trash2,
   UserPlus,
   Sparkles,
@@ -40,6 +41,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api/client";
+import { listClinePassAccounts } from "./api/clinePass";
 import pluginLogo from "./assets/cpama.svg";
 import { AccountDetailsDialog } from "./components/AccountDetailsDialog";
 import { AccountActionsMenu } from "./components/AccountActionsMenu";
@@ -54,6 +56,7 @@ import { ImportDialog } from "./components/ImportDialog";
 import { InspectionWorkspace } from "./components/InspectionWorkspace";
 import { AIProvidersSettings } from "./components/AIProvidersSettings";
 import { CodexWorkspace } from "./components/CodexWorkspace";
+import { ClinePassWorkspace } from "./components/ClinePassWorkspace";
 import { OpenCodeWorkspace } from "./components/OpenCodeWorkspace";
 import { formatCreditUSD } from "./format/currency";
 import { providerRuntimeSnapshotsForChannels } from "./format/providerRuntime";
@@ -99,6 +102,8 @@ import {
 } from "./store/accountSort";
 import { readPanelAuth } from "./store/panelAuth";
 import { clearSession, setSession } from "./store/session";
+import { takePendingNotice } from "./store/pendingNotice";
+import { isSidebarTelemetryVisible, nextSidebarTelemetryDelay, sidebarTelemetrySignature, sidebarTelemetryTiming } from "./sidebarTelemetry";
 import type {
   Account,
   AccountDeletePreview,
@@ -241,7 +246,7 @@ export default function App() {
 function AccountManagerApp() {
   const { locale, tx, formatDateTime } = useI18n();
   const [authState, setAuthState] = useState<"booting" | "login" | "ready">("booting");
-  const [activeView, setActiveView] = useState<"dashboard" | "accounts" | "inspection" | "providers" | "codex" | "opencode" | "operations" | "risk" | "automation" | "proxy_profiles" | "notifications" | "settings">("accounts");
+  const [activeView, setActiveView] = useState<"dashboard" | "accounts" | "inspection" | "providers" | "codex" | "opencode" | "cline_pass" | "operations" | "risk" | "automation" | "proxy_profiles" | "notifications" | "settings">("accounts");
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState("");
   const [filters, setFilters] = useState<FilterState>(readAccountFilters);
@@ -254,6 +259,8 @@ function AccountManagerApp() {
   const [sidebarProviderChannels, setSidebarProviderChannels] = useState<AIProviderChannelSnapshot[]>([]);
   const [sidebarProviderRuntime, setSidebarProviderRuntime] = useState<AIProviderRuntimeSnapshot[]>([]);
   const [loading, setLoading] = useState(false);
+  const [openCodeQuota, setOpenCodeQuota] = useState<Record<string, import("./types").OpenCodeQuotaResult>>({});
+  const [clinePassQuota, setClinePassQuota] = useState<Record<string, import("./api/clinePassTypes").ClinePassQuotaUsage>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [scopeMode, setScopeMode] = useState<"selected" | "filtered">("filtered");
   const [editorContext, setEditorContext] = useState<EditorContext | null>(null);
@@ -388,12 +395,28 @@ function AccountManagerApp() {
     setNotice(errorText(error, locale));
   }, [locale]);
 
+  // A successful hot reload refreshes this page as soon as CPA swapped the plugin, which would
+  // also drop the notice explaining it. The panel stores that notice before refreshing, and the
+  // reloaded page shows it here.
+  useEffect(() => {
+    const pending = takePendingNotice();
+    if (pending !== "") setNotice(pending);
+  }, []);
+
   useEffect(() => {
     if (authState !== "ready") return;
     let cancelled = false;
     let timer = 0;
+    let inFlight = false;
+    let signature = "";
+    let unchangedPolls = 0;
     const controller = new AbortController();
     const refreshSidebarTelemetry = async () => {
+      if (cancelled || inFlight) return;
+      // A read scheduled before the page was hidden is never issued: the sidebar cannot be seen,
+      // and the visibility handler reads again when the page comes back.
+      if (!isSidebarTelemetryVisible()) return;
+      inFlight = true;
       try {
         // Load accounts first: the account endpoint discovers CPA auth identities
         // and purges legacy provider aggregates that used the same auth index.
@@ -410,17 +433,49 @@ function AccountManagerApp() {
         setSidebarAccounts(accounts.accounts);
         setSidebarProviderChannels(channels);
         setSidebarProviderRuntime(runtime.snapshots);
+        // Totals the operator already sees buy a slower cadence instead of another read.
+        const next = sidebarTelemetrySignature(accounts.accounts, channels, runtime.snapshots);
+        unchangedPolls = next === signature ? unchangedPolls + 1 : 0;
+        signature = next;
       } catch (error) {
+        // A failed read must not be retried sooner than an unchanged one: repeated failures back
+        // off exactly like identical totals, so an endpoint that keeps answering 5xx is not read
+        // every ten seconds.
+        unchangedPolls = Math.min(unchangedPolls + 1, sidebarTelemetryTiming.idleAfterPolls);
         // The sidebar is observability-only. Keep the last good snapshot when a
         // transient provider/account endpoint fails, rather than disrupting the
         // authenticated shell or replacing useful values with zeros.
         if (!cancelled && error instanceof api.APIError && error.status === 401) handleAPIError(error);
       } finally {
-        if (!cancelled) timer = window.setTimeout(refreshSidebarTelemetry, 10000);
+        inFlight = false;
+        schedule();
       }
     };
+    const schedule = () => {
+      if (cancelled) return;
+      const delay = nextSidebarTelemetryDelay({ visible: isSidebarTelemetryVisible(), unchangedPolls });
+      // A hidden page shows no totals at all, so wait for the visibility change instead of
+      // polling a background tab around the clock.
+      if (delay === null) return;
+      timer = window.setTimeout(() => void refreshSidebarTelemetry(), delay);
+    };
+    const onVisibilityChange = () => {
+      // Hiding the page cancels the read that was already scheduled: the totals cannot be seen,
+      // and the resume below reads again as soon as the page comes back.
+      window.clearTimeout(timer);
+      if (!isSidebarTelemetryVisible()) return;
+      // The operator is looking at the sidebar again, so read it at the fast cadence.
+      unchangedPolls = 0;
+      void refreshSidebarTelemetry();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     void refreshSidebarTelemetry();
-    return () => { cancelled = true; controller.abort(); window.clearTimeout(timer); };
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [authState, handleAPIError]);
   const handleExperimentalSettingsChange = useCallback((settings: ExperimentalSettings) => {
     setWeeklyOverdraftEnabled(settings.weekly_overdraft_enabled === true);
@@ -430,6 +485,41 @@ function AccountManagerApp() {
     if (authState !== "ready") {
       setWeeklyOverdraftEnabled(false);
     }
+  }, [authState]);
+
+  useEffect(() => {
+    if (authState !== "ready") return;
+    let cancelled = false;
+    const controller = new AbortController();
+    let refreshInFlight = false;
+    const refreshProviderUsage = async () => {
+      if (refreshInFlight) return;
+      refreshInFlight = true;
+      try {
+        // Quota is not a passive cache: fetch the provider dashboards first so a
+        // cold start (or an expired cache) cannot stay at "no usage yet" forever.
+        await api.refreshOpenCodeQuota().catch(() => undefined);
+        const [openCodeResult, clinePassResult] = await Promise.allSettled([
+          api.getOpenCodeQuota(controller.signal),
+          listClinePassAccounts(controller.signal),
+        ]);
+        if (cancelled) return;
+        if (openCodeResult.status === "fulfilled") setOpenCodeQuota(openCodeResult.value.results ?? {});
+        if (clinePassResult.status === "fulfilled") {
+          const next: Record<string, import("./api/clinePassTypes").ClinePassQuotaUsage> = {};
+          for (const account of clinePassResult.value.accounts) if (account.quota_usage) next[account.id] = account.quota_usage;
+          setClinePassQuota(next);
+        }
+      } catch {
+        // Keep the last successful snapshot when a provider is temporarily
+        // unavailable; a transient refresh must not erase useful telemetry.
+      } finally {
+        refreshInFlight = false;
+      }
+    };
+    void refreshProviderUsage();
+    const timer = window.setInterval(() => void refreshProviderUsage(), 30_000);
+    return () => { cancelled = true; controller.abort(); window.clearInterval(timer); };
   }, [authState]);
 
   const refreshAccounts = useCallback(async (silent = false, requestedPage = page, requestedFilters: AccountFilters = apiFilters, requestedSort: AccountSort = accountSort, signal?: AbortSignal) => {
@@ -1243,6 +1333,7 @@ function AccountManagerApp() {
           <button type="button" className={activeView === "providers" ? "active" : ""} aria-current={activeView === "providers" ? "page" : undefined} onClick={() => setActiveView("providers")}><Boxes size={16} /><span>{tx("ui.ai_providers")}</span></button>
           <button type="button" className={activeView === "codex" ? "active" : ""} aria-current={activeView === "codex" ? "page" : undefined} onClick={() => setActiveView("codex")}><Fingerprint size={16} /><span>{tx("ui.codex_menu")}</span></button>
           <button type="button" className={activeView === "opencode" ? "active" : ""} aria-current={activeView === "opencode" ? "page" : undefined} onClick={() => setActiveView("opencode")}><Sparkles size={16} /><span>{tx("ui.opencode_menu")}</span></button>
+          <button type="button" className={activeView === "cline_pass" ? "active" : ""} aria-current={activeView === "cline_pass" ? "page" : undefined} onClick={() => setActiveView("cline_pass")}><Terminal size={16} /><span>{tx("ui.cline_pass_menu")}</span></button>
           <button type="button" className={activeView === "operations" ? "active" : ""} aria-current={activeView === "operations" ? "page" : undefined} onClick={() => setActiveView("operations")}><ScrollText size={16} /><span>{tx("ui.operation_log")}</span></button>
           <button type="button" className={activeView === "risk" ? "active" : ""} aria-current={activeView === "risk" ? "page" : undefined} onClick={() => setActiveView("risk")}><ShieldAlert size={16} /><span>{tx("ui.risk_control_center")}</span></button>
           <button type="button" className={activeView === "automation" ? "active" : ""} aria-current={activeView === "automation" ? "page" : undefined} onClick={() => setActiveView("automation")}><Workflow size={16} /><span>{tx("ui.automation_policy")}</span></button>
@@ -1277,6 +1368,8 @@ function AccountManagerApp() {
                       ? tx("ui.codex_menu")
                       : activeView === "opencode"
                       ? tx("ui.opencode_menu")
+                      : activeView === "cline_pass"
+                      ? tx("ui.cline_pass_menu")
                       : activeView === "operations"
                       ? tx("ui.operation_log")
                       : activeView === "risk"
@@ -1383,8 +1476,8 @@ function AccountManagerApp() {
         <div className="table-scroll">
           <table className="account-table">
             <colgroup>
-              <col className="col-select" /><col className="col-identity" /><col className="col-provider" />
-								<col className="col-type" /><col className="col-activity" /><col className="col-active-reset" /><col className="col-concurrency" /><col className="col-created" /><col className="col-disabled-at" /><col className="col-access" />
+              <col className="col-select" /><col className="col-identity" /><col className="col-activity" /><col className="col-provider" />
+								<col className="col-type" /><col className="col-active-reset" /><col className="col-concurrency" /><col className="col-created" /><col className="col-disabled-at" /><col className="col-access" />
               <col className="col-state" /><col className="col-priority" /><col className="col-routing" /><col className="col-actions" />
             </colgroup>
             <thead>
@@ -1412,24 +1505,24 @@ function AccountManagerApp() {
                 return (
                 <tr key={account.id} className={`${selected.has(account.id) ? "is-selected" : ""} ${!account.editable ? "is-readonly" : ""}`}>
                   <td className="select-cell"><input type="checkbox" checked={selected.has(account.id)} disabled={!account.editable} onChange={() => toggleAccount(account)} aria-label={tx("ui.select_account", { account: account.label || account.name || account.id })} title={operatorMessage(account.read_only_reason, locale)} /></td>
-                  <td className="identity-column-cell">
+                  <td className="identity-column-cell" data-label={tx("ui.accounts")}>
                     <div className="identity-cell">
                       <strong>{account.label || account.email || account.name || account.id}</strong>
                       <span>{account.email && account.label !== account.email ? account.email : account.name}</span>
                       {account.note ? <small>{account.note}</small> : null}
                     </div>
                   </td>
-                  <td><span className="provider-tag">{technicalLabel(account.provider || account.type)}</span></td>
-                  <td><AccountTypeCell account={account} /></td>
-                  <td><AccountUsageCell account={account} weeklyOverdraftEnabled={weeklyOverdraftEnabled} creditUsageEnabled /></td>
-									<td><AccountQuotaMetadataCell account={account} busy={quotaMetadataBusy[account.id]} onRefresh={() => void refreshQuotaMetadata(account)} onReset={() => setQuotaResetTarget(account)} /></td>
-									<td><AccountConcurrencyCell account={account} /></td>
-									<td><AccountLifecycleTime value={account.created_at} /></td>
-									<td><AccountLifecycleTime value={account.disabled_at} /></td>
-                  <td>{account.editable ? <span className="access-tag editable"><Settings2 size={13} />{tx("ui.editable")}</span> : <span className="access-tag readonly" title={operatorMessage(account.read_only_reason, locale)}><LockKeyhole size={13} />{tx("ui.read_only")}</span>}</td>
-                  <td><StateCell account={account} /></td>
-                  <td><code className="priority-value">{account.priority ?? "-"}</code></td>
-                  <td><RoutingCell account={account} /></td>
+                  <td data-label={tx("ui.usage")}><AccountUsageCell account={account} weeklyOverdraftEnabled={weeklyOverdraftEnabled} creditUsageEnabled openCodeQuota={openCodeQuota[account.id] || (account.auth_id ? openCodeQuota[account.auth_id] : undefined)} clinePassQuota={clinePassQuota[account.id] || (account.auth_id ? clinePassQuota[account.auth_id] : undefined)} /></td>
+                  <td data-label={tx("ui.provider")}><span className="provider-tag">{technicalLabel(account.provider || account.type)}</span></td>
+                  <td data-label={tx("ui.type")}><AccountTypeCell account={account} /></td>
+									<td data-label={tx("ui.active_reset_count")}><AccountQuotaMetadataCell account={account} busy={quotaMetadataBusy[account.id]} onRefresh={() => void refreshQuotaMetadata(account)} onReset={() => setQuotaResetTarget(account)} /></td>
+									<td data-label={tx("ui.account_concurrency")}><AccountConcurrencyCell account={account} /></td>
+									<td data-label={tx("ui.initial_time")}><AccountLifecycleTime value={account.created_at} /></td>
+									<td data-label={tx("ui.disabled_time")}><AccountLifecycleTime value={account.disabled_at} /></td>
+                  <td data-label={tx("ui.access")}>{account.editable ? <span className="access-tag editable"><Settings2 size={13} />{tx("ui.editable")}</span> : <span className="access-tag readonly" title={operatorMessage(account.read_only_reason, locale)}><LockKeyhole size={13} />{tx("ui.read_only")}</span>}</td>
+                  <td data-label={tx("ui.status")}><StateCell account={account} /></td>
+                  <td data-label={tx("ui.priority")}><code className="priority-value">{account.priority ?? "-"}</code></td>
+                  <td data-label={tx("ui.routing")}><RoutingCell account={account} /></td>
                   <td className="actions-cell">
                     <div className="row-actions">
                       <IconButton label={tx("ui.view_account", { account: identity })} onClick={() => setDetailAccount(account)}><Eye size={15} /></IconButton>
@@ -1497,6 +1590,8 @@ function AccountManagerApp() {
           <CodexWorkspace refreshRevision={0} onAPIError={handleAPIError} onNotice={setNotice} />
         ) : activeView === "opencode" ? (
           <OpenCodeWorkspace refreshRevision={0} onAPIError={handleAPIError} onNotice={setNotice} />
+        ) : activeView === "cline_pass" ? (
+          <ClinePassWorkspace refreshRevision={0} onAPIError={handleAPIError} onNotice={setNotice} />
         ) : activeView === "operations" ? (
           <OperationLogWorkspace
             activeJobIDs={[job?.id, forceJob?.id].filter((id): id is string => Boolean(id))}

@@ -6,6 +6,7 @@ import { formatDateTimeForLocale } from "./i18n/I18nProvider";
 import { ACCOUNT_FILTERS_STORAGE_KEY, writeAccountFilters } from "./store/accountFilters";
 import { ACCOUNT_PAGE_SIZE_STORAGE_KEY, writeAccountPageSize } from "./store/accountPageSize";
 import { ACCOUNT_SORT_STORAGE_KEY, writeAccountSort } from "./store/accountSort";
+import { takePendingNotice, writePendingNotice } from "./store/pendingNotice";
 import { readPanelAuth } from "./store/panelAuth";
 import { _resetSessionForTest } from "./store/session";
 import type { BatchPatch } from "./types";
@@ -110,6 +111,51 @@ describe("primary account batch flow", () => {
     expect(primaryAccountRequests[0]).toContain("page_size=50");
     expect(primaryAccountRequests[0]).not.toContain("page_size=1");
 
+  });
+
+  it("shows the hot-reload outcome that was recorded before the page refreshed", async () => {
+    // The self-update panel stores its notice just before CPA's plugin swap refreshes the page,
+    // and the reloaded page is what proves the operator ever saw it.
+    vi.mocked(readPanelAuth).mockReturnValue({ apiBase: "http://localhost:8317", managementKey: "management-secret" });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/accounts")) return jsonResponse({ accounts: [account], total: 1, page: 1, page_size: 50, pages: 1 });
+      return jsonResponse({});
+    }));
+    writePendingNotice("CPA 已重新加载插件，新版本已在本页生效。");
+
+    render(<App />);
+
+    expect(await screen.findByText("CPA 已重新加载插件，新版本已在本页生效。")).toBeInTheDocument();
+    // One-shot: the next load of this tab must not repeat a reload that is long over.
+    expect(takePendingNotice()).toBe("");
+  });
+
+  it("leaves the sidebar totals alone while the page is hidden and reads them again on return", async () => {
+    vi.mocked(readPanelAuth).mockReturnValue({ apiBase: "http://localhost:8317", managementKey: "management-secret" });
+    const telemetryReads: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/accounts")) {
+        if (new URL(url, "http://localhost").searchParams.get("page_size") === "1000") telemetryReads.push(url);
+        return jsonResponse({ accounts: [account], total: 1, page: 1, page_size: 50, pages: 1 });
+      }
+      return jsonResponse({});
+    }));
+    // A page that loads hidden is the case the round-the-clock polling wasted the most on.
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    try {
+      render(<App />);
+      expect(await screen.findByText("operator@example.com")).toBeInTheDocument();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(telemetryReads).toEqual([]);
+
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+      document.dispatchEvent(new Event("visibilitychange"));
+      await waitFor(() => expect(telemetryReads.length).toBeGreaterThan(0));
+    } finally {
+      delete (document as unknown as Record<string, unknown>)["hidden"];
+    }
   });
 
   it("runs plugin-store auto-update from the accounts view after authentication", async () => {
@@ -1882,7 +1928,7 @@ describe("primary navigation order", () => {
 
     const nav = await screen.findByRole("navigation", { name: "账号管理视图" });
     const tabs = within(nav).getAllByRole("button").map((button) => button.textContent);
-    expect(tabs).toEqual(["概览", "账号", "巡检与自动化", "AI 提供商", "Codex", "OpenCode", "操作日志", "风控中心", "自动策略", "代理档案", "外部通知", "其他配置"]);
+    expect(tabs).toEqual(["概览", "账号", "巡检与自动化", "AI 提供商", "Codex", "OpenCode", "Cline Pass", "操作日志", "风控中心", "自动策略", "代理档案", "外部通知", "其他配置"]);
 
     await user.click(within(nav).getByRole("button", { name: "AI 提供商" }));
     expect(await screen.findByRole("tabpanel", { name: "AI 提供商" })).toBeInTheDocument();
@@ -1900,5 +1946,63 @@ describe("primary navigation order", () => {
     await user.click(within(nav).getByRole("button", { name: "其他配置" }));
     const otherSettings = await screen.findByRole("region", { name: "其他配置" });
     expect(within(otherSettings).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["插件配置与版本", "实验性功能"]);
+  });
+
+  it("opens the Cline Pass top-level menu without the OpenCode tab strip", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/accounts?")) {
+        return jsonResponse({ accounts: [account], total: 1, page: 1, page_size: 50, pages: 1 });
+      }
+      if (url.endsWith("/opencode/zen/accounts")) return jsonResponse({ accounts: [] });
+      if (url.endsWith("/opencode/cline-pass/catalog")) {
+        return jsonResponse({ models: [{ id: "cline-pass/glm-5.3", name: "GLM-5.3", free: false }], default_base_url: "https://api.cline.bot/api/v1" });
+      }
+      if (url.endsWith("/opencode/cline-pass/accounts")) {
+        return jsonResponse({
+          accounts: [{
+            id: "cline_1",
+            name: "Work laptop",
+            base_url: "https://api.cline.bot/api/v1",
+            auth_method: "oauth",
+            access_token_set: true,
+            refresh_token_set: true,
+            expires_at: "2026-09-15T02:00:00Z",
+            expired: false,
+            models: ["cline-pass/glm-5.3"],
+          }],
+        });
+      }
+      if (url.endsWith("/opencode/accounts")) return jsonResponse({ accounts: [] });
+      if (url.endsWith("/opencode/quota")) return jsonResponse({ results: {}, storage_error: "" });
+      if (url.endsWith("/opencode/pricing")) return jsonResponse({ pricing: {} });
+      if (url.endsWith("/opencode/session")) return jsonResponse({ session: {} });
+      if (url.endsWith("/opencode/channels")) return jsonResponse({ channels: [] });
+      if (url.endsWith("/opencode/model-control")) return jsonResponse({ storage_error: "", disabled: [], models: [] });
+      if (url.endsWith("/opencode/storage")) return jsonResponse({ storage: {} });
+      return persistedSettingsResponse(url);
+    }));
+
+    render(<App />);
+    await user.type(await screen.findByLabelText("Management Key"), "management-secret");
+    await user.click(screen.getByRole("button", { name: "验证并进入" }));
+
+    const nav = await screen.findByRole("navigation", { name: "账号管理视图" });
+    const clinePassMenu = within(nav).getByRole("button", { name: "Cline Pass" });
+    await user.click(clinePassMenu);
+
+    // The top-level Cline Pass entry owns the Cline Pass surface, not an OpenCode tab strip.
+    expect(await screen.findByRole("tabpanel", { name: "Cline Pass" })).toBeInTheDocument();
+    expect(clinePassMenu).toHaveAttribute("aria-current", "page");
+    expect(within(nav).getByRole("button", { name: "OpenCode" })).not.toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("tablist", { name: "OpenCode" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/OpenCode Go · /)).not.toBeInTheDocument();
+
+    // The menu opens on the Cline Pass overview, so the credential list needs its own tab.
+    const clinePassTabs = within(screen.getByRole("tabpanel", { name: "Cline Pass" })).getByRole("tablist", { name: "Cline Pass" });
+    await user.click(within(clinePassTabs).getByRole("tab", { name: "账号" }));
+    const panel = await screen.findByRole("tabpanel", { name: "账号" });
+    expect(within(panel).getByText("Work laptop")).toBeInTheDocument();
   });
 });

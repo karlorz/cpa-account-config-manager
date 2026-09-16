@@ -7,6 +7,9 @@ import { useI18n } from "../i18n";
 import type { OpenCodeAccountView, OpenCodeChannelView, OpenCodeStorageInfo, OpenCodeModelControlSnapshot, OpenCodeModelPrice, OpenCodeModelTestResult, OpenCodePricingSnapshot, OpenCodeQuotaResult, OpenCodeSessionSnapshot, OpenCodeZenAccountView } from "../types";
 import { IconButton } from "./IconButton";
 import { ModelProbeDialog, ModelProbeOutcome } from "./ModelProbeDialog";
+import { formatCreditUSD } from "../format/currency";
+import { channelProductUsage, openCodeQuotaWindows, type ProductQuotaWindow } from "../format/productUsage";
+import { formatResetDuration, quotaPercent } from "../format/quotaWindow";
 
 interface OpenCodeWorkspaceProps {
   refreshRevision: number;
@@ -15,6 +18,20 @@ interface OpenCodeWorkspaceProps {
 }
 
 type OpenCodeKind = "go" | "zen";
+
+/**
+ * Provider runtime metrics are observability only: an endpoint this host does not serve must
+ * leave the overview's counters empty instead of blanking the page. A 401 still belongs to the
+ * session and is never swallowed.
+ */
+async function optionalProviderMetrics<T>(request: Promise<T>): Promise<T | null> {
+  try {
+    return await request;
+  } catch (caught) {
+    if (caught instanceof api.APIError && caught.status === 401) throw caught;
+    return null;
+  }
+}
 
 /** The workspace is split into tabs so overview, accounts, imports and prices stay reachable. */
 type OpenCodeTab = "overview" | "go" | "zen" | "channels" | "models";
@@ -71,10 +88,33 @@ function priceFor(prices: OpenCodeModelPrice[] | undefined, model: string): Open
 
 const PRICE_ROWS_LIMIT = 40;
 
-function formatWindow(window: { usage_percent: number; reset_in_sec: number } | undefined, tx: ReturnType<typeof useI18n>["tx"]): string {
-  if (!window) return tx("ui.no_data");
-  const resets = window.reset_in_sec > 0 ? `${Math.ceil(window.reset_in_sec / 60)} ${tx("ui.minutes_short")}` : "-";
-  return `${window.usage_percent.toFixed(1)}% · ${resets}`;
+/**
+ * One quota window as a labelled row: the window name, a fill bar and the percentage, with the
+ * reset countdown underneath in words. The credential row used to print the three windows as bare
+ * sentences that ran together and could not be compared at a glance; a bar makes "how much of the
+ * allowance is spent" visible without reading the numbers.
+ */
+function QuotaWindowRow({ label, window, tx }: {
+  label: string;
+  window: { usage_percent: number; reset_in_sec: number } | undefined;
+  tx: ReturnType<typeof useI18n>["tx"];
+}) {
+  if (!window) {
+    return <div className="quota-window-row"><small>{label}: {tx("ui.no_data")}</small></div>;
+  }
+  const percent = quotaPercent(window.usage_percent);
+  return (
+    <div className="quota-window-row">
+      <div className={`usage-quota-row${percent >= 90 ? " quota-danger" : percent >= 75 ? " quota-warning" : ""}`}>
+        <span>{label}</span>
+        <span className="usage-quota-track" role="img" aria-label={`${label} ${percent.toFixed(0)}%`}>
+          <span style={{ width: `${percent}%` }} />
+        </span>
+        <b>{percent.toFixed(1)}%</b>
+      </div>
+      <small>{tx("ui.resets_in", { duration: formatResetDuration(window.reset_in_sec, tx) })}</small>
+    </div>
+  );
 }
 
 /**
@@ -282,6 +322,12 @@ export function OpenCodeWorkspace({ refreshRevision, onAPIError, onNotice }: Ope
     setActiveTab("models");
   };
 
+  /** The probe is a dialog now, so closing it only drops the target and its result. */
+  const closeModelTester = () => {
+    setTarget(null);
+    setTestResult(null);
+  };
+
   /**
    * Import the credential of one AI-provider channel. The backend returns 409 when
    * a Go channel still needs the Workspace ID and auth Cookie the operator owns;
@@ -456,6 +502,7 @@ export function OpenCodeWorkspace({ refreshRevision, onAPIError, onNotice }: Ope
     { id: "channels", label: tx("ui.opencode_tab_channels") },
     { id: "models", label: tx("ui.opencode_tab_models") },
   ];
+  /** The panel is labelled by the tab that owns it. */
   const tabLabel = (id: OpenCodeTab) => tabs.find((tab) => tab.id === id)?.label ?? "";
 
   const statusLabel = (status: OpenCodeModelTestResult["status"]): string => {
@@ -489,26 +536,26 @@ export function OpenCodeWorkspace({ refreshRevision, onAPIError, onNotice }: Ope
       {error ? <div className="notice-bar" role="alert"><AlertTriangle size={16} />{error}</div> : null}
       {importNotice ? <div className="notice-bar warning-notice" role="status"><AlertTriangle size={16} />{importNotice}</div> : null}
 
-      <div className="opencode-links">
-        <a href="https://opencode.ai/workspace" target="_blank" rel="noopener noreferrer">OpenCode Go · {tx("ui.opencode_open_workspace")}</a>
-        <a href="https://opencode.ai/zen" target="_blank" rel="noopener noreferrer">OpenCode Zen · {tx("ui.opencode_open_zen")}</a>
-        <a href="/v0/resource/plugins/cpa-account-config-manager/opencode-status" target="_blank" rel="noopener noreferrer">{tx("ui.opencode_open_status_page")}</a>
-      </div>
+        <div className="opencode-links">
+          <a href="https://opencode.ai/workspace" target="_blank" rel="noopener noreferrer">OpenCode Go · {tx("ui.opencode_open_workspace")}</a>
+          <a href="https://opencode.ai/zen" target="_blank" rel="noopener noreferrer">OpenCode Zen · {tx("ui.opencode_open_zen")}</a>
+          <a href="/v0/resource/plugins/cpa-account-config-manager/opencode-status" target="_blank" rel="noopener noreferrer">{tx("ui.opencode_open_status_page")}</a>
+        </div>
 
-      <div className="opencode-tabs" role="tablist" aria-label={tx("ui.opencode_menu")}>
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            role="tab"
-            className={activeTab === tab.id ? "active" : ""}
-            aria-selected={activeTab === tab.id}
-            onClick={() => setActiveTab(tab.id)}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+        <div className="opencode-tabs" role="tablist" aria-label={tx("ui.opencode_menu")}>
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              className={activeTab === tab.id ? "active" : ""}
+              aria-selected={activeTab === tab.id}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
 
       {activeTab === "overview" ? (
         <section className="opencode-tab-panel" role="tabpanel" aria-label={tabLabel("overview")}>
@@ -641,8 +688,8 @@ export function OpenCodeWorkspace({ refreshRevision, onAPIError, onNotice }: Ope
                     return (
                       <Fragment key={account.id}>
                         <tr>
-                        <td><strong>{account.workspace_id}</strong></td>
-                        <td>
+                        <td data-label={tx("ui.opencode_workspace_id")}><strong>{account.workspace_id}</strong></td>
+                        <td data-label={tx("ui.opencode_api_key")}>
                           <div className="opencode-key-cell">
                             <span>{account.key_set ? tx("ui.opencode_key_stored") : tx("ui.opencode_key_missing")}</span>
                             <input
@@ -658,20 +705,20 @@ export function OpenCodeWorkspace({ refreshRevision, onAPIError, onNotice }: Ope
                             </button>
                           </div>
                         </td>
-                        <td>
+                        <td data-label={tx("ui.opencode_quota")}>
                           <div className="opencode-quota-cell">
                             {result?.success ? (
                               <>
-                                <small>{tx("ui.opencode_rolling")}: {formatWindow(result.rolling, tx)}</small>
-                                <small>{tx("ui.opencode_weekly")}: {formatWindow(result.weekly, tx)}</small>
-                                <small>{tx("ui.opencode_monthly")}: {formatWindow(result.monthly, tx)}</small>
+                                <QuotaWindowRow label={tx("ui.opencode_window_short_rolling")} window={result.rolling} tx={tx} />
+                                <QuotaWindowRow label={tx("ui.opencode_window_short_weekly")} window={result.weekly} tx={tx} />
+                                <QuotaWindowRow label={tx("ui.opencode_window_short_monthly")} window={result.monthly} tx={tx} />
                               </>
                             ) : (
                               <small>{result?.error ? operatorMessage(result.error, locale) : tx("ui.no_data")}</small>
                             )}
                           </div>
                         </td>
-                        <td>
+                        <td data-label={tx("ui.models")}>
                           {account.models?.length ? (
                             <div className="opencode-models-cell">
                               <strong>{account.models.length}</strong>
@@ -793,9 +840,9 @@ export function OpenCodeWorkspace({ refreshRevision, onAPIError, onNotice }: Ope
                 <tbody>
                   {zenAccounts.map((account) => (
                     <tr key={account.id}>
-                      <td><strong>{account.name || account.id}</strong></td>
-                      <td className="opencode-table-url">{account.base_url}</td>
-                      <td>
+                      <td data-label={tx("ui.name")}><strong>{account.name || account.id}</strong></td>
+                      <td className="opencode-table-url" data-label={tx("ui.ai_provider_base_url")}>{account.base_url}</td>
+                      <td data-label={tx("ui.models")}>
                         {account.models?.length ? (
                           <div className="opencode-models-cell">
                             <strong>{account.models.length}</strong>
@@ -866,21 +913,21 @@ export function OpenCodeWorkspace({ refreshRevision, onAPIError, onNotice }: Ope
                   <tbody>
                     {channels.map((channel) => (
                       <tr key={`${channel.kind}-${channel.base_url}`}>
-                        <td>
+                        <td data-label={tx("ui.opencode_channel_kind")}>
                           <span className="opencode-channel-kind">
                             {channel.kind === "go" ? tx("ui.opencode_channel_kind_go") : tx("ui.opencode_channel_kind_zen")}
                           </span>
                         </td>
-                        <td>
+                        <td data-label={tx("ui.name")}>
                           <div className="opencode-channel-name">
                             <strong>{channel.name || "-"}</strong>
                             {channel.workspace_id ? <small>{channel.workspace_id}</small> : null}
                           </div>
                         </td>
-                        <td className="opencode-table-url">{channel.base_url}</td>
-                        <td>{channel.models}</td>
-                        <td>{channel.key_set ? tx("ui.opencode_key_stored") : tx("ui.opencode_key_missing")}</td>
-                        <td>
+                        <td className="opencode-table-url" data-label={tx("ui.ai_provider_base_url")}>{channel.base_url}</td>
+                        <td data-label={tx("ui.models")}>{channel.models}</td>
+                        <td data-label={tx("ui.opencode_channel_key")}>{channel.key_set ? tx("ui.opencode_key_stored") : tx("ui.opencode_key_missing")}</td>
+                        <td data-label={tx("ui.opencode_channel_state")}>
                           <span className={channel.imported ? "opencode-channel-state imported" : "opencode-channel-state not-imported"}>
                             {channel.imported ? tx("ui.opencode_imported") : tx("ui.opencode_not_imported")}
                           </span>
@@ -961,11 +1008,11 @@ export function OpenCodeWorkspace({ refreshRevision, onAPIError, onNotice }: Ope
                           onChange={() => toggleModelSelection(row.id)}
                         />
                       </td>
-                      <td><strong>{row.id}</strong></td>
-                      <td>{row.priced ? formatPriceUSD(row.input_usd_per_million) : tx("ui.opencode_models_unpriced")}</td>
-                      <td>{formatPriceUSD(row.output_usd_per_million)}</td>
-                      <td>{row.accounts}</td>
-                      <td><span className={row.disabled ? "opencode-model-state disabled" : "opencode-model-state enabled"}>{tx(row.disabled ? "ui.disabled" : "ui.enabled")}</span></td>
+                      <td data-label={tx("ui.model")}><strong>{row.id}</strong></td>
+                      <td data-label={tx("ui.opencode_models_input_price")}>{row.priced ? formatPriceUSD(row.input_usd_per_million) : tx("ui.opencode_models_unpriced")}</td>
+                      <td data-label={tx("ui.opencode_models_output_price")}>{formatPriceUSD(row.output_usd_per_million)}</td>
+                      <td data-label={tx("ui.opencode_models_accounts_count")}>{row.accounts}</td>
+                      <td data-label={tx("ui.status")}><span className={row.disabled ? "opencode-model-state disabled" : "opencode-model-state enabled"}>{tx(row.disabled ? "ui.disabled" : "ui.enabled")}</span></td>
                       <td className="actions-cell">
                         <div className="row-actions" role="group" aria-label={tx("ui.model_actions", { model: row.id })}>
                           <IconButton label={tx("ui.model_test_action", { model: row.id })} disabled={busy === "model-control-test"} onClick={() => openControlTest(row.id)}>
@@ -1080,7 +1127,7 @@ export function OpenCodeWorkspace({ refreshRevision, onAPIError, onNotice }: Ope
                     const monthlyLimit = typeof price.monthly_limit_usd === "number" && !Number.isNaN(price.monthly_limit_usd) ? price.monthly_limit_usd : undefined;
                     return (
                       <tr key={price.id}>
-                        <td>
+                        <td data-label={tx("ui.model")}>
                           <div className="opencode-models-cell">
                             <strong>{price.name || price.id}</strong>
                             <small>{price.id}</small>
@@ -1088,12 +1135,12 @@ export function OpenCodeWorkspace({ refreshRevision, onAPIError, onNotice }: Ope
                             {price.deprecated_at ? <small className="opencode-model-error">{tx("ui.opencode_deprecated_at", { date: price.deprecated_at })}</small> : null}
                           </div>
                         </td>
-                        <td>{formatPriceUSD(price.input_usd_per_million)}</td>
-                        <td>{formatPriceUSD(price.output_usd_per_million)}</td>
-                        <td>{formatPriceUSD(price.cache_read_usd_per_million)}</td>
-                        <td>{formatPriceUSD(price.cache_write_usd_per_million)}</td>
+                        <td data-label={tx("ui.opencode_price_input")}>{formatPriceUSD(price.input_usd_per_million)}</td>
+                        <td data-label={tx("ui.opencode_price_output")}>{formatPriceUSD(price.output_usd_per_million)}</td>
+                        <td data-label={tx("ui.opencode_price_cache_read")}>{formatPriceUSD(price.cache_read_usd_per_million)}</td>
+                        <td data-label={tx("ui.opencode_price_cache_write")}>{formatPriceUSD(price.cache_write_usd_per_million)}</td>
                         {priceKind === "go" ? (
-                          <td>
+                          <td data-label={tx("ui.opencode_monthly_allowance")}>
                             <div className="opencode-allowance-cell">
                               <strong>{formatAllowanceUSD(monthlyLimit, formatNumber)}</strong>
                               {monthlyLimit === undefined ? null : (
@@ -1108,11 +1155,11 @@ export function OpenCodeWorkspace({ refreshRevision, onAPIError, onNotice }: Ope
                           </td>
                         ) : null}
                         {priceKind === "go" ? (
-                          <td>
+                          <td data-label={tx("ui.opencode_estimated_requests")}>
                             {estimated ? <span className="opencode-estimates" title={estimatedLabel} aria-label={estimatedLabel}>{estimated}</span> : "-"}
                           </td>
                         ) : null}
-                        <td>{price.context_tokens ? formatNumber(price.context_tokens) : "-"}</td>
+                        <td data-label={tx("ui.opencode_context")}>{price.context_tokens ? formatNumber(price.context_tokens) : "-"}</td>
                       </tr>
                     );
                   })}
@@ -1123,27 +1170,23 @@ export function OpenCodeWorkspace({ refreshRevision, onAPIError, onNotice }: Ope
           </section>
 
           {target ? (
-            <section className="opencode-section opencode-model-tester" aria-label={tx("ui.opencode_model_test")}>
-              <div className="opencode-section-heading">
-                <div>
-                  <strong>{tx("ui.opencode_model_test")}</strong>
-                  <span>{tx("ui.opencode_model_test_description", { account: target.label })}</span>
-                </div>
-                <button className="button button-quiet" type="button" onClick={() => { setTarget(null); setTestResult(null); }}>{tx("ui.close")}</button>
-              </div>
-              <div className="opencode-form">
-                <label className="field-block">
-                  <span>{tx("ui.model")}</span>
-                  <select value={testModel} onChange={(event) => setTestModel(event.target.value)}>
-                    {target.models.map((model) => <option key={model} value={model}>{model}</option>)}
-                  </select>
-                </label>
-                <div className="opencode-form-actions">
-                  <button className="button button-primary" type="button" disabled={busy === "model-test" || !testModel} onClick={runModelTest}>
-                    {busy === "model-test" ? <LoaderCircle className="spin" size={15} /> : <Activity size={15} />}{tx("ui.test")}
-                  </button>
-                </div>
-              </div>
+            <ModelProbeDialog
+              model={testModel || target.label}
+              targets={[{ id: `${target.kind}:${target.accountID}`, label: target.label }]}
+              targetID={`${target.kind}:${target.accountID}`}
+              onSelectTarget={() => undefined}
+              onRun={runModelTest}
+              onClose={closeModelTester}
+              testing={busy === "model-test"}
+            >
+              {/* The model is picked inside the dialog: the family decides which gateway answers,
+                  so the probe offers the chosen credential's own catalog. */}
+              <label className="model-test-field">
+                <span>{tx("ui.model")}</span>
+                <select value={testModel} onChange={(event) => setTestModel(event.target.value)}>
+                  {target.models.map((model) => <option key={model} value={model}>{model}</option>)}
+                </select>
+              </label>
               <p className="opencode-note">
                 {tx("ui.opencode_model_price")}: {selectedPrice
                   ? `${formatPriceUSD(selectedPrice.input_usd_per_million)} / ${formatPriceUSD(selectedPrice.output_usd_per_million)} · ${tx("ui.opencode_price_per_million")}`
@@ -1169,7 +1212,7 @@ export function OpenCodeWorkspace({ refreshRevision, onAPIError, onNotice }: Ope
                   ) : null}
                 </>
               ) : null}
-            </section>
+            </ModelProbeDialog>
           ) : null}
         </section>
       ) : null}

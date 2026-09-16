@@ -93,12 +93,14 @@ OpenCode Go 还支持 Workspace ID 与 auth Cookie、5h/7d/30d 配额、重置�
 
 - 工作区按标签页组织，依次为：「总览」、「模型与价格」和「指纹配置」。
 - 「总览」展示 Codex 账号数、AI 提供商渠道数、已禁用模型数、账号级覆盖数、提供商级覆盖数、已覆盖指纹字段数、有效收敛模式，以及一个表示全局模型管控是否启用的指示器。
+- 「总览」的 Codex 账号数与「模型与价格」的每行账号数来自宿主列出的 Codex 凭据（含原生 OAuth 账号）及其实际模型目录，而不是运行时的提供商身份：只配置了原生 Codex 账号的部署不会再把账号数显示为 0、模型列表显示为空。
 - Codex 身份兼容策略编辑器位于「总览」。两个 Codex 实验项（Codex 5h / 7d 额度透支续用、Agent Identity / PAT）仍作为实验性开关保留在「其他配置 → 实验性功能」；Codex 页面保存时会回显这两个开关的当前值，实验性功能保存时会回显身份策略，两个页面不会互相清空配置。
 - 「指纹配置」把原先直接编译进 Codex 指纹的每个取值都变成可编辑字段，字段旁同时展示内置默认值与当前生效值，并提供「已覆盖」标记、单字段恢复、分组恢复和全部恢复操作。
 - 可编辑字段为：收敛模式；客户端身份字符串（User-Agent、Originator、Version、OpenAI-Beta）和 turn 元数据请求头名称；显式 installation/session/thread id（留空表示自动派生）和窗口后缀；installation、session 和 thread id 的派生前缀以及种子策略（按账号或固定种子）；请求体开关（turn 时间戳、关联字段和 prompt-cache-key 重写）。
 - 清空字段或执行恢复都会回到默认值；无效取值会被拒绝，且不会产生任何改动。指纹配置作用于每个 Codex 账号和每条 Codex AI 提供商渠道，AI 提供商页面上的账号级与提供商级收敛覆盖仍优先于档案默认值。
 - 「模型与价格」提供 Codex 模型 id 的全局开关列表，展示每个模型被多少 Codex 账号和 AI 提供商渠道引用；列表带选择列，每行提供「测试」和「禁用」/「启用」操作，并支持批量「禁用所选」「启用所选」以及既有的「全部启用」；模型测试通过已保存的 Codex 账号凭据发起探测。每个模型同时显示插件计费所采用的价格——输入、输出与缓存读取的「美元 / 百万 token」单价，取自与 Codex 用量计费相同的 Sub2API / Wei-Shaw 价格表，并标注该模型的长上下文倍率；列表上方展示价格来源与同步时间。价格表未收录的模型会标记为「暂无价格」，而不是显示为免费。禁用会同时作用于所有 Codex 账号和 AI 提供商渠道，并在请求路径上强制执行：被禁用的模型会立即收到拒绝响应，而不是被转发到上游，因此改动在下一次请求即生效，无需等待宿主侧策略应用。此能力只影响 Codex 流量，同一模型 id 在其他提供商系列上不受影响。
-- 两项设置都保存在插件私有数据目录（0600），并通过要求 Management Key 的管理路由开放，位于 `/v0/management/plugins/cpa-account-config-manager` 下：`GET /codex/overview`、`GET|PUT /codex/fingerprint`、`POST /codex/fingerprint/reset` 和 `GET|PUT /codex/models`。响应中不包含任何凭据。
+- 「Codex 自动模型白名单」是「其他配置 → 实验性功能」中的可视化实验开关，默认关闭。开启后仅在某个账号的默认探测模型被上游以已知的 ChatGPT 账号不兼容响应拒绝、且回退模型可用时才触发：插件会逐一探测该账号模型目录中的全部模型（上限 32 个、并发 3 个、总预算 60 秒），只有每个模型都给出明确结论时才写入白名单；否则不写入任何策略，并在操作日志中记为 `insufficient_compatibility_evidence`。写入的策略会标记为自动探测（`auto_detected`、`detected_at`、`verified_models`），实验性功能面板会显示当前被自动限制的账号数量与最近探测记录；已有的人工白名单或黑名单不会被覆盖。
+- 两项设置都保存在插件私有数据目录（0600），并通过要求 Management Key 的管理路由开放，位于 `/v0/management/plugins/cpa-account-config-manager` 下：`GET /codex/overview`、`GET|PUT /codex/fingerprint`、`POST /codex/fingerprint/reset`、`GET|PUT /codex/models` 和 `GET /experiments/auto-model-whitelist`。响应中不包含任何凭据。
 
 ### OpenCode
 
@@ -129,6 +131,20 @@ OpenCode Go 还支持 Workspace ID 与 auth Cookie、5h/7d/30d 配额、重置�
 - **不重启热重载**：CPA 只会在「插件市场安装」之后重新加载原生插件，所以新增 `POST /self-update/reload`：插件自己去读市场、确认市场版本不低于已写入版本（绝不降级），再请求 CPA 重装本插件；成功即热重载（刷新页面即可），失败会给出明确原因（市场不可用/已禁用/未收录/版本更旧/重装失败/仍要求重启），「其他配置 → 更新」里有「不重启热重载」按钮。若市场确实不可用，重启 CPA 仍是加载新动态库的唯一办法。
 - 自更新不经过插件商店：`GET /self-update` 返回当前版本、已解析版本、解析来源、压缩包与校验和状态、插件库文件定位结果和 `restart_required`；`POST /self-update/check` 立即解析最新 Release（依次尝试 GitHub API、`releases/latest` 跳转、`releases.atom`）；`POST /self-update/install` 下载当前平台压缩包，用 Release 的 `checksums.txt` 校验 SHA-256 后原子替换插件库文件并保留 `<插件库>.previous` 备份，校验失败时不替换；`PUT /self-update/settings` 携带 `{"plugin_file": "..."}`，在宿主无法自动定位插件库时记录其路径。四个路由都要求 Management Key，响应只包含版本号、校验和、文件路径与状态。发布包同时携带 `ui/index.html`：安装后插件立即提供新界面（刷新页面即生效，无需重启），因此纯界面改动可以做到「不重启更新」；只有动态库本身仍需重启 CPA 才会加载，界面会分别显示「界面已更新」与「需要重启」，并给出 `ui_updated` / `interface_refresh_only` 字段。
 
+### Cline Pass
+
+侧边菜单的 **OpenCode** 工作区新增「Cline Pass 账号」标签页，用于绑定 Cline Pass 订阅并通过 OAuth 登录：
+
+- 三种登录方式：浏览器设备码登录（由 WorkOS 设备授权下发用户码，轮询完成后通过 `POST {base}/auth/register` 换取 Cline 令牌）、复用本机已有的 Cline CLI 登录（读取 `~/.cline/data/settings/providers.json`），以及直接粘贴 Cline Pass API Key。
+- OAuth 访问令牌带 `workos:` 前缀；令牌接近过期时插件用 `POST {base}/auth/refresh`（`granttype=refresh_token`）主动轮换，并立即把轮换后的 refresh token 落盘，因为网关会让上一个 refresh token 失效。
+- 访问令牌与 refresh token 只保存在插件私有数据目录的 `cline-pass.json`；管理接口只返回 `access_token_set` / `refresh_token_set` 布尔值和过期时间，绝不返回令牌本身。
+- 模型目录是显式白名单（Cline Pass 付费模型与免费档模型）。上游 `GET {base}/models` 只用于校验凭据，永远不会扩大插件发布或路由的模型集合；「加载模型」会重新校验并按账号记录 `models_error`。
+- 「模型测试」向 `POST {base}/chat/completions` 发起一次最小真实请求，返回状态、原因码、HTTP 状态、延迟、测试时间与脱敏后的上游响应。
+- 「发布到 CPA 路由」会 upsert 一个 `openai-compatibility` CPA 渠道：Base URL 为 `https://api.cline.bot/api/v1`，以访问令牌作为密钥，携带 Cline 产品面识别请求头（`x-client-type: cli`、`x-client-version`、`x-core-version`，以及 `Cline/<version>` User-Agent，版本取自 npm registry 并缓存 24 小时），并把白名单模型写入渠道模型列表。重复绑定同一账号只会更新已有渠道。
+- 令牌轮换会让渠道里保存的旧密钥失效，因此「刷新登录」通过 `POST /opencode/cline-pass/refresh`（`rebind: true`）同时完成令牌轮换与渠道密钥重写。
+- 所有路由均为固定路径并要求 Management Key，位于 `/v0/management/plugins/cpa-account-config-manager` 下：`GET|POST|DELETE /opencode/cline-pass/accounts`、`GET /opencode/cline-pass/catalog`、`POST /opencode/cline-pass/login/start|poll|cancel`、`POST /opencode/cline-pass/refresh`、`POST /opencode/cline-pass/models`、`POST /opencode/cline-pass/model-test`、`POST /opencode/cline-pass/bind`。
+- 设备码登录在每次管理请求内只完成一次轮询而不阻塞，由页面按 `interval_seconds` 轮询；上游返回 `slow_down` 时把间隔加 5 秒，会话 15 分钟后过期。
+
 ### 操作日志、界面与更新
 
 - 操作日志覆盖导入、导出、批量修改、模型测试、策略扫描、巡检、自动处置、通知和插件更新，记录成功/失败/部分完成、失败依据、数量、脱敏样本、来源和时间。
@@ -136,6 +152,14 @@ OpenCode Go 还支持 Workspace ID 与 auth Cookie、5h/7d/30d 配额、重置�
 - 表格排序、分页大小、筛选条件和手动测试模型会持久化。
 - 可检查并从 CPA 插件商店安装插件更新，也会展示 CPA 当前版本和最新版本。插件只检测 CPA 主程序更新，不替换 CPA 可执行文件。插件商店读取不到数据时，还可在「其他配置 → 更新」里直接使用本插件的 GitHub Release 更新自身：解析最新版本、按当前平台选择压缩包、用 Release 的 `checksums.txt` 校验 SHA-256，校验通过才原子替换插件库文件并保留上一份备份；下载仅限 GitHub 域名，且下载体积有上限。
 
+
+### Cline Pass
+
+侧边菜单中的 **Cline Pass** 是与 Codex、OpenCode 并列的独立工作区。Cline Pass 账号不出现在 OpenCode 页面里。
+
+- 「账号」页签用 OAuth 设备码、复用已有的 Cline CLI 登录或直接粘贴 API Key 添加账号，并显示每个账号的凭据状态与**路由**状态：已绑定（并显示该渠道发布了多少个模型）、有 N 个模型未发布，或未绑定（并提示客户端此时会收到 `unknown provider for model`）。登录成功或保存账号时会自动绑定到 CPA 渠道，绑定失败只作为提示，不影响账号保存。
+- 「模型」页签列出 CPA 渠道为 Cline Pass 发布的模型映射：模型名称、**客户端模型 ID**（客户端应调用的 ID）、上游 ID、是否已发布，以及逐行「测试」按钮（测试始终用上游 ID 直接探测 Cline 网关）。
+- 「模型」页签顶部的开关控制发布映射是否去掉 `cline-pass/` 前缀，默认开启。开启后客户端可直接调用短模型名（例如 `deepseek-v4.1-flash`），关闭后必须使用带前缀的 ID；切换后会立即重新绑定所有账号。只去掉 `cline-pass/` 这一前缀，`cline-free/`、`z-ai/` 等其它模型 ID 保持不变。
 ## 实验性功能
 
 当前仍需手动开启的实验能力为：
@@ -241,6 +265,7 @@ make package VERSION=X.Y.Z-N
 - Agent Identity 导入与登录思路：[catoncat/codex-agent-identity-web](https://github.com/catoncat/codex-agent-identity-web)
 - OpenCode Go 额度监控：[zcyoop/opencode-go-quota-cpa-plugin](https://cnb.cool/zcyoop/opencode-go-quota-cpa-plugin)
 - OpenCode Zen 与多协议桥接：[Kiowx/opencode-cc](https://github.com/Kiowx/opencode-cc)
+- Cline Pass OAuth 登录与模型目录：[fifidayone/pi-clinepass](https://github.com/fifidayone/pi-clinepass)
 - 社区链接：[LINUX DO](https://linux.do/)
 
 这些项目提供了产品行为参考；除非仓库许可历史另有说明，本插件没有直接复制其代码。

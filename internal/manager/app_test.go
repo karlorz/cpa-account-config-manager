@@ -45,6 +45,19 @@ func TestIsAIProviderUsageRecordSeparatesOAuthAndAPIKeyTraffic(t *testing.T) {
 	}
 }
 
+func TestAppRoutesAPIKeyUsageToKnownAccount(t *testing.T) {
+	app := NewApp(&fakeAuthHost{}, []byte("index"))
+	defer app.Close()
+	app.usage.DiscoverAuthStorage([]cpaapi.HostAuthFileEntry{{AuthIndex: "known-auth-index", ID: "known-auth-id", Name: "known account", Provider: "openai", Email: "known@example.com"}})
+	app.HandleUsage(cpaapi.UsageRecord{AuthIndex: "known-auth-index", AuthType: "api_key", APIKey: "provider-secret", Model: "gpt-5", Detail: cpaapi.UsageDetail{TotalTokens: 25}})
+	if got := app.usage.Snapshot("known-auth-index"); got == nil || got.TotalTokens != 25 {
+		t.Fatalf("known account usage was not retained: %+v", got)
+	}
+	if snapshots := app.providerRuntime.Snapshot(); len(snapshots) != 0 {
+		t.Fatalf("known account usage entered provider store: %+v", snapshots)
+	}
+}
+
 func TestAppRoutesProviderUsageAwayFromAccountUsage(t *testing.T) {
 	app := NewApp(&fakeAuthHost{}, []byte("index"))
 	defer app.Close()
@@ -128,6 +141,7 @@ func TestManagementRegistrationUsesExactFixedRoutes(t *testing.T) {
 		http.MethodPost + " /plugins/cpa-account-config-manager/updates/check":                            {},
 		http.MethodGet + " /plugins/cpa-account-config-manager/experiments":                               {},
 		http.MethodPut + " /plugins/cpa-account-config-manager/experiments":                               {},
+		http.MethodGet + " /plugins/cpa-account-config-manager/experiments/auto-model-whitelist":          {},
 		http.MethodPost + " /plugins/cpa-account-config-manager/experiments/agent-identity/session-login": {},
 		http.MethodGet + " /plugins/cpa-account-config-manager/risk-control":                              {},
 		http.MethodPut + " /plugins/cpa-account-config-manager/risk-control":                              {},
@@ -162,6 +176,20 @@ func TestManagementRegistrationUsesExactFixedRoutes(t *testing.T) {
 		http.MethodGet + " /plugins/cpa-account-config-manager/opencode/storage":                          {},
 		http.MethodGet + " /plugins/cpa-account-config-manager/opencode/model-control":                    {},
 		http.MethodPut + " /plugins/cpa-account-config-manager/opencode/model-control":                    {},
+		http.MethodGet + " /plugins/cpa-account-config-manager/opencode/cline-pass/accounts":              {},
+		http.MethodPost + " /plugins/cpa-account-config-manager/opencode/cline-pass/accounts":             {},
+		http.MethodDelete + " /plugins/cpa-account-config-manager/opencode/cline-pass/accounts":           {},
+		http.MethodGet + " /plugins/cpa-account-config-manager/opencode/cline-pass/catalog":               {},
+		http.MethodPost + " /plugins/cpa-account-config-manager/opencode/cline-pass/login/start":          {},
+		http.MethodPost + " /plugins/cpa-account-config-manager/opencode/cline-pass/login/poll":           {},
+		http.MethodPost + " /plugins/cpa-account-config-manager/opencode/cline-pass/login/cancel":         {},
+		http.MethodPost + " /plugins/cpa-account-config-manager/opencode/cline-pass/refresh":              {},
+		http.MethodPost + " /plugins/cpa-account-config-manager/opencode/cline-pass/models":               {},
+		http.MethodPost + " /plugins/cpa-account-config-manager/opencode/cline-pass/model-test":           {},
+		http.MethodPost + " /plugins/cpa-account-config-manager/opencode/cline-pass/bind":                 {},
+		http.MethodGet + " /plugins/cpa-account-config-manager/opencode/cline-pass/settings":              {},
+		http.MethodPut + " /plugins/cpa-account-config-manager/opencode/cline-pass/settings":              {},
+		http.MethodGet + " /plugins/cpa-account-config-manager/opencode/cline-pass/models":                {},
 		http.MethodPost + " /plugins/cpa-account-config-manager/ai-providers/test":                        {},
 		http.MethodGet + " /plugins/cpa-account-config-manager/ai-providers/runtime":                      {},
 		http.MethodPost + " /plugins/cpa-account-config-manager/usage/reset":                              {},
