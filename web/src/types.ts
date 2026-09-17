@@ -782,7 +782,7 @@ export type ResultExportFormat = "json" | "csv" | "jsonl";
 
 export type ExportFormat = AccountExportFormat | ResultExportFormat;
 
-export type OperationCategory = "account" | "batch" | "import" | "export" | "default_policy" | "inspection" | "update" | "journal" | "opencode" | "plugin";
+export type OperationCategory = "account" | "batch" | "import" | "export" | "default_policy" | "inspection" | "update" | "journal" | "opencode" | "plugin" | "model_error";
 export type OperationStatus = "running" | "succeeded" | "partial" | "failed" | "interrupted" | "warning" | "skipped";
 export type OperationSource = "manual" | "background" | "default_policy" | "inspection" | "import" | "plugin_store";
 export type OperationExportFormat = "json" | "csv" | "jsonl";
@@ -816,6 +816,7 @@ export interface OperationEntry {
   model?: string;
   http_status?: number;
   attempts?: number;
+  message?: string;
   failure_details?: OperationFailureDetail[];
 }
 
@@ -1317,6 +1318,48 @@ export interface AutoModelWhitelistSnapshot {
 
 export interface AutoModelWhitelistResponse {
   auto_model_whitelist: AutoModelWhitelistSnapshot;
+}
+
+/** Host retry prerequisites reported with the automatic retry setting. */
+export interface AutoRetryHostState {
+  /** Retries the host itself performs per request. */
+  request_retry: number;
+  /** Longest interval the host waits between retries, in seconds. */
+  max_retry_interval: number;
+  /** Credentials the host may try within one retried request. */
+  max_retry_credentials: number;
+  /** Absent when the host runtime does not report bootstrap retries. */
+  bootstrap_retries?: number;
+  /** True once the host already carries the plugin's prerequisites. */
+  configured: boolean;
+}
+
+/** Credentials that carry the automatic retry setting, counted per product. */
+export interface AutoRetryAppliedState {
+  codex_accounts?: number;
+  /** Codex provider-channel rows a host keeps in its configuration rather than in auth files. */
+  codex_channels?: number;
+  opencode_channels?: number;
+  cline_pass_channels?: number;
+  skipped?: number;
+  /** True when the plugin had to raise the host request-retry switch itself. */
+  host_request_retry_raised?: boolean;
+  /** True when the plugin had to raise the host retry-interval switch itself. */
+  host_interval_raised?: boolean;
+  updated_at?: string;
+}
+
+/** GET/PUT /auto-retry: the retry attempt budget and the host effect it had. */
+export interface AutoRetrySnapshot {
+  attempts: number;
+  default_attempts?: number;
+  max_attempts?: number;
+  enabled?: boolean;
+  /** Absent until the host reported its retry prerequisites. */
+  host?: AutoRetryHostState;
+  /** Absent until the plugin applied the setting to at least one credential. */
+  applied?: AutoRetryAppliedState;
+  storage_error?: string;
 }
 
 /** One editable Codex request-fingerprint field returned by GET /codex/fingerprint. */

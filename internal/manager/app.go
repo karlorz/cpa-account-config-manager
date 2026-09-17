@@ -92,6 +92,8 @@ type App struct {
 	opencode                 *OpenCodeQuotaService
 	opencodeZen              *OpenCodeZenService
 	clinePass                *ClinePassService
+	autoRetry                *AutoRetryService
+	modelRetry               *modelRetryExhaustionTracker
 	opencodePricing          *OpenCodePricingService
 	selfUpdate               *SelfUpdateService
 	codexFingerprints        *CodexFingerprintProfileService
@@ -156,6 +158,8 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	opencode := NewOpenCodeQuotaService()
 	opencodeZen := NewOpenCodeZenService()
 	clinePass := NewClinePassService()
+	autoRetry := NewAutoRetryService()
+	modelRetry := newModelRetryExhaustionTracker()
 	opencodePricing := NewOpenCodePricingService()
 	selfUpdate := NewSelfUpdateService(PluginVersion)
 	codexFingerprints := NewCodexFingerprintProfileService()
@@ -244,6 +248,8 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 		opencode:                 opencode,
 		opencodeZen:              opencodeZen,
 		clinePass:                clinePass,
+		autoRetry:                autoRetry,
+		modelRetry:               modelRetry,
 		opencodePricing:          opencodePricing,
 		selfUpdate:               selfUpdate,
 		codexFingerprints:        codexFingerprints,
@@ -473,6 +479,7 @@ func (a *App) applyResolvedConfig(config Config, previousDir string) {
 	a.opencode.Configure(config)
 	a.opencodeZen.Configure(config)
 	a.clinePass.Configure(config)
+	a.autoRetry.Configure(config)
 	a.opencodeModelControl.Configure(config)
 	a.opencodeSession.Configure(config)
 	a.codexFingerprints.Configure(config)
@@ -494,6 +501,7 @@ func (a *App) applyResolvedConfig(config Config, previousDir string) {
 	a.inspection.Configure(config)
 	a.force.Configure(config)
 	a.newAccountProbe.Configure(config)
+	a.scheduleAutoRetryApply()
 }
 
 // stateDirUnderAuthDir is where plugin state lives when the data directory is implicit: the
@@ -678,6 +686,7 @@ func (a *App) applyServiceConfig(config Config, hostSchema uint32) {
 	a.opencode.Configure(config)
 	a.opencodeZen.Configure(config)
 	a.clinePass.Configure(config)
+	a.autoRetry.Configure(config)
 	a.opencodePricing.Configure(config)
 	a.selfUpdate.SetManagementDoer(a.managementDoer)
 	a.selfUpdate.Configure(config)
@@ -716,6 +725,7 @@ func (a *App) applyServiceConfig(config Config, hostSchema uint32) {
 	a.force.Configure(config)
 	a.usage.Configure(config)
 	a.reconcileOperationSources()
+	a.scheduleAutoRetryApply()
 	// A completed configure clears the diagnostic recorded by an earlier bounded-configure
 	// timeout or panic, so the status output stops reporting a degraded lifecycle.
 	a.mu.Lock()
@@ -894,6 +904,11 @@ func (a *App) HandleUsage(record cpaapi.UsageRecord) {
 	if a.runtimeSuperseded() {
 		return
 	}
+	// Resolve the channel credential BEFORE any consumer sees the record. CPA omits the API
+	// key from a provider channel's callback, so a consumer that only looks for one - the
+	// Cline Pass ledger does exactly that - attributes nothing while the traffic keeps
+	// arriving, which is why the documented Cline Pass windows stayed at $0.
+	record = a.attributeProviderChannelCredential(record)
 	if a.clinePass != nil {
 		// Cline Pass is an OpenAI-compatible channel, so its traffic arrives on
 		// this same usage callback. The record feeds the reference-priced quota
@@ -901,7 +916,6 @@ func (a *App) HandleUsage(record cpaapi.UsageRecord) {
 		// tracker itself decides whether the record is Cline Pass traffic.
 		a.clinePass.ObserveUsage(record)
 	}
-	record = a.attributeProviderChannelCredential(record)
 	if !a.isKnownAccountUsageRecord(record) && isAIProviderUsageRecord(record) {
 		// Provider credentials and native OAuth accounts share CPA's usage
 		// callback. Never put provider traffic into the account usage store: an
@@ -986,6 +1000,7 @@ func (a *App) quiesceRetiredInstance() {
 		a.concurrency.Shutdown()
 		a.riskControl.Shutdown()
 		a.providerRuntime.Shutdown()
+		a.clinePass.Shutdown()
 		a.creditUsage.Close()
 		a.usage.Close()
 		// Workers can finish with an interrupted/failed terminal snapshot while
@@ -1143,13 +1158,27 @@ func (a *App) runtimeSuperseded() bool {
 }
 
 func (a *App) HandleRequestAfter(request cpaapi.RequestInterceptRequest) cpaapi.RequestInterceptResponse {
-	if a == nil || a.requestHooks == nil || a.runtimeSuperseded() {
+	if a == nil || a.runtimeSuperseded() {
 		return cpaapi.RequestInterceptResponse{}
 	}
-	// This is the interception path the host actually invokes, so the session
-	// router's OpenCode model set is refreshed here.
-	a.refreshOpenCodeSessionTargetsIfStale()
-	return a.requestHooks.InterceptAfter(request)
+	response := cpaapi.RequestInterceptResponse{}
+	if a.requestHooks != nil {
+		// This is the interception path the host actually invokes, so the session
+		// router's OpenCode model set is refreshed here.
+		a.refreshOpenCodeSessionTargetsIfStale()
+		response = a.requestHooks.InterceptAfter(request)
+		if response.Terminate {
+			// Another transformer answered the request, so this attempt never reaches
+			// upstream and must not consume the request's retry counter.
+			return response
+		}
+	}
+	if exhausted, terminate := a.modelRetryExhaustedResponse(request); terminate {
+		// The attempt after the operator's retry budget ends here instead of going
+		// upstream, so the client sees a 503 instead of the upstream error.
+		return exhausted
+	}
+	return response
 }
 
 func (a *App) HandleRequestComplete(completion cpaapi.RequestCompletion) {
@@ -1162,6 +1191,9 @@ func (a *App) HandleRequestComplete(completion cpaapi.RequestCompletion) {
 	if a.providerRuntime != nil {
 		a.providerRuntime.Complete(completion)
 	}
+	// Keep the dedicated model-error journal fed without letting a journal problem
+	// reach CPA's completion path.
+	a.recordModelError(completion)
 }
 
 func (a *App) RequestCompletionActive() bool {
@@ -1359,6 +1391,8 @@ func (a *App) ManagementRegistration() cpaapi.ManagementRegistrationResponse {
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/ai-providers/test", Description: "Probe one AI provider channel endpoint with the submitted credential."},
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/ai-providers/runtime", Description: "Read redacted AI provider concurrency, token, and model cost metrics."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/usage/reset", Description: "Reset locally recorded usage for one account or AI provider."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/auto-retry", Description: "Read the automatic transparent retry budget applied to every managed credential."},
+			{Method: http.MethodPut, Path: managementRoutePrefix + "/auto-retry", Description: "Set the automatic retry budget (0..10) and apply it to every managed credential."},
 			{Method: http.MethodGet, Path: managementRoutePrefix + "/proxy-profiles", Description: "List redacted reusable proxy profiles."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/proxy-profiles", Description: "Create a reusable proxy profile."},
 			{Method: http.MethodPut, Path: managementRoutePrefix + "/proxy-profiles", Description: "Update a reusable proxy profile."},
@@ -1649,6 +1683,10 @@ func (a *App) HandleManagement(ctx context.Context, req cpaapi.ManagementRequest
 		return a.handleSelfUpdateInstall(ctx, req)
 	case method == http.MethodPut && path == "/v0/management"+managementRoutePrefix+"/self-update/settings":
 		return a.handleSelfUpdateSettings(req)
+	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/auto-retry":
+		return a.handleAutoRetryGet(req)
+	case method == http.MethodPut && path == "/v0/management"+managementRoutePrefix+"/auto-retry":
+		return a.handleAutoRetryUpdate(ctx, req)
 	case method == http.MethodPost && path == "/v0/management"+managementRoutePrefix+"/self-update/reload":
 		return a.handleSelfUpdateReload(ctx, req)
 	case method == http.MethodGet && path == "/v0/management"+managementRoutePrefix+"/codex/overview":

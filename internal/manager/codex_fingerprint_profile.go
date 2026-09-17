@@ -120,7 +120,10 @@ type codexFingerprintValues struct {
 
 func defaultCodexFingerprintValues() codexFingerprintValues {
 	return codexFingerprintValues{
-		mode:                      string(codexFingerprintOff),
+		// The compiled default is the converging default, not passthrough: this map is
+		// the base the resolver merges operator overrides onto, so leaving it at off
+		// would silently undo the mode default that the field spec advertises.
+		mode:                      string(codexFingerprintDefaultMode),
 		userAgent:                 defaultCodexCLIUserAgent,
 		originator:                defaultCodexOriginator,
 		version:                   codexCLIVersion,
@@ -232,8 +235,10 @@ func validateCodexFingerprintHeaderName(value string) error {
 func codexFingerprintFieldSpecs() []codexFingerprintFieldSpec {
 	return []codexFingerprintFieldSpec{
 		{Key: codexFingerprintFieldMode, Group: codexFingerprintGroupClient, Kind: codexFingerprintKindSelect,
-			Default: string(codexFingerprintOff),
-			Options: []string{"off", "device", "session", "full"},
+			// An unset mode converges: see codexFingerprintDefaultMode. "off" stays an
+			// explicit choice in the option list.
+			Default: string(codexFingerprintDefaultMode),
+			Options: []string{string(codexFingerprintOff), string(codexFingerprintDevice), string(codexFingerprintSession), string(codexFingerprintFull)},
 			validate: func(value string) error {
 				if value == "" || validCodexFingerprintMode(value) {
 					return nil
