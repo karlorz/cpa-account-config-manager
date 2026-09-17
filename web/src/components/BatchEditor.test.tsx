@@ -3,6 +3,24 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BatchEditor } from "./BatchEditor";
 
+vi.mock("../api/client", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../api/client")>();
+	return {
+		...actual,
+		listProxyProfiles: vi.fn(async () => ({
+			profiles: [{
+				id: "proxy-primary",
+				name: "Primary proxy",
+				proxy_url_masked: "socks5://user:***@proxy.example:1080",
+				enabled: true,
+				account_count: 0,
+				created_at: "",
+				updated_at: "",
+			}],
+		})),
+	};
+});
+
 describe("BatchEditor", () => {
   beforeEach(() => cleanup());
 	const loadModels = async () => ({ models: [], total: 1, eligible: 1, loaded: 1, failed: 0, read_only: 0, missing: 0 });
@@ -19,6 +37,86 @@ describe("BatchEditor", () => {
 
     expect(submit).toHaveBeenCalledWith({ note: "batch-note" });
   });
+
+	it("submits a selected proxy profile instead of the redacted proxy value", async () => {
+		const user = userEvent.setup();
+		const submit = vi.fn();
+		const loadCurrentConfig = vi.fn(async () => ({
+			account_id: "auth-1",
+			disabled: false,
+			priority: 0,
+			note: "",
+			prefix: "",
+			proxy: "configured",
+			proxy_configured: true,
+			websockets: false,
+			header_names: [],
+			model_policy: null,
+		}));
+
+		render(<BatchEditor scopeLabel="account" loadModels={loadModels} loadCurrentConfig={loadCurrentConfig} onClose={() => undefined} onSubmit={submit} />);
+
+		await screen.findByText("当前账号配置");
+		await user.click(screen.getByRole("checkbox", { name: "代理 URL" }));
+		await user.selectOptions(screen.getByLabelText("代理档案"), "proxy-primary");
+		await user.click(screen.getByRole("button", { name: "生成预览" }));
+
+		expect(submit).toHaveBeenCalledWith({ proxy_profile_id: "proxy-primary" });
+	});
+
+	it("submits a manually typed proxy URL instead of the redacted display value", async () => {
+		const user = userEvent.setup();
+		const submit = vi.fn();
+		const loadCurrentConfig = vi.fn(async () => ({
+			account_id: "auth-1",
+			disabled: false,
+			priority: 0,
+			note: "",
+			prefix: "",
+			proxy: "configured",
+			proxy_configured: true,
+			websockets: false,
+			header_names: [],
+			model_policy: null,
+		}));
+
+		render(<BatchEditor scopeLabel="account" loadModels={loadModels} loadCurrentConfig={loadCurrentConfig} onClose={() => undefined} onSubmit={submit} />);
+
+		await screen.findByText("当前账号配置");
+		await user.click(screen.getByRole("checkbox", { name: "代理 URL" }));
+		expect(screen.getByLabelText("Proxy URL 值")).toHaveValue("configured");
+		await user.clear(screen.getByLabelText("Proxy URL 值"));
+		await user.type(screen.getByLabelText("Proxy URL 值"), "socks5://typed.example:1080");
+		await user.click(screen.getByRole("button", { name: "生成预览" }));
+
+		expect(submit).toHaveBeenCalledWith({ proxy_url: "socks5://typed.example:1080" });
+	});
+
+	it.each(["configured", "socks5://proxy.example:1080"])("refuses to submit the redacted proxy display value unchanged (%s)", async (display) => {
+		const user = userEvent.setup();
+		const submit = vi.fn();
+		const loadCurrentConfig = vi.fn(async () => ({
+			account_id: "auth-1",
+			disabled: false,
+			priority: 0,
+			note: "",
+			prefix: "",
+			proxy: display,
+			proxy_configured: true,
+			websockets: false,
+			header_names: [],
+			model_policy: null,
+		}));
+
+		render(<BatchEditor scopeLabel="account" loadModels={loadModels} loadCurrentConfig={loadCurrentConfig} onClose={() => undefined} onSubmit={submit} />);
+
+		await screen.findByText("当前账号配置");
+		await user.click(screen.getByRole("checkbox", { name: "代理 URL" }));
+		await user.click(screen.getByRole("button", { name: "生成预览" }));
+
+		expect(submit).not.toHaveBeenCalled();
+		expect(screen.getByRole("alert")).toHaveTextContent("脱敏");
+	});
 
 	it("submits both account request-window limits independently", async () => {
 		const user = userEvent.setup();
@@ -181,5 +279,14 @@ describe("BatchEditor", () => {
 
 		expect(load).toHaveBeenCalledTimes(1);
 		expect(submit).toHaveBeenCalledWith({ model_policy: { mode: "allow_only", models: ["gpt-5.6-sol"] } });
+	});
+
+	it("blocks a second submission and shows a rejected preview inside the form", async () => {
+		const user = userEvent.setup();
+		render(<BatchEditor scopeLabel="已选 2 个账号" loadModels={loadModels} busy submitError="proxy_url must be empty, direct, none, or a valid proxy URL" onClose={() => undefined} onSubmit={() => undefined} />);
+
+		await user.click(screen.getByLabelText("备注"));
+		expect(screen.getByRole("button", { name: "生成预览" })).toBeDisabled();
+		expect(screen.getByRole("alert")).toHaveTextContent("proxy_url must be empty");
 	});
 });

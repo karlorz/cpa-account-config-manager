@@ -60,6 +60,8 @@ import { ClinePassWorkspace } from "./components/ClinePassWorkspace";
 import { OpenCodeWorkspace } from "./components/OpenCodeWorkspace";
 import { formatCreditUSD } from "./format/currency";
 import { providerRuntimeSnapshotsForChannels } from "./format/providerRuntime";
+import { formatCompactNumber } from "./format/compactNumber";
+import { sidebarUsageTotals } from "./format/sidebarUsage";
 import { OperationLogWorkspace } from "./components/OperationLogWorkspace";
 import { AutomationPolicySettings } from "./components/AutomationPolicySettings";
 import { ProxyProfilesSettings } from "./components/ProxyProfilesSettings";
@@ -226,6 +228,10 @@ interface EditorContext {
   scopeLabel: string;
 	scope: TargetScope;
 	accountID?: string;
+	/** True while this context's patch is being previewed. */
+	busy?: boolean;
+	/** A preview rejected for this context, shown inside the editor. */
+	error?: string;
 }
 
 const agentIdentityLoginStatePattern = /^[A-Za-z0-9._-]{1,256}$/;
@@ -869,18 +875,33 @@ function AccountManagerApp() {
     return { mode: "filtered" as const, filters: apiFilters };
   };
 
-  const beginPreview = async (patch: BatchPatch, explicitScope?: TargetScope) => {
+  const beginPreview = async (patch: BatchPatch, explicitScope?: TargetScope): Promise<{ ok: true } | { ok: false; message: string }> => {
     setPreviewLoading(true);
     setPreviewError("");
     try {
       const response = await api.createPreview(explicitScope ?? targetScope(), patch);
       previewPatches.current.set(response.id, patch);
       setPreview(response);
+      return { ok: true };
     } catch (error) {
       handleAPIError(error);
+      return { ok: false, message: errorText(error, locale) };
     } finally {
       setPreviewLoading(false);
     }
+  };
+
+  // A rejected preview must not throw the operator's edits away: the editor stays open with the
+  // reason until the preview is actually on screen.
+  const submitEditorPatch = async (patch: BatchPatch) => {
+    const context = editorContext;
+    if (!context) return;
+    setEditorContext((current) => (current ? { ...current, busy: true, error: "" } : current));
+    const result = await beginPreview(patch, context.scope);
+    setEditorContext((current) => {
+      if (!current) return current;
+      return result.ok ? null : { ...current, busy: false, error: result.message };
+    });
   };
 
   const beginAccountStatePreview = (account: Account, disabled: boolean) => {
@@ -1276,40 +1297,8 @@ function AccountManagerApp() {
   const hasCustomAccountSort = !isDefaultAccountSort(accountSort);
   const hasAccountViewPreferences = hasActiveFilters || hasCustomAccountSort;
   const sidebarStats = useMemo(() => {
-    const enabledAccounts = sidebarAccounts.filter((account) => !account.disabled);
-    const accountActive = enabledAccounts.reduce((sum, account) => sum + Math.max(0, account.concurrency?.active ?? 0), 0);
-    const accountLimit = enabledAccounts.reduce((sum, account) => {
-      const limit = account.concurrency?.limit ?? account.concurrency?.request_limit ?? 0;
-      return Number.isFinite(limit) && limit > 0 ? sum + limit : sum;
-    }, 0);
-    const accountLimitUnbounded = enabledAccounts.some((account) => {
-      const limit = account.concurrency?.limit ?? account.concurrency?.request_limit ?? 0;
-      return !Number.isFinite(limit) || limit <= 0;
-    });
-    const accountCost = enabledAccounts.reduce((sum, account) => sum + Math.max(0, account.usage?.credit?.amount_usd ?? 0), 0);
-    const providerEntries = sidebarProviderChannels.flatMap((channel) => channel.entries ?? []);
-    const enabledProviders = providerEntries.filter((entry) => !entry.disabled);
     const providerRuntime = providerRuntimeSnapshotsForChannels(sidebarProviderChannels, sidebarProviderRuntime, sidebarAccounts);
-    const providerActive = providerRuntime.reduce((sum, snapshot) => sum + Math.max(0, snapshot.active ?? 0), 0);
-    const providerLimit = providerRuntime.reduce((sum, snapshot) => {
-      const limit = snapshot.limit ?? 0;
-      return Number.isFinite(limit) && limit > 0 ? sum + limit : sum;
-    }, 0);
-    const providerLimitUnbounded = providerRuntime.length === 0 || providerRuntime.some((snapshot) => {
-      const limit = snapshot.limit ?? 0;
-      return !Number.isFinite(limit) || limit <= 0;
-    });
-    const providerCost = providerRuntime.reduce((sum, snapshot) => sum + Math.max(0, snapshot.quota?.five_hour_amount_usd ?? 0), 0);
-    return {
-      enabledAccounts: enabledAccounts.length,
-      accountActive,
-      accountLimitLabel: accountLimitUnbounded ? "∞" : String(accountLimit),
-      accountCost,
-      enabledProviders: enabledProviders.length,
-      providerActive,
-      providerLimitLabel: providerLimitUnbounded ? "∞" : String(providerLimit),
-      providerCost,
-    };
+    return sidebarUsageTotals(sidebarAccounts, providerRuntime);
   }, [sidebarAccounts, sidebarProviderChannels, sidebarProviderRuntime]);
 
   const panelOpen = Boolean(jobOpen && job || forceJobOpen && forceJob);
@@ -1342,13 +1331,8 @@ function AccountManagerApp() {
           <button type="button" className={activeView === "settings" ? "active" : ""} aria-current={activeView === "settings" ? "page" : undefined} onClick={() => setActiveView("settings")}><Settings2 size={16} /><span>{tx("ui.other_settings")}</span></button>
         </nav>
         <div className="sidebar-telemetry" aria-live="polite">
-          <div className="sidebar-telemetry-row"><span><ShieldCheck size={14} />{tx("ui.sidebar_enabled_accounts")}</span><strong>{sidebarStats.enabledAccounts}</strong></div>
-          <div className="sidebar-telemetry-row"><span><Wifi size={14} />{tx("ui.sidebar_account_concurrency")}</span><strong>{sidebarStats.accountActive} / {sidebarStats.accountLimitLabel}</strong></div>
-          <div className="sidebar-telemetry-row"><span><CircleDollarSign size={14} />{tx("ui.sidebar_account_cost")}</span><strong>{formatCreditUSD(sidebarStats.accountCost, locale)}</strong></div>
-          <div className="sidebar-telemetry-row"><span><Boxes size={14} />{tx("ui.sidebar_enabled_providers")}</span><strong>{sidebarStats.enabledProviders}</strong></div>
-          <div className="sidebar-telemetry-row"><span><Wifi size={14} />{tx("ui.sidebar_provider_concurrency")}</span><strong>{sidebarStats.providerActive} / {sidebarStats.providerLimitLabel}</strong></div>
-          <div className="sidebar-telemetry-row"><span><CircleDollarSign size={14} />{tx("ui.sidebar_provider_cost")}</span><strong>{formatCreditUSD(sidebarStats.providerCost, locale)}</strong></div>
-          <div className="sidebar-telemetry-row"><span><Activity size={14} />{tx("ui.system_status")}</span><strong>{job?.running || forceJob?.running ? tx("ui.running") : tx("ui.ready")}</strong></div>
+          <div className="sidebar-telemetry-row"><span><CircleDollarSign size={14} />{tx("ui.sidebar_total_cost")}</span><strong>{formatCreditUSD(sidebarStats.costUSD, locale)}</strong></div>
+          <div className="sidebar-telemetry-row"><span><Activity size={14} />{tx("ui.sidebar_total_tokens")}</span><strong>{formatCompactNumber(sidebarStats.totalTokens, locale)}</strong></div>
         </div>
       </aside>
       <div className="page-frame app-content">
@@ -1659,7 +1643,7 @@ function AccountManagerApp() {
 
       {authState === "booting" ? <div className="auth-loading"><LoaderCircle className="spin" size={24} /></div> : null}
       {authState === "login" ? <LoginDialog loading={authLoading} error={authError} onSubmit={login} /> : null}
-      {editorContext ? <BatchEditor title={editorContext.title} scopeLabel={editorContext.scopeLabel} accountConcurrency={data.account_concurrency} loadModels={() => api.loadAccountModels(editorContext.scope)} loadCurrentConfig={editorContext.accountID ? () => api.loadAccountConfig(editorContext.accountID || "") : undefined} onLoadError={(error) => { if (error instanceof api.APIError && error.status === 401) { setEditorContext(null); handleAPIError(error); } }} onClose={() => setEditorContext(null)} onSubmit={(patch) => { const scope = editorContext.scope; setEditorContext(null); void beginPreview(patch, scope); }} /> : null}
+      {editorContext ? <BatchEditor title={editorContext.title} scopeLabel={editorContext.scopeLabel} accountConcurrency={data.account_concurrency} loadModels={() => api.loadAccountModels(editorContext.scope)} loadCurrentConfig={editorContext.accountID ? () => api.loadAccountConfig(editorContext.accountID || "") : undefined} onLoadError={(error) => { if (error instanceof api.APIError && error.status === 401) { setEditorContext(null); handleAPIError(error); } }} onClose={() => setEditorContext(null)} busy={editorContext.busy} submitError={editorContext.error} onSubmit={(patch) => void submitEditorPatch(patch)} /> : null}
       {detailAccount ? <AccountDetailsDialog account={detailAccount} creditUsageEnabled weeklyOverdraftEnabled={weeklyOverdraftEnabled} onClose={() => setDetailAccount(null)} onEdit={() => openAccountEditor(detailAccount)} /> : null}
 			{quotaResetTarget ? (
 				<Modal
