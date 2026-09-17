@@ -59,6 +59,13 @@ function normalizeClinePassQuotaWindow(value: unknown): ClinePassQuotaWindow {
 		input_tokens: isFiniteNonNegativeInteger(source.input_tokens) ? source.input_tokens : 0,
 		output_tokens: isFiniteNonNegativeInteger(source.output_tokens) ? source.output_tokens : 0,
 		requests: isFiniteNonNegativeInteger(source.requests) ? source.requests : 0,
+		// The cached halves are part of the documented windows and the backend reports them
+		// separately, so dropping them here would show every cached total as 0.
+		cache_read_tokens: isFiniteNonNegativeInteger(source.cache_read_tokens) ? source.cache_read_tokens : 0,
+		cache_write_tokens: isFiniteNonNegativeInteger(source.cache_write_tokens) ? source.cache_write_tokens : 0,
+		// Requests Cline could not reference price must survive normalization, or the UI would
+		// render their window as if it were simply free.
+		unpriced_requests: isFiniteNonNegativeInteger(source.unpriced_requests) ? source.unpriced_requests : 0,
 	};
 }
 
@@ -107,6 +114,7 @@ function normalizeClinePassAccountsResponse(response: unknown): ClinePassAccount
 				// A pre-binding backend omits the routing fields, so an absent value degrades to
 				// "unbound" instead of failing the whole account list.
 				channel_bound: account.channel_bound === true,
+				channel_state_unreadable: account.channel_state_unreadable === true,
 				channel_models: isFiniteNonNegativeNumber(account.channel_models) ? account.channel_models : 0,
 				channel_model_gaps: isFiniteNonNegativeNumber(account.channel_model_gaps) ? account.channel_model_gaps : 0,
 			};
@@ -165,6 +173,7 @@ function normalizeClinePassModelsResponse(response: unknown): ClinePassModelsRes
 		strip_model_prefix: response.strip_model_prefix,
 		accounts: isFiniteNonNegativeInteger(response.accounts) ? response.accounts : 0,
 		channel_bound: response.channel_bound === true,
+		channel_state_unreadable: response.channel_state_unreadable === true,
 		channel_models: isFiniteNonNegativeInteger(response.channel_models) ? response.channel_models : 0,
 		default_base_url: typeof response.default_base_url === "string" ? response.default_base_url : "",
 	};
