@@ -58,12 +58,14 @@ export function AccountUsageCell({ account, weeklyOverdraftEnabled = false, cred
       ? tx("ui.last_request_time", { time: formatDateTime(usage.last_request_at) })
       : tx("ui.no_recent_cpa_request_windows");
   const providerName = String(account.provider || account.type).trim().toLowerCase();
-  const codex = usage?.codex;
+  // Antigravity/Kimi persist under usage.quota; Codex under usage.codex.
+  // Prefer quota so Cloud Code / Kimi bars render; fall back to Codex.
+  const quota = usage?.quota ?? usage?.codex;
   const providerQuota = openCodeQuota?.success ? openCodeQuota : undefined;
   const hasProviderQuota = Boolean(providerQuota?.rolling || providerQuota?.weekly || providerQuota?.monthly || clinePassQuota?.five_hour || clinePassQuota?.weekly || clinePassQuota?.monthly);
-  const hasQuota = Boolean(codex?.five_hour || codex?.seven_day);
-  const fiveHourExhausted = safePercent(codex?.five_hour?.used_percent ?? 0) >= 100;
-  const longWindowExhausted = safePercent(codex?.seven_day?.used_percent ?? 0) >= 100;
+  const hasQuota = Boolean(quota?.five_hour || quota?.seven_day);
+  const fiveHourExhausted = safePercent(quota?.five_hour?.used_percent ?? 0) >= 100;
+  const longWindowExhausted = safePercent(quota?.seven_day?.used_percent ?? 0) >= 100;
   const quotaExhausted = fiveHourExhausted || longWindowExhausted;
   const overdraftWindows = weeklyOverdraftEnabled ? [
     usage?.codex?.five_hour?.overdraft_active
@@ -128,8 +130,8 @@ export function AccountUsageCell({ account, weeklyOverdraftEnabled = false, cred
       ) : null}
       {hasQuota || hasProviderQuota ? (
         <div className="usage-quota-list">
-          {codex?.five_hour ? <UsageQuota label={compactQuotaLabel(codex.five_hour)} window={codex.five_hour} /> : null}
-          {codex?.seven_day ? <UsageQuota label={compactQuotaLabel(codex.seven_day)} window={codex.seven_day} /> : null}
+          {quota?.five_hour ? <UsageQuota label={compactQuotaLabel(quota.five_hour)} window={quota.five_hour} /> : null}
+          {quota?.seven_day ? <UsageQuota label={compactQuotaLabel(quota.seven_day)} window={quota.seven_day} /> : null}
           {providerQuota?.rolling ? <ProviderUsageQuota label="5h" window={providerQuota.rolling} /> : null}
           {providerQuota?.weekly ? <ProviderUsageQuota label="7d" window={providerQuota.weekly} /> : null}
           {providerQuota?.monthly ? <ProviderUsageQuota label="30d" window={providerQuota.monthly} /> : null}
