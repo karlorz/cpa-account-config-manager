@@ -56,6 +56,10 @@ type clinePassSettings struct {
 	// StripModelPrefix publishes the client-facing model id without the literal
 	// cline-pass/ prefix. It defaults to on.
 	StripModelPrefix bool `json:"strip_model_prefix"`
+	// DeepseekUpstreamConsistency pins the Cline Pass DeepSeek requests to
+	// DeepSeek's own upstream so one conversation keeps its prompt cache. It
+	// defaults to off.
+	DeepseekUpstreamConsistency bool `json:"deepseek_upstream_consistency"`
 }
 
 type clinePassSettingsView struct {
@@ -64,6 +68,9 @@ type clinePassSettingsView struct {
 
 type clinePassSettingsUpdateRequest struct {
 	StripModelPrefix *bool `json:"strip_model_prefix"`
+	// DeepseekUpstreamConsistency is additive: omitting it leaves the stored
+	// switch alone, so one control can be saved without resending the other.
+	DeepseekUpstreamConsistency *bool `json:"deepseek_upstream_consistency"`
 }
 
 type clinePassSettingsUpdateResponse struct {
@@ -95,9 +102,11 @@ type clinePassModelView struct {
 type clinePassModelsResponse struct {
 	Models           []clinePassModelView `json:"models"`
 	StripModelPrefix bool                 `json:"strip_model_prefix"`
-	Accounts         int                  `json:"accounts"`
-	ChannelBound     bool                 `json:"channel_bound"`
-	ChannelModels    int                  `json:"channel_models"`
+	// DeepseekUpstreamConsistency reports the stored upstream-consistency switch.
+	DeepseekUpstreamConsistency bool `json:"deepseek_upstream_consistency"`
+	Accounts                    int  `json:"accounts"`
+	ChannelBound                bool `json:"channel_bound"`
+	ChannelModels               int  `json:"channel_models"`
 	// ChannelStateUnreadable marks that the live channel list could not be read, so
 	// ChannelBound is unknown rather than false.
 	ChannelStateUnreadable bool   `json:"channel_state_unreadable,omitempty"`
@@ -112,6 +121,10 @@ func (a *App) handleClinePassAccounts(ctx context.Context, req cpaapi.Management
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	managementKey := resolveManagementKey(req.Headers)
 	if method == http.MethodGet {
+		// A rotating token inside the refresh margin is rotated before the list is built, so the
+		// page reports a usable credential and the republish below replaces the channel row that
+		// carried the old one.
+		a.refreshExpiringClinePassAccounts(ctx)
 		accounts := a.clinePass.ListAccounts()
 		views := make([]*ClinePassAccountView, 0, len(accounts))
 		for index := range accounts {
@@ -420,16 +433,29 @@ func (a *App) handleClinePassBind(ctx context.Context, req cpaapi.ManagementRequ
 }
 
 // clinePassChannelLabel names the CPA channel for one account, preferring the
-// operator-supplied name so several subscriptions stay distinguishable.
+// operator-supplied name so several subscriptions stay distinguishable. It shares
+// clinePassChannelLabelForName with the routing checks, so the label a bind writes and the label a
+// repair compares against can never drift apart.
 func (a *App) clinePassChannelLabel(accountID string) string {
 	if a != nil && a.clinePass != nil {
 		if view, found := a.clinePass.AccountView(accountID); found {
-			if name := strings.TrimSpace(view.Name); name != "" {
-				return clinePassBoundChannelName + " " + name
-			}
+			return clinePassChannelLabelForName(view.Name)
 		}
 	}
-	return clinePassBoundChannelName
+	return clinePassChannelLabelForName("")
+}
+
+// refreshExpiringClinePassAccounts rotates the tokens a Cline Pass read finds inside the refresh
+// margin, under the same bound as an automatic bind so a slow token endpoint cannot hold a page
+// read open. A rotation failure is not reported here: the read that follows shows the stored state,
+// and the republish pass reports a row it could not repair.
+func (a *App) refreshExpiringClinePassAccounts(ctx context.Context) {
+	if a == nil || a.clinePass == nil {
+		return
+	}
+	refreshCtx, cancel := context.WithTimeout(ctx, clinePassRoutingBindTimeout)
+	defer cancel()
+	a.clinePass.RefreshExpiringAccounts(refreshCtx)
 }
 
 // handleClinePassSettings reads and writes the Cline Pass publishing settings.
@@ -447,19 +473,36 @@ func (a *App) handleClinePassSettings(ctx context.Context, req cpaapi.Management
 	switch strings.ToUpper(strings.TrimSpace(req.Method)) {
 	case http.MethodGet:
 		return jsonResponse(http.StatusOK, clinePassSettingsView{
-			Settings: clinePassSettings{StripModelPrefix: a.clinePass.StripModelPrefix()},
+			Settings: clinePassSettings{
+				StripModelPrefix:            a.clinePass.StripModelPrefix(),
+				DeepseekUpstreamConsistency: a.clinePass.DeepseekUpstreamConsistency(),
+			},
 		})
 	case http.MethodPut:
 		var request clinePassSettingsUpdateRequest
-		if errDecode := decodeJSONRequest(req.Body, &request); errDecode != nil || request.StripModelPrefix == nil {
+		if errDecode := decodeJSONRequest(req.Body, &request); errDecode != nil ||
+			request.StripModelPrefix == nil && request.DeepseekUpstreamConsistency == nil {
 			return jsonResponse(http.StatusBadRequest, map[string]any{"error": "invalid Cline Pass settings request"})
 		}
-		if errSet := a.clinePass.SetStripModelPrefix(*request.StripModelPrefix); errSet != nil {
-			return jsonResponse(http.StatusInternalServerError, map[string]any{"error": "Cline Pass settings could not be persisted"})
+		if request.DeepseekUpstreamConsistency != nil {
+			if errSet := a.clinePass.SetDeepseekUpstreamConsistency(*request.DeepseekUpstreamConsistency); errSet != nil {
+				return jsonResponse(http.StatusInternalServerError, map[string]any{"error": "Cline Pass settings could not be persisted"})
+			}
 		}
-		rebound, rebindErrors := a.rebindClinePassAccounts(ctx, managementKey)
+		// Only the published ids need a re-bind; the upstream pin is read from the
+		// request path, so flipping it changes nothing about the channel.
+		rebound, rebindErrors := 0, 0
+		if request.StripModelPrefix != nil {
+			if errSet := a.clinePass.SetStripModelPrefix(*request.StripModelPrefix); errSet != nil {
+				return jsonResponse(http.StatusInternalServerError, map[string]any{"error": "Cline Pass settings could not be persisted"})
+			}
+			rebound, rebindErrors = a.rebindClinePassAccounts(ctx, managementKey)
+		}
 		return jsonResponse(http.StatusOK, clinePassSettingsUpdateResponse{
-			Settings:     clinePassSettings{StripModelPrefix: a.clinePass.StripModelPrefix()},
+			Settings: clinePassSettings{
+				StripModelPrefix:            a.clinePass.StripModelPrefix(),
+				DeepseekUpstreamConsistency: a.clinePass.DeepseekUpstreamConsistency(),
+			},
 			Rebound:      rebound,
 			RebindErrors: rebindErrors,
 		})
@@ -481,6 +524,9 @@ func (a *App) handleClinePassModelPage(ctx context.Context, req cpaapi.Managemen
 	if managementKey == "" {
 		return jsonResponse(http.StatusUnauthorized, map[string]any{"error": "management key is unavailable"})
 	}
+	// Same as the account list: rotate an expiring token first, then read, so the routing decision
+	// below is made on the credential the row will hold.
+	a.refreshExpiringClinePassAccounts(ctx)
 	accounts := a.clinePass.ListAccounts()
 	stripPrefix := a.clinePass.StripModelPrefix()
 	// Reading the page also repairs the channel: an account whose credential was rotated is
@@ -520,13 +566,14 @@ func (a *App) handleClinePassModelPage(ctx context.Context, req cpaapi.Managemen
 		models = append(models, view)
 	}
 	return jsonResponse(http.StatusOK, clinePassModelsResponse{
-		Models:                 models,
-		StripModelPrefix:       stripPrefix,
-		Accounts:               len(accounts),
-		ChannelBound:           channelBound,
-		ChannelStateUnreadable: !channelStateReadable,
-		ChannelModels:          channelModels,
-		DefaultBaseURL:         clinePassDefaultBaseURL,
+		Models:                      models,
+		StripModelPrefix:            stripPrefix,
+		DeepseekUpstreamConsistency: a.clinePass.DeepseekUpstreamConsistency(),
+		Accounts:                    len(accounts),
+		ChannelBound:                channelBound,
+		ChannelStateUnreadable:      !channelStateReadable,
+		ChannelModels:               channelModels,
+		DefaultBaseURL:              clinePassDefaultBaseURL,
 	})
 }
 

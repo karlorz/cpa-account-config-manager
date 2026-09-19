@@ -30,6 +30,11 @@ export interface ClinePassAccountView {
   channel_state_unreadable?: boolean;
   channel_models: number;
   channel_model_gaps: number;
+  /**
+   * The gateway rejected the stored token, so the account is unroutable until its channel row is
+   * rewritten with a working one. The plugin repairs that automatically.
+   */
+  channel_credential_rejected?: boolean;
   /** Usage the Cline gateway attributes to this account; absent until Cline reports it. */
   quota_usage?: ClinePassQuotaUsage;
 }
@@ -103,6 +108,11 @@ export interface ClinePassModelView {
 export interface ClinePassModelsResponse {
   models: ClinePassModelView[];
   strip_model_prefix: boolean;
+  /**
+   * The stored upstream-consistency switch: Cline Pass DeepSeek requests are pinned to
+   * DeepSeek's own upstream so one conversation keeps its prompt cache.
+   */
+  deepseek_upstream_consistency: boolean;
   accounts: number;
   channel_bound: boolean;
   channel_models: number;
@@ -114,6 +124,13 @@ export interface ClinePassModelsResponse {
 /** Publishing settings for the Cline Pass channel. */
 export interface ClinePassSettings {
   strip_model_prefix: boolean;
+  deepseek_upstream_consistency: boolean;
+}
+
+/** One saved control: an omitted field leaves the stored switch alone. */
+export interface ClinePassSettingsPatch {
+  stripModelPrefix?: boolean;
+  deepseekUpstreamConsistency?: boolean;
 }
 
 export interface ClinePassSettingsResponse {

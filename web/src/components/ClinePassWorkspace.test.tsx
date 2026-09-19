@@ -174,6 +174,31 @@ describe("ClinePassWorkspace", () => {
     await waitFor(() => expect(requests.filter(({ url }) => url.endsWith("/opencode/cline-pass/models")).length).toBeGreaterThan(1));
   });
 
+  it("saves the DeepSeek upstream-consistency switch without rebinding the channel", async () => {
+    const user = userEvent.setup();
+    const requests = clinePassFetchMock({ clinePassAccounts: [clinePassAccountView()], clinePassSettingsRebound: 1 });
+    const onNotice = vi.fn();
+
+    await renderClinePass(onNotice);
+
+    const tabs = await screen.findByRole("tablist", { name: "Cline Pass" });
+    await user.click(within(tabs).getByRole("tab", { name: "模型" }));
+
+    const switcher = await screen.findByRole("checkbox", { name: "DeepSeek 上游一致性" });
+    expect(switcher).not.toBeChecked();
+    await user.click(switcher);
+
+    await waitFor(() => expect(requests.some(({ url, init }) => url.endsWith("/opencode/cline-pass/settings") && init.method === "PUT")).toBe(true));
+    const save = requests.find(({ url, init }) => url.endsWith("/opencode/cline-pass/settings") && init.method === "PUT");
+    // Only the control that changed is sent, so the prefix rule keeps its stored value
+    // and the channel is not re-bound for a switch that changes no mapping.
+    expect(JSON.parse(String(save?.init.body))).toEqual({ deepseek_upstream_consistency: true });
+    await waitFor(() => expect(onNotice).toHaveBeenCalledWith("DeepSeek 上游一致性设置已保存"));
+    // It is stored state, so the reloaded page reports it back.
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "DeepSeek 上游一致性" })).toBeChecked());
+    expect(screen.getByRole("checkbox", { name: "发布模型 ID 时不带 cline-pass/ 前缀" })).toBeChecked();
+  });
+
   it("probes a Cline Pass mapping row with its upstream id in the shared dialog", async () => {
     const user = userEvent.setup();
     const requests = clinePassFetchMock({
@@ -325,6 +350,25 @@ describe("ClinePassWorkspace", () => {
     const row = (await within(panel).findByText("Work laptop")).closest("tr") as HTMLElement;
 
     expect(within(row).getByText("还有 1 个模型未发布")).toBeInTheDocument();
+    expect(within(row).queryByText("尚未绑定 CPA 渠道")).not.toBeInTheDocument();
+  });
+
+  it("explains a credential the gateway rejected and says the repair is automatic", async () => {
+    // The failure the operator sees: Cline refuses the stored token while CPA keeps routing through
+    // the key on the channel row. The row must name the cause and the automatic repair, because the
+    // account stays unroutable until that republish succeeds.
+    clinePassFetchMock({
+      clinePassAccounts: [clinePassAccountView({ channel_bound: false, channel_models: 0, channel_model_gaps: 2, channel_credential_rejected: true })],
+    });
+
+    await renderClinePass();
+    const panel = await screen.findByRole("tabpanel", { name: "账号" });
+    const row = (await within(panel).findByText("Work laptop")).closest("tr") as HTMLElement;
+
+    expect(within(row).getByText("凭据已被网关拒绝，正在自动修复")).toBeInTheDocument();
+    expect(within(row).getByText(/插件已自动轮换令牌并重写该渠道行/)).toBeInTheDocument();
+    // The rejected state takes precedence over the plain unbound wording, which would send the
+    // operator looking for a missing channel instead of a refused credential.
     expect(within(row).queryByText("尚未绑定 CPA 渠道")).not.toBeInTheDocument();
   });
 
