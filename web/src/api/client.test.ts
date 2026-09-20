@@ -1698,6 +1698,75 @@ describe("management API client", () => {
     expect(result.release_url).toBe("https://github.com/karlorz/cpa-account-config-manager/releases/tag/v0.3.1372");
   });
 
+  it("prefers the karlorz/fork catalog row over an earlier official duplicate", () => {
+    // CPA can list both the Mxucc registry row and the karlorz/fork row for the
+    // same plugin id. `.find(id)` kept the first (official 0.3.1372) and Settings
+    // showed that as Latest even when current was already the fork build.
+    const status = {
+      policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
+      current_version: "0.3.1461-2", update_available: false, checking: false, pending: false,
+    };
+    const store = {
+      plugins_enabled: true,
+      plugins: [
+        { id: "cpa-account-config-manager", version: "0.3.1372", installed: true, installed_version: "0.3.1461-2", update_available: false },
+        { id: "other-plugin", version: "1.0.0", installed: false, installed_version: "", update_available: false },
+        { id: "cpa-account-config-manager", version: "0.3.1461-2", installed: true, installed_version: "0.3.1461-2", update_available: false },
+      ],
+    } as never;
+
+    const result = reconcileUpdateStatus(status, store);
+
+    expect(result).toMatchObject({
+      current_version: "0.3.1461-2",
+      latest_version: "0.3.1461-2",
+      update_available: false,
+      release_source: "plugin_store",
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.release_url).toBe("https://github.com/karlorz/cpa-account-config-manager/releases/tag/v0.3.1461-2");
+  });
+
+  it("does not mark official 0.3.1372 as latest when a newer fork row is also listed", () => {
+    const result = reconcileUpdateStatus({
+      policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
+      current_version: "0.3.1461-1", update_available: false, checking: false, pending: false,
+    }, {
+      plugins_enabled: true,
+      plugins: [
+        { id: "cpa-account-config-manager", version: "0.3.1372", installed: true, installed_version: "0.3.1461-1", update_available: true },
+        { id: "cpa-account-config-manager", version: "0.3.1461-2", installed: true, installed_version: "0.3.1461-1", update_available: true },
+      ],
+    } as never);
+
+    expect(result).toMatchObject({
+      latest_version: "0.3.1461-2",
+      update_available: true,
+      release_source: "plugin_store",
+    });
+    expect(result.latest_version).not.toBe("0.3.1372");
+    expect(result.release_url).toBe("https://github.com/karlorz/cpa-account-config-manager/releases/tag/v0.3.1461-2");
+  });
+
+  it("keeps a single official-only catalog row unchanged", () => {
+    const result = reconcileUpdateStatus({
+      policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
+      current_version: "0.3.1370", update_available: false, checking: false, pending: false,
+    }, {
+      plugins_enabled: true,
+      plugins: [
+        { id: "cpa-account-config-manager", version: "0.3.1372", installed: true, installed_version: "0.3.1370", update_available: true },
+      ],
+    } as never);
+
+    expect(result).toMatchObject({
+      latest_version: "0.3.1372",
+      update_available: true,
+      release_source: "plugin_store",
+    });
+    expect(result.release_url).toBe("https://github.com/karlorz/cpa-account-config-manager/releases/tag/v0.3.1372");
+  });
+
   it("prefers the newer of the store version and the plugin's own release check", () => {
     const status = {
       policy: { check_enabled: true, check_interval_hours: 24, auto_update: false },
