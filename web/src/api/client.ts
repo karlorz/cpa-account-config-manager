@@ -1493,6 +1493,37 @@ function compareStableVersions(left: [number, number, number, number], right: [n
   return 0;
 }
 
+/**
+ * Picks this plugin's catalog row when the CPA store lists duplicates.
+ *
+ * Official and karlorz/fork registries can both publish `cpa-account-config-manager`,
+ * so `.find(id)` would keep whichever row arrived first (often the older Mxucc
+ * stable). Prefer a fork-channel `vX.Y.Z-N` row when any exist; otherwise the
+ * newest comparable version. A single official-only row is unchanged.
+ */
+function selectPluginStoreEntry(plugins: Array<PluginStoreEntry | null | undefined> | null | undefined): PluginStoreEntry | undefined {
+  const matches = arrayOrEmpty(plugins).filter((entry): entry is PluginStoreEntry => !!entry && entry.id === pluginID);
+  if (matches.length <= 1) return matches[0];
+
+  type Scored = { entry: PluginStoreEntry; version: NonNullable<ReturnType<typeof normalizedStableVersion>> };
+  const scored: Scored[] = [];
+  for (const entry of matches) {
+    const version = normalizedStableVersion(entry.version);
+    if (version) scored.push({ entry, version });
+  }
+  if (scored.length === 0) return matches[0];
+
+  const forkChannel = scored.filter((item) => item.version.parts[3] >= 0);
+  const candidates = forkChannel.length > 0 ? forkChannel : scored;
+  let best = candidates[0];
+  for (let index = 1; index < candidates.length; index += 1) {
+    if (compareStableVersions(candidates[index].version.parts, best.version.parts) > 0) {
+      best = candidates[index];
+    }
+  }
+  return best.entry;
+}
+
 /** Reported when the store answered but does not offer this plugin at all. */
 export const pluginStoreNotListedError = "plugin store does not list this plugin";
 /** Reported when the store lists this plugin but carries no usable version for it. */
@@ -1527,7 +1558,7 @@ export function reconcileUpdateStatus(
   const statusError = status.error?.trim() || "";
   const retainedError = obsoleteDirectCheckErrors.has(statusError) ? "" : statusError;
   const currentVersion = normalizedStableVersion(status.current_version);
-  const plugin = store?.plugins_enabled ? arrayOrEmpty(store.plugins).find((entry) => entry?.id === pluginID) : undefined;
+  const plugin = store?.plugins_enabled ? selectPluginStoreEntry(store.plugins) : undefined;
   const storeVersion = normalizedStableVersion(plugin?.version);
   const directVersion = normalizedStableVersion(directLatestVersion);
   let latest: { value: string; parts: [number, number, number, number]; source: UpdateSnapshot["release_source"] } | null = null;
@@ -1661,7 +1692,7 @@ async function getEffectiveUpdateStatusUnshared(checkNow: boolean, signal?: Abor
     }
   }
   const store = await loadPluginStore(signal);
-  const storeEntry = arrayOrEmpty(store.response?.plugins ?? null).find((entry) => entry?.id === pluginID);
+  const storeEntry = selectPluginStoreEntry(store.response?.plugins);
   // Only pay for a second request when the store could not answer with a version
   // for this plugin: that is the case the plugin's own release check covers. A
   // store version that is merely older is left to reconcileUpdateStatus.
@@ -1708,7 +1739,7 @@ async function installPluginUpdateOnce(version: string): Promise<PluginInstallRe
       throw new APIError(400, "plugin store install response was invalid");
     }
     const store = await getPluginStore();
-    const plugin = store.plugins_enabled ? arrayOrEmpty(store.plugins).find((entry) => entry.id === pluginID) : undefined;
+    const plugin = store.plugins_enabled ? selectPluginStoreEntry(store.plugins) : undefined;
     const storeVersion = normalizedStableVersion(plugin?.version);
     // The store must still list the plugin, because CPA resolves the install
     // target from its own catalog. Refuse when the store names a *different*
