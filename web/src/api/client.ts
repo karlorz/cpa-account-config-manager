@@ -1469,17 +1469,24 @@ export async function getPluginStore(signal?: AbortSignal): Promise<PluginStoreR
 }
 
 const pluginID = "cpa-account-config-manager";
-const pluginReleaseBaseURL = "https://github.com/Mxucc/cpa-account-config-manager/releases/tag/v";
+const pluginReleaseBaseURL = "https://github.com/karlorz/cpa-account-config-manager/releases/tag/v";
 
-function normalizedStableVersion(value: string | undefined): { value: string; parts: [number, number, number] } | null {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec((value ?? "").trim());
+function normalizedStableVersion(value: string | undefined): { value: string; parts: [number, number, number, number] } | null {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-(\d+))?$/.exec((value ?? "").trim());
   if (!match) return null;
-  const parts = [Number(match[1]), Number(match[2]), Number(match[3])] as [number, number, number];
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  const forkSuffix = match[4] !== undefined ? Number(match[4]) : -1;
+  const parts = [major, minor, patch, forkSuffix] as [number, number, number, number];
   if (parts.some((part) => !Number.isSafeInteger(part))) return null;
-  return { value: parts.join("."), parts };
+  const normalized = match[4] !== undefined
+    ? `${major}.${minor}.${patch}-${match[4]}`
+    : `${major}.${minor}.${patch}`;
+  return { value: normalized, parts };
 }
 
-function compareStableVersions(left: [number, number, number], right: [number, number, number]): number {
+function compareStableVersions(left: [number, number, number, number], right: [number, number, number, number]): number {
   for (let index = 0; index < left.length; index += 1) {
     if (left[index] !== right[index]) return left[index] - right[index];
   }
@@ -1523,7 +1530,7 @@ export function reconcileUpdateStatus(
   const plugin = store?.plugins_enabled ? arrayOrEmpty(store.plugins).find((entry) => entry?.id === pluginID) : undefined;
   const storeVersion = normalizedStableVersion(plugin?.version);
   const directVersion = normalizedStableVersion(directLatestVersion);
-  let latest: { value: string; parts: [number, number, number]; source: UpdateSnapshot["release_source"] } | null = null;
+  let latest: { value: string; parts: [number, number, number, number]; source: UpdateSnapshot["release_source"] } | null = null;
   if (storeVersion) latest = { ...storeVersion, source: "plugin_store" };
   if (directVersion && (!latest || compareStableVersions(directVersion.parts, latest.parts) > 0)) {
     latest = { ...directVersion, source: "github_release" };
