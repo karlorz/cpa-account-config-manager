@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"time"
 
@@ -251,33 +252,111 @@ func (a *App) requestClinePassAuthRepair() {
 	}()
 }
 
-// repairRejectedClinePassAccounts rotates the rejected tokens and republishes the channel rows that
-// carried them, and then applies the recorded quota holds to the same list. Rotation happens first,
-// so the republish writes the new key. One maintenance pass owns both writers of the channel list,
-// which is why the quota hold of a request that arrived off the page path is applied here instead
-// of by a second background task: two passes writing the whole list would lose each other's update.
+// noteClinePassChannelTestRejection learns from a refused AI-provider channel test. The test is what
+// the operator runs when calls fail, and it exercises exactly the credential CPA routes through, so
+// a refusal there is the strongest evidence available that the published row is dead: the account is
+// recorded, the maintenance pass rotates and republishes its row, and a rotation that is refused in
+// turn tells the operator to sign in again. Before this the test reported the failure and left the
+// row exactly as it was.
+func (a *App) noteClinePassChannelTestRejection(kind, apiKey string, result AIProviderProbeResult) {
+	if a == nil || a.clinePass == nil || normalizeAIProviderKind(kind) != "openai-compatibility" {
+		return
+	}
+	a.noteClinePassCredentialRejected(aiProviderProbeRejectedCredential(result), func() string {
+		if accountID := a.clinePass.AccountIDForAuthIdentity(apiKey); accountID != "" {
+			return accountID
+		}
+		return a.clinePass.AccountIDForPublishedCredential(apiKey)
+	}(), result.StatusCode)
+}
+
+// noteClinePassProbeRejection learns from a Cline Pass model test the gateway answered with an
+// authorization error. The test names the account outright, so no attribution is needed, and the
+// same repair the request path runs is asked for here.
+func (a *App) noteClinePassProbeRejection(accountID string, result OpenCodeModelTestResult) {
+	rejected := strings.EqualFold(strings.TrimSpace(result.ReasonCode), "authentication_failed") ||
+		result.StatusCode == http.StatusUnauthorized || result.StatusCode == http.StatusForbidden
+	a.noteClinePassCredentialRejected(rejected, accountID, result.StatusCode)
+}
+
+// aiProviderProbeRejectedCredential reports whether an AI-provider probe failed because the upstream
+// refused the credential, which is the only probe failure that says anything about the stored
+// account: a missing model or an unreachable gateway is not a credential problem.
+func aiProviderProbeRejectedCredential(result AIProviderProbeResult) bool {
+	if strings.EqualFold(strings.TrimSpace(result.ReasonCode), "authentication_failed") {
+		return true
+	}
+	return result.StatusCode == http.StatusUnauthorized || result.StatusCode == http.StatusForbidden
+}
+
+// noteClinePassCredentialRejected records one gateway refusal of a stored credential, whatever
+// signal reported it, and asks for the repair. It is deliberately one path for every signal - the
+// request completion callback, the AI-provider channel test and the Cline Pass model test - so a
+// refusal can never be visible on one page and invisible on another.
+func (a *App) noteClinePassCredentialRejected(rejected bool, accountID string, statusCode int) {
+	if a == nil || a.clinePass == nil || !rejected {
+		return
+	}
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return
+	}
+	alreadyPending := a.clinePass.AuthFailurePending(accountID)
+	if !a.clinePass.NoteAuthFailure(accountID) {
+		return
+	}
+	if !alreadyPending {
+		a.recordClinePassAuthFailure(accountID, cpaapi.RequestCompletion{StatusCode: statusCode})
+	}
+	a.requestClinePassAuthRepair()
+}
+
+// repairRejectedClinePassAccounts rotates the tokens that are due, republishes every channel row
+// that no longer matches the token it publishes, and then applies the recorded quota holds to the
+// same list. Rotation happens first, so the republish writes the new key. One maintenance pass owns
+// both writers of the channel list, which is why the quota hold of a request that arrived off the
+// page path is applied here instead of by a second background task: two passes writing the whole
+// list would lose each other's update.
 func (a *App) repairRejectedClinePassAccounts(ctx context.Context, managementKey string) {
 	if a == nil || a.clinePass == nil || strings.TrimSpace(managementKey) == "" {
 		return
 	}
-	a.clinePass.RefreshExpiringAccounts(ctx)
-	a.rebindRejectedClinePassAccounts(ctx, managementKey)
+	a.refreshExpiringClinePassAccounts(ctx)
+	a.republishClinePassRows(ctx, managementKey, true)
 	_, _ = a.applyClinePassQuotaRowStates(ctx, managementKey)
 }
 
-// rebindRejectedClinePassAccounts republishes every account whose credential is still recorded as
-// rejected, so the row CPA routes through holds the token the rotation just produced. A successful
-// republish is what spends the record; a failed one keeps it, and the next read tries again under
-// the same throttles.
-func (a *App) rebindRejectedClinePassAccounts(ctx context.Context, managementKey string) {
-	if a == nil || a.clinePass == nil {
+// republishClinePassRows republishes the accounts whose channel row is not the row they route
+// through any more. With publishMissing it also publishes the accounts that own no row at all,
+// which is what the maintenance pass does and what makes one page load enough to recover a
+// deployment; the request paths ask for the narrow form, because a manual probe or model list
+// should repair what it broke and not silently publish channels of its own.
+//
+// A rotation is the case this exists for: refreshing invalidates the token the row was published
+// with, so a row left behind routes every request into an authorization error - the account keeps
+// looking bound while nothing can be served through it.
+//
+// A successful republish is what spends a rejection record; a failed one keeps it, and the next
+// pass tries again under the same throttles.
+func (a *App) republishClinePassRows(ctx context.Context, managementKey string, publishMissing bool) {
+	if a == nil || a.clinePass == nil || strings.TrimSpace(managementKey) == "" {
+		return
+	}
+	routes, readable := a.clinePassChannelRoutes(ctx, managementKey)
+	if !readable {
+		// An unreadable list is not an empty one: rebinding on top of it could publish a
+		// duplicate row, and every account would be rewritten for the wrong reason.
 		return
 	}
 	for _, account := range a.clinePass.ListAccounts() {
 		if ctx.Err() != nil {
 			return
 		}
-		if !a.clinePass.AuthFailurePending(account.ID) {
+		credential := a.clinePass.accessToken(account.ID)
+		_, bound := clinePassChannelRouteLookup(account, credential, routes)
+		stale := clinePassRouteRowStale(account, a.clinePassChannelLabel(account.ID), credential, routes)
+		rejected := a.clinePass.AuthFailurePending(account.ID)
+		if !stale && !rejected && !(publishMissing && !bound) {
 			continue
 		}
 		if outcome := a.bindClinePassAccountBestEffort(ctx, managementKey, account.ID, true); outcome.Bound {
