@@ -743,6 +743,16 @@ func recentAccountSuccess(account Account) bool {
 	return false
 }
 
+func noteSuccessfulKimiQuotaClearsAuthenticationReview(record *inspectionRecord, accountID string, policy InspectionPolicy, now time.Time) {
+	if record == nil || record.Signal.ReasonCode != "authentication_review" {
+		return
+	}
+	applyUsageRecordToInspection(record, cpaapi.UsageRecord{
+		AuthIndex: accountID,
+		Failed:    false,
+	}, policy, now)
+}
+
 func containsInspectionText(text string, values ...string) bool {
 	for _, value := range values {
 		if strings.Contains(text, value) {

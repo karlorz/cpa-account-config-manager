@@ -477,3 +477,179 @@ func TestFetchKimiQuotaMetadataEmptyBodyReturnsUnavailable(t *testing.T) {
 		t.Fatalf("expected ErrQuotaMetadataUnavailable, got: %v", errFetch)
 	}
 }
+
+func TestKimiInspectionStaleAuthReviewClearedOnSuccessfulQuota(t *testing.T) {
+	now := time.Date(2026, time.July, 21, 12, 0, 0, 0, time.UTC)
+	policy := defaultInspectionPolicy()
+
+	// 1. Stale authentication_review (LastFailureAt in the past, LastSuccessAt zero or earlier)
+	// plus a successful Kimi quota note, account status ready/active, usages under 100%:
+	// decideInspection health is healthy (healthy_recent_success or equivalent keep), not authentication_review.
+	t.Run("stale auth review cleared when healthy", func(t *testing.T) {
+		record := inspectionRecord{
+			Signal: inspectionSignal{
+				ReasonCode:          "authentication_review",
+				Confidence:          InspectionConfidenceMedium,
+				LastFailureAt:       now.Add(-2 * time.Hour),
+				ConsecutiveFailures: 1,
+			},
+		}
+		account := Account{
+			ID:       "kimi-1",
+			Provider: "kimi",
+			Status:   "ready",
+			Usage: &AccountUsageSnapshot{
+				Quota: &QuotaUsageSnapshot{
+					Provider: "kimi",
+					SevenDay: &UsageWindowSnapshot{
+						UsedPercent: 40,
+					},
+				},
+			},
+		}
+
+		noteSuccessfulKimiQuotaClearsAuthenticationReview(&record, account.ID, policy, now)
+		decision := decideInspection(account, record, now)
+
+		if decision.Health != InspectionHealthHealthy {
+			t.Errorf("decision.Health = %v, want %v", decision.Health, InspectionHealthHealthy)
+		}
+		if decision.ReasonCode == "authentication_review" {
+			t.Errorf("decision.ReasonCode = %q, want not authentication_review", decision.ReasonCode)
+		}
+	})
+
+	// 2. Same stale authentication_review plus Account.Usage.Quota.SevenDay.UsedPercent >= 100:
+	// decision ReasonCode quota_exhausted, AutoDisableEligible true.
+	// This must remain true even without the success note, because accountQuotaLimited outranks the signal.
+	t.Run("stale auth review outranked by quota exhausted with and without success note", func(t *testing.T) {
+		account := Account{
+			ID:       "kimi-2",
+			Provider: "kimi",
+			Status:   "ready",
+			Usage: &AccountUsageSnapshot{
+				Quota: &QuotaUsageSnapshot{
+					Provider: "kimi",
+					SevenDay: &UsageWindowSnapshot{
+						UsedPercent: 100,
+						ResetAt:     timePointer(now.Add(24 * time.Hour)),
+					},
+				},
+			},
+		}
+
+		// Without success note:
+		recordWithoutNote := inspectionRecord{
+			Signal: inspectionSignal{
+				ReasonCode:          "authentication_review",
+				Confidence:          InspectionConfidenceMedium,
+				LastFailureAt:       now.Add(-2 * time.Hour),
+				ConsecutiveFailures: 1,
+			},
+		}
+		decisionWithout := decideInspection(account, recordWithoutNote, now)
+		if decisionWithout.ReasonCode != "quota_exhausted" {
+			t.Errorf("decisionWithout.ReasonCode = %q, want quota_exhausted", decisionWithout.ReasonCode)
+		}
+		if !decisionWithout.AutoDisableEligible {
+			t.Errorf("decisionWithout.AutoDisableEligible = %v, want true", decisionWithout.AutoDisableEligible)
+		}
+
+		// With success note:
+		recordWithNote := recordWithoutNote
+		noteSuccessfulKimiQuotaClearsAuthenticationReview(&recordWithNote, account.ID, policy, now)
+		decisionWith := decideInspection(account, recordWithNote, now)
+		if decisionWith.ReasonCode != "quota_exhausted" {
+			t.Errorf("decisionWith.ReasonCode = %q, want quota_exhausted", decisionWith.ReasonCode)
+		}
+		if !decisionWith.AutoDisableEligible {
+			t.Errorf("decisionWith.AutoDisableEligible = %v, want true", decisionWith.AutoDisableEligible)
+		}
+	})
+
+	// 3. Signal ReasonCode invalid_credentials is unchanged by the Kimi success note
+	// (still invalid_credentials / reauth, AutoDisableEligible preserved).
+	t.Run("invalid_credentials unchanged by success note", func(t *testing.T) {
+		record := inspectionRecord{
+			Signal: inspectionSignal{
+				ReasonCode:          "invalid_credentials",
+				Confidence:          InspectionConfidenceHigh,
+				AutoDisableEligible: true,
+				LastFailureAt:       now.Add(-2 * time.Hour),
+				ConsecutiveFailures: 1,
+			},
+		}
+		account := Account{
+			ID:       "kimi-3",
+			Provider: "kimi",
+			Status:   "ready",
+		}
+
+		noteSuccessfulKimiQuotaClearsAuthenticationReview(&record, account.ID, policy, now)
+
+		if record.Signal.ReasonCode != "invalid_credentials" {
+			t.Errorf("record.Signal.ReasonCode = %q, want invalid_credentials", record.Signal.ReasonCode)
+		}
+		if !record.Signal.LastSuccessAt.IsZero() {
+			t.Errorf("record.Signal.LastSuccessAt = %v, want zero", record.Signal.LastSuccessAt)
+		}
+
+		decision := decideInspection(account, record, now)
+		if decision.ReasonCode != "invalid_credentials" {
+			t.Errorf("decision.ReasonCode = %q, want invalid_credentials", decision.ReasonCode)
+		}
+		if decision.Health != InspectionHealthInvalidCredentials {
+			t.Errorf("decision.Health = %v, want %v", decision.Health, InspectionHealthInvalidCredentials)
+		}
+		if decision.Recommendation != InspectionRecommendationReauth {
+			t.Errorf("decision.Recommendation = %v, want %v", decision.Recommendation, InspectionRecommendationReauth)
+		}
+		if !decision.AutoDisableEligible {
+			t.Errorf("decision.AutoDisableEligible = %v, want true", decision.AutoDisableEligible)
+		}
+	})
+
+	// 4. After the success note, Account.StatusMessage `unauthorized` still decides authentication_review.
+	t.Run("account StatusMessage unauthorized still decides authentication_review after success note", func(t *testing.T) {
+		record := inspectionRecord{
+			Signal: inspectionSignal{
+				ReasonCode:          "authentication_review",
+				Confidence:          InspectionConfidenceMedium,
+				LastFailureAt:       now.Add(-2 * time.Hour),
+				ConsecutiveFailures: 1,
+			},
+		}
+		account := Account{
+			ID:            "kimi-4",
+			Provider:      "kimi",
+			StatusMessage: "unauthorized",
+		}
+
+		noteSuccessfulKimiQuotaClearsAuthenticationReview(&record, account.ID, policy, now)
+		decision := decideInspection(account, record, now)
+
+		if decision.Health != InspectionHealthReview {
+			t.Errorf("decision.Health = %v, want %v", decision.Health, InspectionHealthReview)
+		}
+		if decision.ReasonCode != "authentication_review" {
+			t.Errorf("decision.ReasonCode = %q, want authentication_review", decision.ReasonCode)
+		}
+		if decision.Recommendation != InspectionRecommendationReview {
+			t.Errorf("decision.Recommendation = %v, want %v", decision.Recommendation, InspectionRecommendationReview)
+		}
+	})
+
+	t.Run("success note ignored for non authentication_review reasons", func(t *testing.T) {
+		record := inspectionRecord{
+			Signal: inspectionSignal{
+				ReasonCode:    "token_revoked",
+				Confidence:    InspectionConfidenceHigh,
+				LastFailureAt: now.Add(-time.Hour),
+			},
+		}
+		noteSuccessfulKimiQuotaClearsAuthenticationReview(&record, "kimi-other", policy, now)
+		if !record.Signal.LastSuccessAt.IsZero() {
+			t.Fatalf("LastSuccessAt modified for token_revoked: %v", record.Signal.LastSuccessAt)
+		}
+	})
+}
