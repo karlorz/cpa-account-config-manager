@@ -584,11 +584,15 @@ func usageFailureIsQuotaLimited(record cpaapi.UsageRecord, now time.Time) bool {
 		"usage_limit_reached",
 		"usage limit has been reached",
 		"you have reached your usage limit",
+		"you've reached your",
 		"quota exhausted",
 		"insufficient quota",
 		"insufficient_quota",
 		"weekly limit reached",
 		"weekly_limit_reached",
+		"reached your weekly",
+		"weekly (7-day) usage limit",
+		"7-day) usage limit",
 	} {
 		if strings.Contains(text, marker) {
 			return true
@@ -671,9 +675,13 @@ func usageFailureJSONHasQuotaEvidence(value any, depth int) bool {
 		for _, marker := range []string{
 			"usage limit has been reached",
 			"you have reached your usage limit",
+			"you've reached your",
 			"quota exhausted",
 			"insufficient quota",
 			"weekly limit reached",
+			"reached your weekly",
+			"weekly (7-day) usage limit",
+			"7-day) usage limit",
 		} {
 			if strings.Contains(text, marker) {
 				return true

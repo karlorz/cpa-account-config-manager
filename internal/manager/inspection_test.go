@@ -315,6 +315,37 @@ func TestClassifyUsageFailureRequiresCredentialSemantics(t *testing.T) {
 			wantReason:   "workspace_deactivated",
 			wantEligible: true,
 		},
+		{
+			// Prod Kimi weekly quota exhaustion returns HTTP 403 with
+			// access_terminated_error and prose that does not match the older
+			// Codex "usage_limit_reached" / "weekly limit reached" tokens.
+			// Without these phrases the failure was authentication_review and
+			// auto_disable_eligible stayed false, so quota-exhausted accounts
+			// were never auto-disabled.
+			name: "kimi weekly usage limit 403 is quota exhausted",
+			record: cpaapi.UsageRecord{
+				Provider: "kimi",
+				Failed:   true,
+				Failure: cpaapi.UsageFailure{
+					StatusCode: http.StatusForbidden,
+					Body:       `{"error":{"message":"You've reached your weekly (7-day) usage limit. Your quota will reset when the current 7-day window ends. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/membership/subscription?tab=quota","type":"access_terminated_error"}}`,
+				},
+			},
+			wantReason:   "quota_exhausted",
+			wantEligible: true,
+		},
+		{
+			name: "bare access_terminated_error without usage prose stays review",
+			record: cpaapi.UsageRecord{
+				Provider: "kimi",
+				Failed:   true,
+				Failure: cpaapi.UsageFailure{
+					StatusCode: http.StatusForbidden,
+					Body:       `{"error":{"message":"access terminated","type":"access_terminated_error"}}`,
+				},
+			},
+			wantReason: "authentication_review",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -146,7 +146,21 @@ func classifyUsageFailure(record cpaapi.UsageRecord, now time.Time) inspectionEv
 }
 
 func usageFailureHasQuotaEvidence(record cpaapi.UsageRecord, normalizedText string) bool {
-	if containsInspectionText(normalizedText, "usage_limit_reached", "usage limit has been reached", "quota exhausted", "weekly limit reached") {
+	// Kimi returns HTTP 403 access_terminated_error with prose like
+	// "You've reached your weekly (7-day) usage limit" — not the Codex-style
+	// "usage_limit_reached" / "weekly limit reached" tokens. Match both.
+	if containsInspectionText(normalizedText,
+		"usage_limit_reached",
+		"usage limit has been reached",
+		"you have reached your usage limit",
+		"you've reached your",
+		"quota exhausted",
+		"weekly limit reached",
+		"weekly_limit_reached",
+		"reached your weekly",
+		"weekly (7-day) usage limit",
+		"7-day) usage limit",
+	) {
 		return true
 	}
 	for _, header := range []string{"X-Codex-Primary-Used-Percent", "X-Codex-Secondary-Used-Percent"} {
