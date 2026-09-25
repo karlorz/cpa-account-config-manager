@@ -1790,7 +1790,13 @@ func (e *InspectionEngine) scanWithMode(ctx context.Context, scheduled, manualPr
 	// Refresh them from their respective quota endpoints during every armed inspection so
 	// the result row does not keep a stale account-table snapshot.
 	if strings.TrimSpace(managementKey) != "" && modelTests != nil {
-		refreshInspectionQuota(ctx, modelTests, accounts, config.ManagementBaseURL, managementKey)
+		successfulKimiAccounts := refreshInspectionQuota(ctx, modelTests, accounts, config.ManagementBaseURL, managementKey)
+		for _, id := range successfulKimiAccounts {
+			if record, exists := previous[id]; exists && record.Signal.ReasonCode == "authentication_review" {
+				noteSuccessfulKimiQuotaClearsAuthenticationReview(&record, id, policy, now)
+				previous[id] = record
+			}
+		}
 	}
 	// A normal quota probe can freeze an overdraft baseline while this scan is
 	// running. Refresh only the in-memory usage projection so remediation in

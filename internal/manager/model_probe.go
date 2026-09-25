@@ -324,13 +324,13 @@ func (s *ModelTestService) SetExperimentalTransformer(transformer RequestTransfo
 	s.experimentalTransformer = transformer
 }
 
-func (s *ModelTestService) RefreshInspectionQuota(ctx context.Context, managementBaseURL, managementKey string, account Account) {
+func (s *ModelTestService) RefreshInspectionQuota(ctx context.Context, managementBaseURL, managementKey string, account Account) bool {
 	if s == nil || s.usage == nil || !skipsInspectionModelProbe(account) || strings.TrimSpace(managementKey) == "" {
-		return
+		return false
 	}
 	client, errClient := newManagementClient(managementBaseURL, managementKey, s.doer)
 	if errClient != nil {
-		return
+		return false
 	}
 	defer client.clearSecrets()
 
@@ -350,17 +350,18 @@ func (s *ModelTestService) RefreshInspectionQuota(ctx context.Context, managemen
 		metadata, errFetch = fetchKimiQuotaMetadata(ctx, client, account)
 		provider = "kimi"
 	} else {
-		return
+		return false
 	}
 
 	if errFetch != nil || metadata.quota == nil {
-		return
+		return false
 	}
 	snapshot := metadata.quota
 	snapshot.Provider = provider
 	snapshot.PlanType = metadata.planType
 	snapshot.MetadataObservedAt = s.currentTime()
 	s.usage.ObserveQuotaUsage(account.ID, snapshot)
+	return provider == "kimi"
 }
 
 func (s *ModelTestService) SetAgentIdentityExperiment(experiment *AgentIdentityExperiment) {
