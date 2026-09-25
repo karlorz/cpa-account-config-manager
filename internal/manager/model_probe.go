@@ -1525,7 +1525,18 @@ func classifyModelProbe(kind string, statusCode int, body []byte) (string, strin
 
 func modelProbeBodyHasQuotaEvidence(body []byte) bool {
 	text := normalizedFailureText(string(body))
-	return containsInspectionText(text, "usage_limit_reached", "usage limit has been reached", "quota exhausted", "weekly limit reached")
+	return containsInspectionText(text,
+		"usage_limit_reached",
+		"usage limit has been reached",
+		"you have reached your usage limit",
+		"you've reached your",
+		"quota exhausted",
+		"weekly limit reached",
+		"weekly_limit_reached",
+		"reached your weekly",
+		"weekly (7-day) usage limit",
+		"7-day) usage limit",
+	)
 }
 
 func unsupportedChatGPTAccountModel(body []byte) string {
