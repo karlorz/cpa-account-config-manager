@@ -1490,6 +1490,12 @@ func (a *App) HandleManagement(ctx context.Context, req cpaapi.ManagementRequest
 		// a management key while the operator is simply using the gateway. The key also starts the
 		// credential upkeep loop, which keeps the row's token valid between page loads.
 		a.rememberClinePassManagementKey(managementKey)
+		if a.inspection != nil {
+			a.inspection.RememberManagementKey(managementKey)
+			if method == http.MethodGet && strings.Contains(path, "/inspection") {
+				a.inspection.WakeQuotaRefresh()
+			}
+		}
 		if strings.TrimSpace(managementKey) != "" {
 			a.startClinePassMaintenance()
 		}
