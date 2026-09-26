@@ -653,3 +653,92 @@ func TestKimiInspectionStaleAuthReviewClearedOnSuccessfulQuota(t *testing.T) {
 		}
 	})
 }
+
+func TestKimiExhaustedWindowOutranksRecentSuccess(t *testing.T) {
+	now := time.Date(2026, time.September, 26, 4, 0, 0, 0, time.UTC)
+	record := inspectionRecord{
+		Signal: inspectionSignal{
+			ReasonCode:         "healthy_recent_success",
+			LastFailureAt:      now.Add(-2 * time.Hour),
+			LastSuccessAt:      now.Add(-time.Minute),
+			ConsecutiveSuccess: 2,
+		},
+	}
+	account := Account{
+		ID:       "kimi-weekly",
+		Provider: "kimi",
+		Status:   "ready",
+		Success:  3,
+		Usage: &AccountUsageSnapshot{
+			Quota: &QuotaUsageSnapshot{
+				Provider:   "kimi",
+				ObservedAt: now.Add(-72 * time.Hour),
+				FiveHour:   &UsageWindowSnapshot{UsedPercent: 0, ResetAt: timePointer(now.Add(5 * time.Hour))},
+				SevenDay:   &UsageWindowSnapshot{UsedPercent: 100, ResetAt: timePointer(now.Add(20 * time.Hour))},
+			},
+		},
+	}
+
+	weekly := decideInspection(account, record, now)
+	if weekly.ReasonCode != "quota_exhausted" || !weekly.AutoDisableEligible || weekly.Recommendation != InspectionRecommendationDisable {
+		t.Fatalf("weekly decision = %+v, want quota_exhausted disable", weekly)
+	}
+
+	account.Usage.Quota.SevenDay.UsedPercent = 10
+	account.Usage.Quota.FiveHour.UsedPercent = 100
+	fiveHour := decideInspection(account, record, now)
+	if fiveHour.ReasonCode != "quota_exhausted" || !fiveHour.AutoDisableEligible || fiveHour.Recommendation != InspectionRecommendationDisable {
+		t.Fatalf("five-hour decision = %+v, want quota_exhausted disable", fiveHour)
+	}
+
+	account.Usage.Quota.FiveHour.UsedPercent = 0
+	healthy := decideInspection(account, record, now)
+	if healthy.Health != InspectionHealthHealthy || healthy.ReasonCode != "healthy_recent_success" {
+		t.Fatalf("under-limit decision = %+v, want healthy_recent_success", healthy)
+	}
+}
+
+func TestRememberManagementKeyWakesOneScan(t *testing.T) {
+	engine := NewInspectionEngine(nil, nil, nil)
+	engine.started = true
+	engine.RememberManagementKey("  ")
+	engine.WakeQuotaRefresh()
+	if engine.managementKey != "" || engine.pending || len(engine.scanWake) != 0 {
+		t.Fatalf("blank key changed engine: key=%q pending=%t wake=%d", engine.managementKey, engine.pending, len(engine.scanWake))
+	}
+
+	engine.RememberManagementKey("management-secret")
+	if engine.managementKey != "management-secret" || engine.pending || len(engine.scanWake) != 0 {
+		t.Fatalf("storing the key started a scan: pending=%t wake=%d", engine.pending, len(engine.scanWake))
+	}
+	engine.WakeQuotaRefresh()
+	if !engine.pending || len(engine.scanWake) != 1 {
+		t.Fatalf("first wake did not arm one scan: pending=%t wake=%d", engine.pending, len(engine.scanWake))
+	}
+
+	engine.WakeQuotaRefresh()
+	if len(engine.scanWake) != 1 {
+		t.Fatalf("second wake queued another scan: wake=%d", len(engine.scanWake))
+	}
+}
+
+func TestRefreshInspectionQuotaWithoutKeyLeavesObservedAt(t *testing.T) {
+	observed := time.Date(2026, time.September, 23, 10, 0, 0, 0, time.UTC)
+	tracker := NewUsageTracker()
+	t.Cleanup(tracker.Close)
+	tracker.now = func() time.Time { return observed }
+	tracker.ObserveQuotaUsage("kimi-1", &QuotaUsageSnapshot{
+		Provider: "kimi",
+		FiveHour: &UsageWindowSnapshot{UsedPercent: 10},
+		SevenDay: &UsageWindowSnapshot{UsedPercent: 60},
+	})
+	service := NewModelTestService(nil, tracker)
+	service.now = func() time.Time { return observed.Add(72 * time.Hour) }
+	if service.RefreshInspectionQuota(context.Background(), "http://127.0.0.1:8317", "", Account{ID: "kimi-1", Provider: "kimi"}) {
+		t.Fatal("empty management key refreshed quota")
+	}
+	snapshot := tracker.Snapshot("kimi-1")
+	if snapshot == nil || snapshot.Quota == nil || !snapshot.Quota.ObservedAt.Equal(observed) {
+		t.Fatalf("observed time moved without a fetch: %+v", snapshot)
+	}
+}

@@ -747,6 +747,43 @@ func (e *InspectionEngine) setPolicyInternal(policy InspectionPolicy) (Inspectio
 	return e.Snapshot(), nil
 }
 
+// RememberManagementKey keeps the latest management key in memory so a scheduled
+// inspection can refresh Kimi and Antigravity quotas after startup cleared the
+// key. The key is never persisted or logged. Storing the key does not start a scan.
+func (e *InspectionEngine) RememberManagementKey(managementKey string) {
+	if e == nil {
+		return
+	}
+	trimmed := strings.TrimSpace(managementKey)
+	if trimmed == "" {
+		return
+	}
+	e.mu.Lock()
+	e.managementKey = trimmed
+	e.mu.Unlock()
+}
+
+// WakeQuotaRefresh starts one inspection scan when a management key is already
+// stored. Repeated calls while a scan is pending do not queue more scans.
+func (e *InspectionEngine) WakeQuotaRefresh() {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	wake := strings.TrimSpace(e.managementKey) != "" && e.started && !e.closed && !e.pending && !e.running
+	if wake {
+		e.pending = true
+		e.stopRequested = false
+	}
+	e.mu.Unlock()
+	if wake {
+		select {
+		case e.scanWake <- struct{}{}:
+		default:
+		}
+	}
+}
+
 func (e *InspectionEngine) RequestScan() InspectionSnapshot {
 	if e == nil {
 		return InspectionSnapshot{Policy: defaultInspectionPolicy()}
@@ -1788,7 +1825,13 @@ func (e *InspectionEngine) scanWithMode(ctx context.Context, scheduled, manualPr
 	}
 	// Antigravity and Kimi quotas are not present on generateContent / chat probe responses.
 	// Refresh them from their respective quota endpoints during every armed inspection so
-	// the result row does not keep a stale account-table snapshot.
+	// the result row does not keep a stale account-table snapshot. A key remembered while
+	// this scan was already running is read here, before the health decision.
+	if strings.TrimSpace(managementKey) == "" {
+		e.mu.RLock()
+		managementKey = e.managementKey
+		e.mu.RUnlock()
+	}
 	if strings.TrimSpace(managementKey) != "" && modelTests != nil {
 		successfulKimiAccounts := refreshInspectionQuota(ctx, modelTests, accounts, config.ManagementBaseURL, managementKey)
 		for _, id := range successfulKimiAccounts {
