@@ -413,17 +413,12 @@ func decideInspection(account Account, record inspectionRecord, now time.Time) i
 				AutoDisableEligible: true,
 				SignalSource:        InspectionSignalNative,
 			}
+		case "transient upstream error", "upstream temporarily unavailable", "cloudflare challenge":
+			return nativeUnavailableReview()
 		}
 	}
-	if nativeStatusSupported && (account.Unavailable || status == "transient upstream error" || status == "upstream temporarily unavailable" || status == "cloudflare challenge") {
-		return inspectionDecision{
-			Health:              InspectionHealthUnavailable,
-			ReasonCode:          "native_unavailable",
-			Confidence:          InspectionConfidenceMedium,
-			Recommendation:      InspectionRecommendationDisable,
-			AutoDisableEligible: true,
-			SignalSource:        InspectionSignalNative,
-		}
+	if nativeStatusSupported && account.Unavailable {
+		return nativeUnavailableReview()
 	}
 	if !record.Signal.LastSuccessAt.IsZero() && record.Signal.LastSuccessAt.After(record.Signal.LastFailureAt) {
 		return inspectionDecision{
@@ -448,6 +443,16 @@ func decideInspection(account Account, record inspectionRecord, now time.Time) i
 		Health:         InspectionHealthUnknown,
 		ReasonCode:     "no_recent_evidence",
 		Confidence:     InspectionConfidenceLow,
+		Recommendation: InspectionRecommendationReview,
+		SignalSource:   InspectionSignalNative,
+	}
+}
+
+func nativeUnavailableReview() inspectionDecision {
+	return inspectionDecision{
+		Health:         InspectionHealthUnavailable,
+		ReasonCode:     "native_unavailable",
+		Confidence:     InspectionConfidenceMedium,
 		Recommendation: InspectionRecommendationReview,
 		SignalSource:   InspectionSignalNative,
 	}

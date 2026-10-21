@@ -378,11 +378,19 @@ func TestNativeStatusRequiresExplicitFailureSemantics(t *testing.T) {
 		{status: "payment_required", wantHealth: InspectionHealthReview, wantReason: "billing_review"},
 		{status: "invalid_grant", wantHealth: InspectionHealthInvalidCredentials, wantReason: "invalid_credentials", eligible: true},
 		{status: "quota exhausted", wantHealth: InspectionHealthQuotaLimited, wantReason: "quota_exhausted", eligible: true},
+		{status: "transient upstream error", wantHealth: InspectionHealthUnavailable, wantReason: "native_unavailable"},
+		{status: "upstream temporarily unavailable", wantHealth: InspectionHealthUnavailable, wantReason: "native_unavailable"},
+		{status: "cloudflare challenge", wantHealth: InspectionHealthUnavailable, wantReason: "native_unavailable"},
 	} {
 		decision := decideInspection(Account{StatusMessage: test.status}, inspectionRecord{}, now)
 		if decision.Health != test.wantHealth || decision.ReasonCode != test.wantReason || decision.AutoDisableEligible != test.eligible {
 			t.Fatalf("status %q decision = %#v", test.status, decision)
 		}
+	}
+	unavailable := decideInspection(Account{Unavailable: true}, inspectionRecord{}, now)
+	if unavailable.Health != InspectionHealthUnavailable || unavailable.ReasonCode != "native_unavailable" ||
+		unavailable.Recommendation != InspectionRecommendationReview || unavailable.AutoDisableEligible {
+		t.Fatalf("native Unavailable decision = %#v, want review without auto-disable", unavailable)
 	}
 }
 
@@ -615,7 +623,7 @@ func TestInspectionAutomationDisablesAndOnlyRecoversOwnedAccount(t *testing.T) {
 	}
 }
 
-func TestInspectionRepeatedNativeUnavailableDisablesAndFreshEvidenceReenablesOwnedAccount(t *testing.T) {
+func TestInspectionRepeatedNativeUnavailableDoesNotAutoDisable(t *testing.T) {
 	now := time.Date(2026, time.July, 21, 3, 0, 0, 0, time.UTC)
 	host := inspectionEditableHost(false)
 	host.entries[0].Status = "error"
@@ -628,34 +636,28 @@ func TestInspectionRepeatedNativeUnavailableDisablesAndFreshEvidenceReenablesOwn
 
 	engine.mu.Lock()
 	engine.policy = InspectionPolicy{
-		ScanIntervalMinutes: 30, FailureThreshold: 2, RecoveryThreshold: 1,
-		AutoDisable: true, AutoEnable: true, DeleteGraceHours: 168, DeleteBatchSize: 10,
+		ScanIntervalMinutes: 30, FailureThreshold: 2, AutoDisable: true,
 	}
 	engine.mu.Unlock()
 
 	engine.scan(context.Background())
 	first := engine.ListResults(InspectionResultQuery{Page: 1, PageSize: 50}).Results[0]
-	if first.Health != InspectionHealthUnavailable || !first.AutoDisableEligible || first.FailureStreak != 1 || first.Disabled {
+	if first.Health != InspectionHealthUnavailable || first.ReasonCode != "native_unavailable" ||
+		first.Recommendation != InspectionRecommendationReview || first.AutoDisableEligible ||
+		first.Disabled || first.OwnedDisable || first.FailureStreak != 0 {
 		t.Fatalf("first native unavailable result = %#v", first)
 	}
 	engine.scan(context.Background())
-	disabled := engine.ListResults(InspectionResultQuery{Page: 1, PageSize: 50}).Results[0]
-	if !disabled.Disabled || !disabled.OwnedDisable || disabled.AutoAction != InspectionActionDisable || disabled.AutoActionStatus != InspectionActionSucceeded {
-		t.Fatalf("repeated native unavailable result = %#v", disabled)
+	second := engine.ListResults(InspectionResultQuery{Page: 1, PageSize: 50}).Results[0]
+	if second.Disabled || second.OwnedDisable || second.AutoDisableEligible ||
+		second.Recommendation != InspectionRecommendationReview || second.AutoAction == InspectionActionDisable {
+		t.Fatalf("repeated native unavailable result = %#v", second)
 	}
-
 	host.mu.Lock()
-	host.entries[0].Disabled = true
-	host.entries[0].Unavailable = false
-	host.entries[0].Status = "ready"
-	host.entries[0].StatusMessage = ""
+	saves := len(host.saves)
 	host.mu.Unlock()
-	now = now.Add(time.Hour)
-	engine.Observe(cpaapi.UsageRecord{Provider: "codex", AuthIndex: "inspection-account", Failed: false})
-	engine.scan(context.Background())
-	recovered := engine.ListResults(InspectionResultQuery{Page: 1, PageSize: 50}).Results[0]
-	if recovered.Disabled || recovered.OwnedDisable || recovered.AutoAction != InspectionActionEnable || recovered.AutoActionStatus != InspectionActionSucceeded {
-		t.Fatalf("recovered native unavailable result = %#v", recovered)
+	if saves != 0 {
+		t.Fatalf("native unavailable wrote %d auth saves, want 0", saves)
 	}
 }
 
@@ -1124,8 +1126,8 @@ func TestAgentIdentityUnsupportedNativeFailureDoesNotRecommendDisable(t *testing
 	ordinary.ID = "ordinary-codex"
 	ordinary.Provider = "codex"
 	decision = decideInspection(ordinary, inspectionRecord{}, now)
-	if decision.Health != InspectionHealthUnavailable || decision.Recommendation != InspectionRecommendationDisable || !decision.AutoDisableEligible {
-		t.Fatalf("ordinary Codex native decision = %#v, want unavailable disable", decision)
+	if decision.Health != InspectionHealthUnavailable || decision.Recommendation != InspectionRecommendationReview || decision.AutoDisableEligible {
+		t.Fatalf("ordinary Codex native decision = %#v, want unavailable review", decision)
 	}
 
 	activeProbe := inspectionRecord{Probe: inspectionProbeSignal{
