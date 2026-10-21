@@ -2630,8 +2630,7 @@ func inspectionHealthIsStrongFailure(health string) bool {
 
 func inspectionDecisionIsStrongFailure(decision inspectionDecision) bool {
 	return inspectionHealthIsStrongFailure(decision.Health) ||
-		(decision.SignalSource == InspectionSignalActiveProbe && decision.AutoDisableEligible) ||
-		(decision.ReasonCode == "native_unavailable" && decision.AutoDisableEligible)
+		(decision.SignalSource == InspectionSignalActiveProbe && decision.AutoDisableEligible)
 }
 
 func inspectionResultIsStrongFailure(result InspectionResult) bool {
