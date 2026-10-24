@@ -707,7 +707,8 @@ func (a *App) handleClinePassModelPage(ctx context.Context, req cpaapi.Managemen
 // clinePassModelPageIDs lists the ids the model page shows. The allow-listed
 // catalog is the default; when at least one stored account carries a refreshed
 // listing, the union of those listings is used instead, catalog order first and
-// unknown ids after.
+// unknown ids after. Load-time catalog union fills newly curated ids into those
+// listings, so a model added to the allow-list appears without a re-save.
 func clinePassModelPageIDs(accounts []ClinePassAccountView) []string {
 	accountIDs := make([]string, 0, len(clinePassCatalog))
 	seen := make(map[string]bool, len(clinePassCatalog))

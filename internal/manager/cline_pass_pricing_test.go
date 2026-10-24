@@ -238,6 +238,8 @@ func TestClinePassDeepSeekV41FlashUsesTheDocumentedFlashRate(t *testing.T) {
 	for _, id := range []string{
 		"cline-pass/deepseek-v4.1-flash",
 		"deepseek-v4.1-flash",
+		"cline-pass/deepseek-v4.1-flash-1017",
+		"deepseek-v4.1-flash-1017",
 		"cline-pass/deepseek-v4-1-flash",
 		"DeepSeek-V4.1-Flash",
 	} {
@@ -254,6 +256,9 @@ func TestClinePassDeepSeekV41FlashUsesTheDocumentedFlashRate(t *testing.T) {
 	// another channel could be attributed to a Cline Pass account.
 	if !clinePassIsPublishedModel("deepseek-v4.1-flash") {
 		t.Fatal("the catalog's stripped deepseek-v4.1-flash id is no longer recognized as published")
+	}
+	if !clinePassIsPublishedModel("cline-pass/deepseek-v4.1-flash-1017") || !clinePassIsPublishedModel("deepseek-v4.1-flash-1017") {
+		t.Fatal("the catalog's deepseek-v4.1-flash-1017 id is not recognized as published")
 	}
 	for _, id := range []string{"deepseek-v4-1-flash"} {
 		if clinePassIsPublishedModel(id) {

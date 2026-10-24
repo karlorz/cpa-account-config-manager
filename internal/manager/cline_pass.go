@@ -120,6 +120,7 @@ var clinePassCatalog = []clinePassCatalogModel{
 	{ID: "cline-pass/kimi-k3", Name: "Kimi K3"},
 	{ID: "cline-pass/deepseek-v4-pro", Name: "DeepSeek V4 Pro"},
 	{ID: "cline-pass/deepseek-v4.1-flash", Name: "DeepSeek V4.1 Flash"},
+	{ID: "cline-pass/deepseek-v4.1-flash-1017", Name: "DeepSeek V4.1 Flash 1017"},
 	{ID: "cline-pass/deepseek-v4-flash", Name: "DeepSeek V4 Flash"},
 	{ID: "cline-pass/mimo-v2.5", Name: "MiMo-V2.5"},
 	{ID: "cline-pass/mimo-v2.5-pro", Name: "MiMo-V2.5-Pro"},
@@ -805,7 +806,7 @@ func normalizeClinePassAccounts(accounts []ClinePassAccount) []ClinePassAccount 
 		if account.ID == "" || account.AccessToken == "" {
 			continue
 		}
-		account.Models = normalizeClinePassModels(account.Models)
+		account.Models = clinePassModelsUnionCatalog(normalizeClinePassModels(account.Models))
 		normalized = append(normalized, account)
 	}
 	return normalized
@@ -875,6 +876,31 @@ func normalizeClinePassModels(models []string) []string {
 	}
 	sort.Strings(normalized)
 	return normalized
+}
+
+// clinePassModelsUnionCatalog fills a stored listing with any allow-listed id
+// the current catalog added after that listing was saved, so a deployment that
+// already has an account picks up a newly curated model without a re-save.
+func clinePassModelsUnionCatalog(models []string) []string {
+	if len(models) == 0 {
+		return clinePassCatalogIDs()
+	}
+	if len(models) >= len(clinePassCatalog) {
+		return models
+	}
+	seen := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		seen[model] = struct{}{}
+	}
+	union := make([]string, len(models), len(clinePassCatalog))
+	copy(union, models)
+	for _, model := range clinePassCatalog {
+		if _, exists := seen[model.ID]; exists {
+			continue
+		}
+		union = append(union, model.ID)
+	}
+	return union
 }
 
 func (s *ClinePassService) persistLocked() error {

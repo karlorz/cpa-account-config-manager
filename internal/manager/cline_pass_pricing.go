@@ -152,16 +152,17 @@ var clinePassReferenceRates = map[string]clinePassReferenceRate{
 // clinePassReferenceRateAliases maps a model id Cline's gateway serves onto the
 // documented reference rate row that prices it. The documented table prices
 // "DeepSeek V4 Flash" under the cline-pass/deepseek-v4-flash id, while the gateway
-// now publishes the same subscription model as cline-pass/deepseek-v4.1-flash:
-// DeepSeek's own documentation states that the retired deepseek-v4-flash model is
-// served by DeepSeek-V4.1-Flash and billed at the Flash price. Resolving both
-// spellings to that one documented row keeps the model the gateway actually
-// serves from being reported as unpriced, which would value a running account at
-// zero. Every key is a model id, never a wildcard, so an unknown model still
-// reports unpriced.
+// now publishes the same subscription model as cline-pass/deepseek-v4.1-flash and
+// cline-pass/deepseek-v4.1-flash-1017: DeepSeek's own documentation states that
+// the retired deepseek-v4-flash model is served by DeepSeek-V4.1-Flash and billed
+// at the Flash price. Resolving those spellings to that one documented row keeps
+// the model the gateway actually serves from being reported as unpriced, which
+// would value a running account at zero. Every key is a model id, never a
+// wildcard, so an unknown model still reports unpriced.
 var clinePassReferenceRateAliases = map[string]string{
-	"deepseek-v4.1-flash": "deepseek-v4-flash",
-	"deepseek-v4-1-flash": "deepseek-v4-flash",
+	"deepseek-v4.1-flash":      "deepseek-v4-flash",
+	"deepseek-v4-1-flash":      "deepseek-v4-flash",
+	"deepseek-v4.1-flash-1017": "deepseek-v4-flash",
 }
 
 // clinePassModelKey normalizes a model id to the reference rate table key: the

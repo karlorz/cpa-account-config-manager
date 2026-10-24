@@ -179,6 +179,73 @@ func TestClinePassCatalogIsAnAllowList(t *testing.T) {
 	if len(clinePassCatalogIDs()) != len(clinePassCatalog) {
 		t.Fatal("clinePassCatalogIDs lost entries")
 	}
+	if !clinePassAllowsModel("cline-pass/deepseek-v4.1-flash-1017") {
+		t.Fatal("the catalog does not allow-list cline-pass/deepseek-v4.1-flash-1017")
+	}
+}
+
+func TestClinePassCatalogUnionAddsFlash1017OnLoad(t *testing.T) {
+	legacy := make([]string, 0, len(clinePassCatalog))
+	for _, model := range clinePassCatalog {
+		if model.ID == "cline-pass/deepseek-v4.1-flash-1017" {
+			continue
+		}
+		legacy = append(legacy, model.ID)
+	}
+	if len(legacy) != len(clinePassCatalog)-1 {
+		t.Fatalf("legacy snapshot = %d, want %d", len(legacy), len(clinePassCatalog)-1)
+	}
+	union := clinePassModelsUnionCatalog(legacy)
+	if len(union) != len(clinePassCatalog) {
+		t.Fatalf("union = %d, want the current catalog", len(union))
+	}
+	found := false
+	for _, id := range union {
+		if id == "cline-pass/deepseek-v4.1-flash-1017" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("a stored listing from before 1017 was curated did not pick the model up")
+	}
+
+	dataDir := t.TempDir()
+	service, _ := newConfiguredClinePassService(t, dataDir)
+	accountID, errSave := service.SaveAPIKeyAccount("", "legacy-catalog", "", "sk-legacy-catalog")
+	if errSave != nil {
+		t.Fatalf("SaveAPIKeyAccount() error = %v", errSave)
+	}
+	service.mu.Lock()
+	for index := range service.accounts {
+		if service.accounts[index].ID == accountID {
+			service.accounts[index].Models = append([]string(nil), legacy...)
+		}
+	}
+	if errPersist := service.persistLocked(); errPersist != nil {
+		service.mu.Unlock()
+		t.Fatalf("persist legacy listing: %v", errPersist)
+	}
+	service.mu.Unlock()
+
+	reloaded, _ := newConfiguredClinePassService(t, dataDir)
+	views := reloaded.ListAccounts()
+	if len(views) != 1 {
+		t.Fatalf("reloaded accounts = %d", len(views))
+	}
+	if len(views[0].Models) != len(clinePassCatalog) {
+		t.Fatalf("reloaded models = %d, want the current catalog", len(views[0].Models))
+	}
+	has1017 := false
+	for _, id := range views[0].Models {
+		if id == "cline-pass/deepseek-v4.1-flash-1017" {
+			has1017 = true
+			break
+		}
+	}
+	if !has1017 {
+		t.Fatal("loading a pre-1017 store did not auto-include cline-pass/deepseek-v4.1-flash-1017")
+	}
 }
 
 func TestClinePassSavePersistsRedactsAndRemoves(t *testing.T) {

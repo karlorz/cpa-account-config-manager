@@ -15,26 +15,26 @@ import (
 // context then spends far more of the subscription than the same conversation
 // pinned to one upstream would.
 //
-// The gateway pins the upstream from two request-body fields, and CPA's own
-// `payload.override-raw` rules write the same two fields. This transformer writes
-// them in the request path instead, because the plugin already owns the Cline
-// Pass channel: no host-config edit, no restart, and the switch is per
-// installation. It only fills the fields in when they are absent, so a caller
-// that pinned the upstream itself keeps its own choice.
+// On this gateway, `providerOptions.gateway.only` alone does not pin the
+// upstream: a request that names a missing provider still succeeds, and the
+// same Pass model can keep landing on a private fallback. The Fenjue pin adds
+// the gateway's model-capability filter (`has`) next to `only`, which is what
+// actually selects DeepSeek's own upstream. This transformer writes that
+// shape on the request path, because the plugin already owns the Cline Pass
+// channel: no host-config edit, no restart, and the switch is per
+// installation. It only fills providerOptions in when the field is absent, so
+// a caller that already named gateway options keeps its own choice.
 const (
 	// clinePassUpstreamProviderOptionsField carries the gateway routing rule.
 	clinePassUpstreamProviderOptionsField = "providerOptions"
-	// clinePassUpstreamProviderField carries the legacy routing rule, which older
-	// gateways read.
-	clinePassUpstreamProviderField = "provider"
 	// clinePassUpstreamProviderName is the upstream the switch pins requests to.
 	clinePassUpstreamProviderName = "deepseek"
 )
 
-// clinePassUpstreamInjection is spliced into a body that carries neither field.
-// It holds the exact raw shape the gateway documents, so the plugin cannot
-// invent a nesting the gateway would ignore.
-var clinePassUpstreamInjection = []byte(`"providerOptions":{"gateway":{"only":["deepseek"]}},"provider":{"only":["deepseek"]}`)
+// clinePassUpstreamInjection is spliced into a body that has no providerOptions
+// field. It holds the Fenjue pin: only plus the capability filter, in the raw
+// shape community measurements confirmed on cline-pass/deepseek-v4.1-flash-1017.
+var clinePassUpstreamInjection = []byte(`"providerOptions":{"gateway":{"only":["deepseek"],"has":["vision","implicit-caching"]}}`)
 
 // clinePassOpenAIChatMarker is the cheap preflight before any decoding: only an
 // OpenAI-style chat body carries the fields the gateway reads.
@@ -66,8 +66,8 @@ func (p *ClinePassUpstreamPinner) RequestInterceptionBeforeActive() bool {
 	return p.RequestInterceptionActive()
 }
 
-// InterceptRequest adds the two upstream-pinning fields to a Cline Pass DeepSeek
-// chat request that carries neither of them.
+// InterceptRequest adds the Fenjue pin to a Cline Pass DeepSeek chat request
+// that does not already carry providerOptions.
 func (p *ClinePassUpstreamPinner) InterceptRequest(request cpaapi.RequestInterceptRequest) (cpaapi.RequestInterceptResponse, bool) {
 	if !p.RequestInterceptionActive() || len(request.Body) == 0 {
 		return cpaapi.RequestInterceptResponse{}, false
@@ -88,9 +88,6 @@ func (p *ClinePassUpstreamPinner) InterceptRequest(request cpaapi.RequestInterce
 	if _, exists := fields[clinePassUpstreamProviderOptionsField]; exists {
 		return cpaapi.RequestInterceptResponse{}, false
 	}
-	if _, exists := fields[clinePassUpstreamProviderField]; exists {
-		return cpaapi.RequestInterceptResponse{}, false
-	}
 	// CPA reports the resolved model and the model the client asked for, and they
 	// can differ once the published-alias mapping is applied, so both are checked.
 	model := ""
@@ -109,7 +106,7 @@ func (p *ClinePassUpstreamPinner) InterceptRequest(request cpaapi.RequestInterce
 	if model == "" {
 		return cpaapi.RequestInterceptResponse{}, false
 	}
-	// Splice the two fields in behind the opening brace: every other byte of the
+	// Splice the Fenjue pin in behind the opening brace: every other byte of the
 	// caller's payload, including its formatting, is preserved.
 	inner := bytes.TrimSpace(trimmed[1 : len(trimmed)-1])
 	updated := make([]byte, 0, len(trimmed)+len(clinePassUpstreamInjection)+2)

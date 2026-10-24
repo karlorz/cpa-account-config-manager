@@ -627,6 +627,10 @@ func TestClinePassModelPageReportsClientIDsAndPublication(t *testing.T) {
 	if row.Name != "DeepSeek V4.1 Flash" || row.Free || row.UpstreamID != "cline-pass/deepseek-v4.1-flash" || row.ClientID != "deepseek-v4.1-flash" || !row.Published {
 		t.Fatalf("prefixed row = %+v", row)
 	}
+	flash1017 := clinePassModelRow(t, page, "cline-pass/deepseek-v4.1-flash-1017")
+	if flash1017.Name != "DeepSeek V4.1 Flash 1017" || flash1017.Free || flash1017.UpstreamID != "cline-pass/deepseek-v4.1-flash-1017" || flash1017.ClientID != "deepseek-v4.1-flash-1017" || !flash1017.Published {
+		t.Fatalf("1017 row = %+v", flash1017)
+	}
 	free := clinePassModelRow(t, page, "cline-free/longcat-2.0")
 	if free.Name != "LongCat 2.0" || !free.Free || free.UpstreamID != "cline-free/longcat-2.0" || free.ClientID != "cline-free/longcat-2.0" || !free.Published {
 		t.Fatalf("free row = %+v", free)

@@ -13,9 +13,9 @@ import (
 // The Cline Pass gateway routes one subscription model across several upstreams.
 // Prompt caches are per upstream, so a conversation that switches upstream
 // between steps re-reads its whole context and can cool what the previous
-// upstream had cached. The switch pins the two request-body fields the gateway
-// reads, and the tests below cover that injection, its off state and every
-// request it must leave alone.
+// upstream had cached. The switch writes the Fenjue pin (gateway.only plus
+// gateway.has), and the tests below cover that injection, its off state and
+// every request it must leave alone.
 
 func newPinnedClinePassService(t *testing.T, pin bool) *ClinePassService {
 	t.Helper()
@@ -58,29 +58,12 @@ func TestClinePassUpstreamPinnerPinsDeepseekRequests(t *testing.T) {
 	if !changed || len(response.Body) == 0 {
 		t.Fatal("a Cline Pass DeepSeek chat request was not pinned")
 	}
-	fields := decodedBody(t, response.Body)
-	var providerOptions struct {
-		Gateway struct {
-			Only []string `json:"only"`
-		} `json:"gateway"`
+	assertFenjuePin(t, response.Body)
+	if _, exists := decodedBody(t, response.Body)["provider"]; exists {
+		t.Fatal("the Fenjue pin must not invent a top-level provider field")
 	}
-	if errDecode := json.Unmarshal(fields["providerOptions"], &providerOptions); errDecode != nil {
-		t.Fatalf("providerOptions = %s", fields["providerOptions"])
-	}
-	if len(providerOptions.Gateway.Only) != 1 || providerOptions.Gateway.Only[0] != "deepseek" {
-		t.Fatalf("providerOptions.gateway.only = %#v", providerOptions.Gateway.Only)
-	}
-	var provider struct {
-		Only []string `json:"only"`
-	}
-	if errDecode := json.Unmarshal(fields["provider"], &provider); errDecode != nil {
-		t.Fatalf("provider = %s", fields["provider"])
-	}
-	if len(provider.Only) != 1 || provider.Only[0] != "deepseek" {
-		t.Fatalf("provider.only = %#v", provider.Only)
-	}
-	// Everything the caller sent is still there, byte for byte: only the two
-	// fields were added.
+	// Everything the caller sent is still there, byte for byte: only the pin
+	// object was added.
 	for _, fragment := range []string{"\"temperature\": 0.25", "\"content\": \"hi\"", "{\"role\": \"user\""} {
 		if !strings.Contains(string(response.Body), fragment) {
 			t.Fatalf("the injected body lost %q: %s", fragment, response.Body)
@@ -88,7 +71,7 @@ func TestClinePassUpstreamPinnerPinsDeepseekRequests(t *testing.T) {
 	}
 
 	// Running the transformer again over its own output changes nothing, because
-	// both fields are present now.
+	// providerOptions is present now.
 	if _, changedAgain := pinner.InterceptRequest(cpaapi.RequestInterceptRequest{
 		Model: "cline-pass/deepseek-v4.1-flash", Body: response.Body,
 	}); changedAgain {
@@ -108,9 +91,29 @@ func TestClinePassUpstreamPinnerPinsStrippedModelID(t *testing.T) {
 	if !changed {
 		t.Fatal("the stripped Cline Pass DeepSeek id was not pinned")
 	}
-	if fields := decodedBody(t, response.Body); len(fields["providerOptions"]) == 0 {
-		t.Fatal("the stripped id did not receive providerOptions")
+	assertFenjuePin(t, response.Body)
+}
+
+func TestClinePassUpstreamPinnerPinsFlash1017(t *testing.T) {
+	service := newPinnedClinePassService(t, true)
+	pinner := NewClinePassUpstreamPinner(service)
+	response, changed := pinner.InterceptRequest(cpaapi.RequestInterceptRequest{
+		Model: "cline-pass/deepseek-v4.1-flash-1017",
+		Body:  []byte(`{"model":"cline-pass/deepseek-v4.1-flash-1017","messages":[{"role":"user","content":"hi"}]}`),
+	})
+	if !changed {
+		t.Fatal("the 1017 Cline Pass DeepSeek id was not pinned")
 	}
+	assertFenjuePin(t, response.Body)
+
+	stripped, strippedChanged := pinner.InterceptRequest(cpaapi.RequestInterceptRequest{
+		RequestedModel: "deepseek-v4.1-flash-1017",
+		Body:           []byte(`{"model":"deepseek-v4.1-flash-1017","messages":[{"role":"user","content":"hi"}]}`),
+	})
+	if !strippedChanged {
+		t.Fatal("the stripped 1017 Cline Pass DeepSeek id was not pinned")
+	}
+	assertFenjuePin(t, stripped.Body)
 }
 
 func TestClinePassUpstreamPinnerLeavesOtherRequestsAlone(t *testing.T) {
@@ -134,10 +137,6 @@ func TestClinePassUpstreamPinnerLeavesOtherRequestsAlone(t *testing.T) {
 		"the caller already pinned providerOptions": {
 			newPinnedClinePassService(t, true),
 			cpaapi.RequestInterceptRequest{Model: "cline-pass/deepseek-v4.1-flash", Body: []byte(`{"providerOptions":{"gateway":{"only":["anthropic"]}},"messages":[]}`)},
-		},
-		"the caller already pinned provider": {
-			newPinnedClinePassService(t, true),
-			cpaapi.RequestInterceptRequest{Model: "cline-pass/deepseek-v4.1-flash", Body: []byte(`{"provider":{"only":["anthropic"]},"messages":[]}`)},
 		},
 		"a body that is not a chat payload": {
 			newPinnedClinePassService(t, true),
@@ -169,7 +168,56 @@ func TestClinePassUpstreamPinnerLeavesOtherRequestsAlone(t *testing.T) {
 	if !clinePassPinsDeepseekUpstream("cline-pass/deepseek-v4-pro") {
 		t.Fatal("a catalog DeepSeek id was not recognised")
 	}
+	if !clinePassPinsDeepseekUpstream("cline-pass/deepseek-v4.1-flash-1017") || !clinePassPinsDeepseekUpstream("deepseek-v4.1-flash-1017") {
+		t.Fatal("the 1017 Cline Pass DeepSeek id was not recognised")
+	}
 	_ = openAI
+}
+
+func TestClinePassUpstreamPinnerAddsFenjuePinBesideLegacyProvider(t *testing.T) {
+	// A body that only carries the older provider.only field is not a Fenjue pin:
+	// only plus has lives under providerOptions, so the transformer still writes
+	// that object and leaves the caller's provider object untouched.
+	service := newPinnedClinePassService(t, true)
+	pinner := NewClinePassUpstreamPinner(service)
+	response, changed := pinner.InterceptRequest(cpaapi.RequestInterceptRequest{
+		Model: "cline-pass/deepseek-v4.1-flash-1017",
+		Body:  []byte(`{"provider":{"only":["anthropic"]},"messages":[{"role":"user","content":"hi"}]}`),
+	})
+	if !changed {
+		t.Fatal("a legacy provider object blocked the Fenjue pin")
+	}
+	assertFenjuePin(t, response.Body)
+	fields := decodedBody(t, response.Body)
+	var provider struct {
+		Only []string `json:"only"`
+	}
+	if errDecode := json.Unmarshal(fields["provider"], &provider); errDecode != nil {
+		t.Fatalf("provider = %s", fields["provider"])
+	}
+	if len(provider.Only) != 1 || provider.Only[0] != "anthropic" {
+		t.Fatalf("the caller's provider object was rewritten: %#v", provider.Only)
+	}
+}
+
+func assertFenjuePin(t *testing.T, raw []byte) {
+	t.Helper()
+	fields := decodedBody(t, raw)
+	var providerOptions struct {
+		Gateway struct {
+			Only []string `json:"only"`
+			Has  []string `json:"has"`
+		} `json:"gateway"`
+	}
+	if errDecode := json.Unmarshal(fields["providerOptions"], &providerOptions); errDecode != nil {
+		t.Fatalf("providerOptions = %s", fields["providerOptions"])
+	}
+	if len(providerOptions.Gateway.Only) != 1 || providerOptions.Gateway.Only[0] != "deepseek" {
+		t.Fatalf("providerOptions.gateway.only = %#v", providerOptions.Gateway.Only)
+	}
+	if len(providerOptions.Gateway.Has) != 2 || providerOptions.Gateway.Has[0] != "vision" || providerOptions.Gateway.Has[1] != "implicit-caching" {
+		t.Fatalf("providerOptions.gateway.has = %#v", providerOptions.Gateway.Has)
+	}
 }
 
 func TestClinePassUpstreamPinnerWithoutAccounts(t *testing.T) {

@@ -513,11 +513,11 @@ func TestRequestInterceptBeforePinsClinePassDeepseekThroughTheHostPath(t *testin
 		t.Fatalf("decode response: %v", errUnmarshal)
 	}
 	injected := string(response.Body)
-	if !strings.Contains(injected, `"providerOptions":{"gateway":{"only":["deepseek"]}}`) {
-		t.Fatalf("the before hook did not pin providerOptions: %s", injected)
+	if !strings.Contains(injected, `"providerOptions":{"gateway":{"only":["deepseek"],"has":["vision","implicit-caching"]}}`) {
+		t.Fatalf("the before hook did not write the Fenjue pin: %s", injected)
 	}
-	if !strings.Contains(injected, `"provider":{"only":["deepseek"]}`) {
-		t.Fatalf("the before hook did not pin provider: %s", injected)
+	if strings.Contains(injected, `"provider":{"only":["deepseek"]}`) {
+		t.Fatalf("the before hook still wrote the legacy provider pin: %s", injected)
 	}
 	if !strings.Contains(injected, `"keep this cache"`) {
 		t.Fatalf("the injection lost the caller payload: %s", injected)
