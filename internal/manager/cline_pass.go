@@ -1530,6 +1530,30 @@ func (s *ClinePassService) AccountIDForAuthIndex(authIndex string) string {
 	return accountID
 }
 
+// AccountIDForRequestMetadata resolves the stored account a CPA request or completion was routed
+// through from its metadata: the auth index first, then the auth identity. Metadata that names no
+// stored account answers "", which is the case for every channel this plugin does not own.
+func (s *ClinePassService) AccountIDForRequestMetadata(metadata map[string]any) string {
+	if s == nil || len(metadata) == 0 {
+		return ""
+	}
+	for _, key := range []string{"selected_auth_index", "auth_index"} {
+		if value, ok := metadata[key].(string); ok {
+			if accountID := s.AccountIDForAuthIndex(value); accountID != "" {
+				return accountID
+			}
+		}
+	}
+	for _, key := range []string{"selected_auth_id", "auth_id"} {
+		if value, ok := metadata[key].(string); ok {
+			if accountID := s.AccountIDForAuthIdentity(value); accountID != "" {
+				return accountID
+			}
+		}
+	}
+	return ""
+}
+
 // SoleAccountID reports the only stored account when exactly one exists. A rejected request that
 // names a published Cline Pass model but no stored identity can only have been served by that
 // account; with several candidates nothing is guessed.

@@ -23,7 +23,8 @@ import (
 // shape on the request path, because the plugin already owns the Cline Pass
 // channel: no host-config edit, no restart, and the switch is per
 // installation. It only fills providerOptions in when the field is absent, so
-// a caller that already named gateway options keeps its own choice.
+// a caller that already named gateway options keeps its own choice, and only
+// for requests routed through a stored Cline Pass account.
 const (
 	// clinePassUpstreamProviderOptionsField carries the gateway routing rule.
 	clinePassUpstreamProviderOptionsField = "providerOptions"
@@ -104,6 +105,13 @@ func (p *ClinePassUpstreamPinner) InterceptRequest(request cpaapi.RequestInterce
 		}
 	}
 	if model == "" {
+		return cpaapi.RequestInterceptResponse{}, false
+	}
+	// The model id alone cannot tell channels apart: another provider can serve the
+	// same DeepSeek ids, and the gateway-only providerOptions field makes it fail.
+	// Only a request routed through a stored Cline Pass account is pinned, so a
+	// request with no resolvable channel stays untouched.
+	if p.service.AccountIDForRequestMetadata(request.Metadata) == "" {
 		return cpaapi.RequestInterceptResponse{}, false
 	}
 	// Splice the Fenjue pin in behind the opening brace: every other byte of the

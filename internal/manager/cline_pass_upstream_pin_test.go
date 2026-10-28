@@ -29,6 +29,12 @@ func newPinnedClinePassService(t *testing.T, pin bool) *ClinePassService {
 	return service
 }
 
+// clinePassRouteMetadata is the request metadata CPA attaches when the request
+// was routed through the service's stored Cline Pass account.
+func clinePassRouteMetadata(service *ClinePassService) map[string]any {
+	return map[string]any{"selected_auth_id": service.SoleAccountID()}
+}
+
 // chatBody is a request body that already carries its own formatting, so the
 // tests can prove the injection preserves every other byte.
 const chatBody = "{\n  \"model\": \"cline-pass/deepseek-v4.1-flash\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}],\n  \"temperature\": 0.25\n}"
@@ -53,7 +59,7 @@ func TestClinePassUpstreamPinnerPinsDeepseekRequests(t *testing.T) {
 	}
 
 	response, changed := pinner.InterceptRequest(cpaapi.RequestInterceptRequest{
-		Model: "cline-pass/deepseek-v4.1-flash", Body: []byte(chatBody),
+		Model: "cline-pass/deepseek-v4.1-flash", Body: []byte(chatBody), Metadata: clinePassRouteMetadata(service),
 	})
 	if !changed || len(response.Body) == 0 {
 		t.Fatal("a Cline Pass DeepSeek chat request was not pinned")
@@ -73,7 +79,7 @@ func TestClinePassUpstreamPinnerPinsDeepseekRequests(t *testing.T) {
 	// Running the transformer again over its own output changes nothing, because
 	// providerOptions is present now.
 	if _, changedAgain := pinner.InterceptRequest(cpaapi.RequestInterceptRequest{
-		Model: "cline-pass/deepseek-v4.1-flash", Body: response.Body,
+		Model: "cline-pass/deepseek-v4.1-flash", Body: response.Body, Metadata: clinePassRouteMetadata(service),
 	}); changedAgain {
 		t.Fatal("the injection is not idempotent")
 	}
@@ -87,6 +93,7 @@ func TestClinePassUpstreamPinnerPinsStrippedModelID(t *testing.T) {
 	response, changed := pinner.InterceptRequest(cpaapi.RequestInterceptRequest{
 		RequestedModel: "deepseek-v4.1-flash",
 		Body:           []byte(`{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}]}`),
+		Metadata:       clinePassRouteMetadata(service),
 	})
 	if !changed {
 		t.Fatal("the stripped Cline Pass DeepSeek id was not pinned")
@@ -98,8 +105,9 @@ func TestClinePassUpstreamPinnerPinsFlash1017(t *testing.T) {
 	service := newPinnedClinePassService(t, true)
 	pinner := NewClinePassUpstreamPinner(service)
 	response, changed := pinner.InterceptRequest(cpaapi.RequestInterceptRequest{
-		Model: "cline-pass/deepseek-v4.1-flash-1017",
-		Body:  []byte(`{"model":"cline-pass/deepseek-v4.1-flash-1017","messages":[{"role":"user","content":"hi"}]}`),
+		Model:    "cline-pass/deepseek-v4.1-flash-1017",
+		Body:     []byte(`{"model":"cline-pass/deepseek-v4.1-flash-1017","messages":[{"role":"user","content":"hi"}]}`),
+		Metadata: clinePassRouteMetadata(service),
 	})
 	if !changed {
 		t.Fatal("the 1017 Cline Pass DeepSeek id was not pinned")
@@ -109,6 +117,7 @@ func TestClinePassUpstreamPinnerPinsFlash1017(t *testing.T) {
 	stripped, strippedChanged := pinner.InterceptRequest(cpaapi.RequestInterceptRequest{
 		RequestedModel: "deepseek-v4.1-flash-1017",
 		Body:           []byte(`{"model":"deepseek-v4.1-flash-1017","messages":[{"role":"user","content":"hi"}]}`),
+		Metadata:       clinePassRouteMetadata(service),
 	})
 	if !strippedChanged {
 		t.Fatal("the stripped 1017 Cline Pass DeepSeek id was not pinned")
@@ -181,8 +190,9 @@ func TestClinePassUpstreamPinnerAddsFenjuePinBesideLegacyProvider(t *testing.T) 
 	service := newPinnedClinePassService(t, true)
 	pinner := NewClinePassUpstreamPinner(service)
 	response, changed := pinner.InterceptRequest(cpaapi.RequestInterceptRequest{
-		Model: "cline-pass/deepseek-v4.1-flash-1017",
-		Body:  []byte(`{"provider":{"only":["anthropic"]},"messages":[{"role":"user","content":"hi"}]}`),
+		Model:    "cline-pass/deepseek-v4.1-flash-1017",
+		Body:     []byte(`{"provider":{"only":["anthropic"]},"messages":[{"role":"user","content":"hi"}]}`),
+		Metadata: clinePassRouteMetadata(service),
 	})
 	if !changed {
 		t.Fatal("a legacy provider object blocked the Fenjue pin")
@@ -197,6 +207,59 @@ func TestClinePassUpstreamPinnerAddsFenjuePinBesideLegacyProvider(t *testing.T) 
 	}
 	if len(provider.Only) != 1 || provider.Only[0] != "anthropic" {
 		t.Fatalf("the caller's provider object was rewritten: %#v", provider.Only)
+	}
+}
+
+// A Poe (or any other) channel can serve the same DeepSeek model ids as Cline
+// Pass. The gateway-only providerOptions field makes those providers fail with
+// 502/400, so a request is pinned only when it was routed through a stored
+// Cline Pass account.
+func TestClinePassUpstreamPinnerSkipsOtherChannels(t *testing.T) {
+	service := newPinnedClinePassService(t, true)
+	pinner := NewClinePassUpstreamPinner(service)
+	body := []byte(`{"model":"deepseek-v4.1-flash-1017","messages":[{"role":"user","content":"hi"}]}`)
+	cases := map[string]map[string]any{
+		"no metadata":                      nil,
+		"empty metadata":                   {},
+		"an auth id of another channel":    {"selected_auth_id": "openai-compatibility:poe:9585f1aac7a3"},
+		"an auth index of another channel": {"selected_auth_index": "poe-auth-index"},
+		"a non-string auth id":             {"selected_auth_id": 42},
+	}
+	for name, metadata := range cases {
+		t.Run(name, func(t *testing.T) {
+			response, changed := pinner.InterceptRequest(cpaapi.RequestInterceptRequest{
+				Model: "deepseek-v4.1-flash-1017", RequestedModel: "deepseek-v4.1-flash-1017", Body: body, Metadata: metadata,
+			})
+			if changed || len(response.Body) != 0 {
+				t.Fatalf("a request outside the Cline Pass channel was modified: %s", response.Body)
+			}
+		})
+	}
+}
+
+func TestClinePassUpstreamPinnerPinsByAuthIndexAndIdentity(t *testing.T) {
+	service := newPinnedClinePassService(t, true)
+	accountID := service.SoleAccountID()
+	service.SetRouteAuthIndexes(accountID, []string{"cline-auth-index"})
+	pinner := NewClinePassUpstreamPinner(service)
+	body := []byte(`{"model":"deepseek-v4.1-flash-1017","messages":[{"role":"user","content":"hi"}]}`)
+	cases := map[string]map[string]any{
+		"selected auth index": {"selected_auth_index": "cline-auth-index"},
+		"auth index":          {"auth_index": "cline-auth-index"},
+		"selected auth id":    {"selected_auth_id": accountID},
+		"auth id":             {"auth_id": accountID},
+		"credential identity": {"selected_auth_id": clinePassChannelCredentialIdentity("sk-cline-pin")},
+	}
+	for name, metadata := range cases {
+		t.Run(name, func(t *testing.T) {
+			response, changed := pinner.InterceptRequest(cpaapi.RequestInterceptRequest{
+				Model: "deepseek-v4.1-flash-1017", Body: body, Metadata: metadata,
+			})
+			if !changed {
+				t.Fatal("a request routed through the Cline Pass account was not pinned")
+			}
+			assertFenjuePin(t, response.Body)
+		})
 	}
 }
 

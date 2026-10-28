@@ -129,19 +129,8 @@ func (a *App) clinePassAccountForCompletion(completion cpaapi.RequestCompletion)
 	if a == nil || a.clinePass == nil {
 		return ""
 	}
-	for _, key := range []string{"selected_auth_index", "auth_index"} {
-		if value, ok := completion.Metadata[key].(string); ok {
-			if accountID := a.clinePass.AccountIDForAuthIndex(value); accountID != "" {
-				return accountID
-			}
-		}
-	}
-	for _, key := range []string{"selected_auth_id", "auth_id"} {
-		if value, ok := completion.Metadata[key].(string); ok {
-			if accountID := a.clinePass.AccountIDForAuthIdentity(value); accountID != "" {
-				return accountID
-			}
-		}
+	if accountID := a.clinePass.AccountIDForRequestMetadata(completion.Metadata); accountID != "" {
+		return accountID
 	}
 	if !clinePassCompletionNamesPublishedModel(completion) {
 		return ""

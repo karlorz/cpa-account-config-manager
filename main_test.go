@@ -480,6 +480,14 @@ func TestRequestInterceptBeforePinsClinePassDeepseekThroughTheHostPath(t *testin
 	if saved.StatusCode != http.StatusOK {
 		t.Fatalf("saving the account = %d body=%s", saved.StatusCode, saved.Body)
 	}
+	var savedAccount struct {
+		Account struct {
+			ID string `json:"id"`
+		} `json:"account"`
+	}
+	if errSaved := json.Unmarshal(saved.Body, &savedAccount); errSaved != nil || savedAccount.Account.ID == "" {
+		t.Fatalf("the saved account has no id: %v body=%s", errSaved, saved.Body)
+	}
 	updated := testApp.HandleManagement(context.Background(), cpaapi.ManagementRequest{
 		Method: http.MethodPut, Path: base + "/settings", Headers: headers,
 		Body: []byte(`{"deepseek_upstream_consistency":true}`),
@@ -495,7 +503,8 @@ func TestRequestInterceptBeforePinsClinePassDeepseekThroughTheHostPath(t *testin
 	rawRequest, errMarshal := json.Marshal(cpaapi.RequestInterceptRequest{
 		RequestID: "req-pin-1", SourceFormat: "openai", ToFormat: "openai",
 		Model: "cline-pass/deepseek-v4.1-flash", RequestedModel: "cline-pass/deepseek-v4.1-flash",
-		Body: []byte(chat),
+		Body:     []byte(chat),
+		Metadata: map[string]any{"selected_auth_id": savedAccount.Account.ID},
 	})
 	if errMarshal != nil {
 		t.Fatalf("marshal interceptor request: %v", errMarshal)
@@ -521,6 +530,33 @@ func TestRequestInterceptBeforePinsClinePassDeepseekThroughTheHostPath(t *testin
 	}
 	if !strings.Contains(injected, `"keep this cache"`) {
 		t.Fatalf("the injection lost the caller payload: %s", injected)
+	}
+
+	// The same model routed through a channel this plugin does not own keeps the
+	// untouched path.
+	foreignRequest, errMarshal := json.Marshal(cpaapi.RequestInterceptRequest{
+		RequestID: "req-pin-foreign", SourceFormat: "openai", ToFormat: "openai",
+		Model: "deepseek-v4.1-flash", RequestedModel: "deepseek-v4.1-flash",
+		Body:     []byte(chat),
+		Metadata: map[string]any{"selected_auth_id": "openai-compatibility:poe:other"},
+	})
+	if errMarshal != nil {
+		t.Fatalf("marshal foreign request: %v", errMarshal)
+	}
+	raw, errHandle = handleMethod(cpaapi.MethodRequestInterceptBefore, foreignRequest)
+	if errHandle != nil {
+		t.Fatalf("foreign handleMethod() error = %v", errHandle)
+	}
+	result, errDecode = decodeEnvelopeResult(raw)
+	if errDecode != nil {
+		t.Fatalf("decode foreign result: %v", errDecode)
+	}
+	var foreign cpaapi.RequestInterceptResponse
+	if errUnmarshal := json.Unmarshal(result, &foreign); errUnmarshal != nil {
+		t.Fatalf("decode foreign response: %v", errUnmarshal)
+	}
+	if len(foreign.Body) != 0 {
+		t.Fatalf("a request outside the Cline Pass channel was modified: %s", foreign.Body)
 	}
 
 	// Every other model keeps the untouched path.
