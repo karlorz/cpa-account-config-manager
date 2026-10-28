@@ -73,6 +73,13 @@ func (p *ClinePassUpstreamPinner) InterceptRequest(request cpaapi.RequestInterce
 	if !p.RequestInterceptionActive() || len(request.Body) == 0 {
 		return cpaapi.RequestInterceptResponse{}, false
 	}
+	// The model id alone cannot tell channels apart: another provider can serve the
+	// same DeepSeek ids, and the gateway-only providerOptions field makes it fail.
+	// Only a request routed through a stored Cline Pass account is pinned, and the
+	// check runs before the body is decoded so other channels cost nothing.
+	if p.service.AccountIDForRequestMetadata(request.Metadata) == "" {
+		return cpaapi.RequestInterceptResponse{}, false
+	}
 	trimmed := bytes.TrimSpace(request.Body)
 	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
 		return cpaapi.RequestInterceptResponse{}, false
@@ -105,13 +112,6 @@ func (p *ClinePassUpstreamPinner) InterceptRequest(request cpaapi.RequestInterce
 		}
 	}
 	if model == "" {
-		return cpaapi.RequestInterceptResponse{}, false
-	}
-	// The model id alone cannot tell channels apart: another provider can serve the
-	// same DeepSeek ids, and the gateway-only providerOptions field makes it fail.
-	// Only a request routed through a stored Cline Pass account is pinned, so a
-	// request with no resolvable channel stays untouched.
-	if p.service.AccountIDForRequestMetadata(request.Metadata) == "" {
 		return cpaapi.RequestInterceptResponse{}, false
 	}
 	// Splice the Fenjue pin in behind the opening brace: every other byte of the
