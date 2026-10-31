@@ -526,6 +526,7 @@ export const zhCNUI: Record<UIMessageKey, string> = {
   "ui.hide_key": "隐藏 Key",
   "ui.show_key": "显示 Key",
   "ui.verify_and_continue": "验证并进入",
+  "ui.remember_management_key": "保存管理会话密钥",
   "ui.close": "关闭",
   "ui.cancel": "取消",
   "ui.unknown": "未知",

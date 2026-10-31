@@ -262,7 +262,7 @@ Persist `data_dir` when CPA runs in a replaceable container. Without an explicit
 ## Security Model
 
 - Privileged operations use fixed, CPA-authenticated Management routes; the public Resource route serves only the embedded static UI.
-- The Management Key remains in the current browser/CPA request chain and is never persisted by the plugin.
+- The Management Key remains in the current browser/CPA request chain. It is persisted only when the operator enables the login page's **Save management session key** option; the key is stored in the browser's existing CPA Management Center session entry and is cleared when CPA rejects it.
 - Raw Auth JSON, tokens, cookies, API keys, proxy credentials, header values, and upstream responses are excluded from public models, logs, and persisted state.
 - Imports and exports are bounded by count and size. ZIP input is checked for path traversal and abnormal expansion.
 - Account writes use previews, physical revisions, a shared writer lock, and conflict checks. Destructive operations such as deletion and quota reset require explicit confirmation.

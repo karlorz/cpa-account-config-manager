@@ -23,12 +23,21 @@ function xorBytes(data: Uint8Array, key: Uint8Array): Uint8Array {
   return output;
 }
 
+function storageKeyMaterial(): Uint8Array {
+  return new TextEncoder().encode(`${SECRET_SALT}|${window.location.host}|${navigator.userAgent}`);
+}
+
 function decodeStoredValue(value: string): string {
   if (!value.startsWith(ENC_PREFIX)) return value;
   const binary = atob(value.slice(ENC_PREFIX.length));
   const encrypted = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  const key = new TextEncoder().encode(`${SECRET_SALT}|${window.location.host}|${navigator.userAgent}`);
-  return new TextDecoder().decode(xorBytes(encrypted, key));
+  return new TextDecoder().decode(xorBytes(encrypted, storageKeyMaterial()));
+}
+
+function encodeStoredValue(value: string): string {
+  const encrypted = xorBytes(new TextEncoder().encode(value), storageKeyMaterial());
+  const binary = Array.from(encrypted, (character) => String.fromCharCode(character)).join("");
+  return `${ENC_PREFIX}${btoa(binary)}`;
 }
 
 function extractPanelAuth(value: unknown): PanelAuth | null {
@@ -49,5 +58,30 @@ export function readPanelAuth(options: { allowStandalone?: boolean } = {}): Pane
     return extractPanelAuth(JSON.parse(decodeStoredValue(raw)));
   } catch {
     return null;
+  }
+}
+
+export function writePanelAuth(apiBase: string, managementKey: string): void {
+  const auth = {
+    apiBase: apiBase.trim().replace(/\/+$/, ""),
+    managementKey: managementKey.trim(),
+  };
+  if (auth.apiBase === "" || auth.managementKey === "") return;
+  try {
+    const state = { ...auth, rememberPassword: true };
+    localStorage.setItem(STORAGE_KEY, encodeStoredValue(JSON.stringify({ state, version: 0 })));
+    // The host Management Center uses this marker to re-enter a remembered session.
+    localStorage.setItem("isLoggedIn", "true");
+  } catch {
+    // Browser storage is unavailable; the in-memory session still works.
+  }
+}
+
+export function clearPanelAuth(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem("isLoggedIn");
+  } catch {
+    // Browser storage is unavailable; the in-memory session is already cleared.
   }
 }

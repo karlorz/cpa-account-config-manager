@@ -5,19 +5,20 @@ import { useI18n } from "../i18n";
 interface LoginDialogProps {
   loading: boolean;
   error: string;
-  onSubmit: (baseURL: string, managementKey: string) => Promise<void>;
+  onSubmit: (baseURL: string, managementKey: string, rememberKey: boolean) => Promise<void>;
 }
 
 export function LoginDialog({ loading, error, onSubmit }: LoginDialogProps) {
   const { tx } = useI18n();
   const [baseURL, setBaseURL] = useState(window.location.origin);
   const [managementKey, setManagementKey] = useState("");
+  const [rememberKey, setRememberKey] = useState(true);
   const [showKey, setShowKey] = useState(false);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (managementKey.trim() === "") return;
-    await onSubmit(baseURL, managementKey);
+    await onSubmit(baseURL, managementKey, rememberKey);
   };
 
   return (
@@ -46,6 +47,14 @@ export function LoginDialog({ loading, error, onSubmit }: LoginDialogProps) {
               {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
             </button>
           </div>
+        </label>
+        <label className="auth-remember">
+          <input
+            type="checkbox"
+            checked={rememberKey}
+            onChange={(event) => setRememberKey(event.target.checked)}
+          />
+          <span>{tx("ui.remember_management_key")}</span>
         </label>
         {error ? <div className="auth-error" role="alert">{error}</div> : null}
         <button className="button button-primary auth-submit" type="submit" disabled={loading || managementKey.trim() === ""}>

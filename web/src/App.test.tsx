@@ -13,7 +13,10 @@ import { readPanelAuth } from "./store/panelAuth";
 import { _resetSessionForTest } from "./store/session";
 import type { BatchPatch } from "./types";
 
-vi.mock("./store/panelAuth", () => ({ readPanelAuth: vi.fn(() => null) }));
+vi.mock("./store/panelAuth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./store/panelAuth")>();
+  return { ...actual, readPanelAuth: vi.fn(() => null) };
+});
 
 const account = {
   id: "auth-1",
@@ -553,7 +556,75 @@ describe("primary account batch flow", () => {
     expect(body.scope).toEqual({ mode: "selected", ids: ["auth-1"] });
     expect(body.patch).toEqual({ note: "rotated pool" });
     await waitFor(() => expect(new Headers(previewRequest?.init.headers).get("Authorization")).toBe("Bearer management-secret"));
-    expect(localStorage.getItem("management-secret")).toBeNull();
+    expect(localStorage.getItem("cli-proxy-auth")).not.toBeNull();
+  });
+
+  it("saves a verified manual key and restores it on the next embedded load", async () => {
+    const user = userEvent.setup();
+    const accountRequests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/accounts")) {
+        accountRequests.push(url);
+        return jsonResponse({ accounts: [account], total: 1, page: 1, page_size: 50, pages: 1 });
+      }
+      if (url.includes("/batch/status")) {
+        return jsonResponse({ state: "idle", running: false, total: 0, eligible: 0, done: 0, succeeded: 0, failed: 0, conflicts: 0, skipped: 0, workers: 0, patch: { fields: [], proxy_mutation: false }, retry_available: false, persisted: false });
+      }
+      return jsonResponse({});
+    }));
+
+    const first = render(<App />);
+    await user.type(await screen.findByLabelText("Management Key"), "management-secret");
+    await user.click(screen.getByRole("button", { name: "验证并进入" }));
+    expect(await screen.findByText("operator@example.com")).toBeInTheDocument();
+    expect(localStorage.getItem("cli-proxy-auth")).not.toBeNull();
+    const savedAuth = localStorage.getItem("cli-proxy-auth");
+    first.unmount();
+    vi.clearAllMocks();
+
+    const { readPanelAuth: actualReadPanelAuth } = await vi.importActual<typeof import("./store/panelAuth")>("./store/panelAuth");
+    vi.mocked(readPanelAuth).mockImplementation(actualReadPanelAuth);
+    Object.defineProperty(window, "self", { value: window, configurable: true });
+    Object.defineProperty(window, "top", { value: {}, configurable: true });
+    try {
+      render(<App />);
+      expect(await screen.findByText("operator@example.com")).toBeInTheDocument();
+      expect(accountRequests.length).toBeGreaterThan(1);
+      expect(localStorage.getItem("cli-proxy-auth")).toBe(savedAuth);
+    } finally {
+      Object.defineProperty(window, "self", { value: window, configurable: true });
+      Object.defineProperty(window, "top", { value: window, configurable: true });
+    }
+  });
+
+  it("clears a remembered key when CPA rejects it", async () => {
+    const user = userEvent.setup();
+    let rejected = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/accounts")) {
+        if (rejected) return jsonResponse({ error: "invalid management key" }, 401);
+        return jsonResponse({ accounts: [account], total: 1, page: 1, page_size: 50, pages: 1 });
+      }
+      if (url.includes("/batch/status")) {
+        return jsonResponse({ state: "idle", running: false, total: 0, eligible: 0, done: 0, succeeded: 0, failed: 0, conflicts: 0, skipped: 0, workers: 0, patch: { fields: [], proxy_mutation: false }, retry_available: false, persisted: false });
+      }
+      return jsonResponse({});
+    }));
+
+    render(<App />);
+    await user.type(await screen.findByLabelText("Management Key"), "management-secret");
+    await user.click(screen.getByRole("button", { name: "验证并进入" }));
+    expect(await screen.findByText("operator@example.com")).toBeInTheDocument();
+    expect(localStorage.getItem("cli-proxy-auth")).not.toBeNull();
+
+    rejected = true;
+    await user.click(screen.getByRole("button", { name: "刷新账号" }));
+
+    expect(await screen.findByRole("form", { name: "管理认证" })).toBeInTheDocument();
+    expect(localStorage.getItem("cli-proxy-auth")).toBeNull();
+    expect(localStorage.getItem("isLoggedIn")).toBeNull();
   });
 
   it("previews filtered and selected batch deletion, confirms it, and clears the selection", async () => {
@@ -1582,7 +1653,9 @@ describe("primary account batch flow", () => {
 		});
     expect(JSON.parse(String(configRequest?.init.body))).toEqual({ default_policy: { enabled: true, new_account_model_probe_enabled: false, codex_quota_metadata_probe_enabled: true, apply_mode: "missing", scan_interval_seconds: 15, priority: 0, websockets: false, conditional_rules: [] } });
     expect(requests.indexOf(configRequest!)).toBeLessThan(requests.indexOf(putRequest!));
-    expect(localStorage.length).toBe(0);
+    expect(localStorage.getItem("cli-proxy-auth")).not.toBeNull();
+    expect(localStorage.getItem("isLoggedIn")).toBe("true");
+    expect(localStorage.length).toBe(2);
   });
 
   it("previews arbitrary JSON and confirms a redacted account import", async () => {
@@ -1689,7 +1762,9 @@ describe("primary account batch flow", () => {
     expect(pastedFile.type).toBe("text/plain");
     expect(pastedFile.size).toBe(new Blob([rawJSON]).size);
     expect(new Headers(previewRequest?.init.headers).get("Content-Type")).toBeNull();
-    expect(localStorage.length).toBe(0);
+    expect(localStorage.getItem("cli-proxy-auth")).not.toBeNull();
+    expect(localStorage.getItem("isLoggedIn")).toBe("true");
+    expect(localStorage.length).toBe(2);
   });
 });
 

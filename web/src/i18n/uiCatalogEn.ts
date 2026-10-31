@@ -524,6 +524,7 @@ export const enUI = {
   "ui.hide_key": "Hide key",
   "ui.show_key": "Show key",
   "ui.verify_and_continue": "Verify and continue",
+  "ui.remember_management_key": "Save management session key",
   "ui.close": "Close",
   "ui.cancel": "Cancel",
   "ui.unknown": "Unknown",

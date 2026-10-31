@@ -1484,6 +1484,9 @@ export async function getPluginStore(signal?: AbortSignal): Promise<PluginStoreR
       installed: value.installed === true,
       installed_version: typeof value.installed_version === "string" ? value.installed_version.trim() : "",
       update_available: value.update_available === true,
+      source_id: typeof value.source_id === "string" ? value.source_id.trim() : "",
+      source_url: typeof value.source_url === "string" ? value.source_url.trim() : "",
+      repository: typeof value.repository === "string" ? value.repository.trim() : "",
     });
   }
   return { plugins_enabled: source.plugins_enabled, plugins };
@@ -1762,6 +1765,7 @@ async function installPluginUpdateOnce(version: string): Promise<PluginInstallRe
     const store = await getPluginStore();
     const plugin = store.plugins_enabled ? selectPluginStoreEntry(store.plugins) : undefined;
     const storeVersion = normalizedStableVersion(plugin?.version);
+    const sourceID = plugin?.source_id?.trim() ?? "";
     // The store must still list the plugin, because CPA resolves the install
     // target from its own catalog. Refuse when the store names a *different*
     // version than the one requested: that means this page and the store disagree,
@@ -1770,10 +1774,12 @@ async function installPluginUpdateOnce(version: string): Promise<PluginInstallRe
     // plugins whose update source is reachable) is not evidence against an exact
     // version the plugin already resolved for itself.
     const storeContradicts = storeVersion !== null && compareStableVersions(storeVersion.parts, requestedVersion.parts) !== 0;
-    if (!plugin || storeContradicts) {
+    // The source id pins the install to the registry that offered this version,
+    // so a duplicate official row cannot replace this fork-channel build.
+    if (!plugin || storeContradicts || sourceID === "") {
       throw new APIError(404, "ui.the_account_manager_plugin_was_not_found_in_the_plugin_store");
     }
-    const installed = await managementRequest<PluginInstallResult>("/plugin-store/cpa-account-config-manager/install", {
+    const installed = await managementRequest<PluginInstallResult>(`/plugin-store/cpa-account-config-manager/install?source=${encodeURIComponent(sourceID)}`, {
       method: "POST",
       body: JSON.stringify({ version: requestedVersion.value }),
     });

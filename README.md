@@ -250,7 +250,7 @@ CPA 加载插件后，在 Management Center 中打开 **CPA-A Manager**。大多
 ## 安全模型
 
 - 所有特权操作都使用固定且经过 CPA 鉴权的 Management 路由；公共 Resource 路由只提供嵌入式静态 UI。
-- Management Key 只存在于当前浏览器/CPA 请求链路，插件不会持久化。
+- Management Key 只存在于当前浏览器/CPA 请求链路；仅在登录页勾选「保存管理会话密钥」后，才会写入浏览器中 CPA Management Center 已有的会话存储，并在 CPA 拒绝该密钥时清除。
 - 原始 Auth JSON、Token、Cookie、API Key、代理凭据、Header 值和上游响应不会进入公开模型、日志或持久化状态。
 - 导入导出具有数量和体积限制；ZIP 会检查路径穿越和异常展开。
 - 账号写入使用预览、物理 Revision、共享写锁和冲突检查；删除、额度重置等破坏性操作需要明确确认。

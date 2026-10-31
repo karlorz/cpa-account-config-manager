@@ -102,7 +102,7 @@ import {
   type AccountSort,
   type AccountSortField,
 } from "./store/accountSort";
-import { readPanelAuth } from "./store/panelAuth";
+import { clearPanelAuth, readPanelAuth, writePanelAuth } from "./store/panelAuth";
 import { clearSession, setSession } from "./store/session";
 import { takePendingNotice } from "./store/pendingNotice";
 import { isSidebarTelemetryVisible, nextSidebarTelemetryDelay, sidebarTelemetrySignature, sidebarTelemetryTiming } from "./sidebarTelemetry";
@@ -374,6 +374,7 @@ function AccountManagerApp() {
         // retry instead of being silently sent back to login.
         if (error instanceof api.APIError && error.status === 401) {
           clearSession();
+          clearPanelAuth();
           setAuthState("login");
           setAuthError(operatorMessage(error.message, locale));
           return;
@@ -394,6 +395,7 @@ function AccountManagerApp() {
   const handleAPIError = useCallback((error: unknown) => {
     if (error instanceof api.APIError && error.status === 401) {
       clearSession();
+      clearPanelAuth();
       setAuthState("login");
       setAuthError(operatorMessage(error.message, locale));
       return;
@@ -805,17 +807,25 @@ function AccountManagerApp() {
     };
   }, [accountSort, apiFilters, forceJob?.id, forceJob?.running, handleAPIError, page, refreshAccounts]);
 
-  const login = async (baseURL: string, managementKey: string) => {
+  const login = async (baseURL: string, managementKey: string, rememberKey: boolean) => {
     setAuthLoading(true);
     setAuthError("");
-    setSession(baseURL, managementKey);
+    const session = setSession(baseURL, managementKey);
     try {
       const response = await api.listAccounts(1, pageSize, apiFilters, accountSort);
+      if (rememberKey) {
+        // Same-origin sessions normalize to an empty base URL; persist the
+        // origin so the stored entry stays a valid standalone API base.
+        writePanelAuth(session.baseUrl === "" ? window.location.origin : session.baseUrl, session.managementKey);
+      } else {
+        clearPanelAuth();
+      }
       setData(response);
       skipInitialAccountRefresh.current = true;
       setAuthState("ready");
     } catch (error) {
       clearSession();
+      clearPanelAuth();
       setAuthError(error instanceof Error ? operatorMessage(error.message, locale) : tx("ui.authentication_failed"));
     } finally {
       setAuthLoading(false);

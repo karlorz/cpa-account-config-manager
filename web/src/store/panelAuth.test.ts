@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readPanelAuth } from "./panelAuth";
+import { clearPanelAuth, readPanelAuth, writePanelAuth } from "./panelAuth";
 
 const storageKey = "cli-proxy-auth";
 const prefix = "enc::v1::";
@@ -59,5 +59,21 @@ describe("official panel auth recovery", () => {
     expect(readPanelAuth()).toBeNull();
     localStorage.setItem(storageKey, encodePanelState("http://127.0.0.1:8317", ""));
     expect(readPanelAuth()).toBeNull();
+  });
+
+  it("persists a verified manual login in the host-compatible encrypted session", () => {
+    writePanelAuth(" https://cpa.example/ ", " test-key ");
+
+    expect(readPanelAuth({ allowStandalone: true })).toEqual({ apiBase: "https://cpa.example", managementKey: "test-key" });
+    expect(localStorage.getItem("isLoggedIn")).toBe("true");
+  });
+
+  it("clears the remembered session after a rejected key", () => {
+    writePanelAuth("https://cpa.example", "test-key");
+
+    clearPanelAuth();
+
+    expect(readPanelAuth({ allowStandalone: true })).toBeNull();
+    expect(localStorage.getItem("isLoggedIn")).toBeNull();
   });
 });

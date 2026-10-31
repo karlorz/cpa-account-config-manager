@@ -526,6 +526,7 @@ export const ruUI: Record<UIMessageKey, string> = {
   "ui.hide_key": "Скрыть ключ",
   "ui.show_key": "Показать ключ",
   "ui.verify_and_continue": "Проверить и продолжить",
+  "ui.remember_management_key": "Сохранить ключ сессии управления",
   "ui.close": "Закрыть",
   "ui.cancel": "Отмена",
   "ui.unknown": "Неизвестно",

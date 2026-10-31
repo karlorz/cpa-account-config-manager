@@ -526,6 +526,7 @@ export const zhTWUI: Record<UIMessageKey, string> = {
   "ui.hide_key": "隱藏金鑰",
   "ui.show_key": "顯示金鑰",
   "ui.verify_and_continue": "驗證並進入",
+  "ui.remember_management_key": "儲存管理會話金鑰",
   "ui.close": "關閉",
   "ui.cancel": "取消",
   "ui.unknown": "未知",
