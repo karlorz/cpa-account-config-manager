@@ -43,6 +43,7 @@ func TestPluginStateFollowsTheAuthDirectory(t *testing.T) {
 		Name: "codex-one.json", Path: authPath, Source: "file",
 	}}}
 	app := NewApp(host, nil)
+	defer app.Close()
 	// An implicit data directory, exactly like an installation that never configured data_dir.
 	app.ConfigureHost([]byte(""), cpaapi.SchemaVersion)
 	app.DiscoverAuthStorage(host.entries)
@@ -101,6 +102,7 @@ func TestExplicitDataDirIsNotMovedToTheAuthDirectory(t *testing.T) {
 		Name: "codex-one.json", Path: authPath, Source: "file",
 	}}}
 	app := NewApp(host, nil)
+	defer app.Close()
 	app.ConfigureHost([]byte("data_dir: "+pinned), cpaapi.SchemaVersion)
 	app.DiscoverAuthStorage(host.entries)
 
@@ -118,6 +120,7 @@ func TestStateDirectoryIsReportedThroughTheRoute(t *testing.T) {
 		Name: "codex-one.json", Path: authPath, Source: "file",
 	}}}
 	app := NewApp(host, nil)
+	defer app.Close()
 	app.ConfigureHost([]byte(""), cpaapi.SchemaVersion)
 	app.DiscoverAuthStorage(host.entries)
 	settleStateDirectory(t, app)
