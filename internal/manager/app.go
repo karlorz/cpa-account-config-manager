@@ -168,6 +168,9 @@ type App struct {
 	clinePassWriteMu   sync.Mutex
 	reconfigureRunning bool
 	reconfigureCycle   chan struct{}
+	// reconfigureClosed stops new state-directory reconfigurations once Close begins,
+	// so the coalesced worker cannot rewrite retired state directories afterwards.
+	reconfigureClosed bool
 	// configApplyMu serializes every service configuration, so a deferred configure and a host
 	// reconfigure never mutate the services at the same time.
 	configApplyMu sync.Mutex
@@ -417,6 +420,10 @@ func (a *App) scheduleResolvedConfigReconfigure(config Config, previousDir strin
 		return
 	}
 	a.reconfigureMu.Lock()
+	if a.reconfigureClosed {
+		a.reconfigureMu.Unlock()
+		return
+	}
 	// Keep the directory of the first queued change: coalesced changes are applied in one hop,
 	// and the state that must be adopted comes from the directory that was effective first.
 	if !a.reconfigureQueued {
@@ -1015,6 +1022,17 @@ func (a *App) attributeProviderChannelCredential(record cpaapi.UsageRecord) cpaa
 func (a *App) Close() {
 	if a == nil {
 		return
+	}
+	// Stop accepting new state-directory reconfigurations, then wait for the
+	// coalesced worker to finish applying any queued change. Without this the
+	// worker can keep reconfiguring services after their shutdown and rewrite
+	// state files into a data directory the host already considers retired.
+	a.reconfigureMu.Lock()
+	a.reconfigureClosed = true
+	cycle := a.reconfigureCycle
+	a.reconfigureMu.Unlock()
+	if cycle != nil {
+		<-cycle
 	}
 	// Reconcile the last in-memory operation snapshots before shutting down the
 	// journal.  The previous order closed the journal first and then attempted
