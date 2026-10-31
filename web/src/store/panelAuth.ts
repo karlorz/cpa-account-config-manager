@@ -1,4 +1,5 @@
-const ENC_PREFIX = "enc::v1::";
+const ENC_PREFIX_V1 = "enc::v1::";
+const ENC_PREFIX_V2 = "enc::v2::";
 const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
 const STORAGE_KEY = "cli-proxy-auth";
 
@@ -23,21 +24,33 @@ function xorBytes(data: Uint8Array, key: Uint8Array): Uint8Array {
   return output;
 }
 
-function storageKeyMaterial(): Uint8Array {
-  return new TextEncoder().encode(`${SECRET_SALT}|${window.location.host}|${navigator.userAgent}`);
+// The host Management Center stores its session with the same XOR scheme in two
+// flavors: v2 keys on salt|host, while the legacy v1 also folded in the user
+// agent. New entries are written as v2 so a browser UA change cannot orphan them,
+// and both flavors stay readable like the host does.
+function storageKeyMaterial(includeUserAgent: boolean): Uint8Array {
+  const base = `${SECRET_SALT}|${window.location.host}`;
+  return new TextEncoder().encode(includeUserAgent ? `${base}|${navigator.userAgent}` : base);
 }
 
 function decodeStoredValue(value: string): string {
-  if (!value.startsWith(ENC_PREFIX)) return value;
-  const binary = atob(value.slice(ENC_PREFIX.length));
+  let prefix = ENC_PREFIX_V2;
+  let includeUserAgent = false;
+  if (value.startsWith(ENC_PREFIX_V1)) {
+    prefix = ENC_PREFIX_V1;
+    includeUserAgent = true;
+  } else if (!value.startsWith(ENC_PREFIX_V2)) {
+    return value;
+  }
+  const binary = atob(value.slice(prefix.length));
   const encrypted = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  return new TextDecoder().decode(xorBytes(encrypted, storageKeyMaterial()));
+  return new TextDecoder().decode(xorBytes(encrypted, storageKeyMaterial(includeUserAgent)));
 }
 
 function encodeStoredValue(value: string): string {
-  const encrypted = xorBytes(new TextEncoder().encode(value), storageKeyMaterial());
+  const encrypted = xorBytes(new TextEncoder().encode(value), storageKeyMaterial(false));
   const binary = Array.from(encrypted, (character) => String.fromCharCode(character)).join("");
-  return `${ENC_PREFIX}${btoa(binary)}`;
+  return `${ENC_PREFIX_V2}${btoa(binary)}`;
 }
 
 function extractPanelAuth(value: unknown): PanelAuth | null {
