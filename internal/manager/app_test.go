@@ -258,12 +258,11 @@ func TestManagementRegistrationUsesExactFixedRoutes(t *testing.T) {
 }
 
 func TestRegistrationUsesInjectedReleaseMetadata(t *testing.T) {
-	originalVersion := PluginVersion
+	originalVersion := setPluginVersionForTest("1.2.3")
 	originalRepository := PluginRepository
-	PluginVersion = "1.2.3"
 	PluginRepository = "https://github.com/example/cpa-account-config-manager"
 	defer func() {
-		PluginVersion = originalVersion
+		setPluginVersionForTest(originalVersion)
 		PluginRepository = originalRepository
 	}()
 
@@ -282,19 +281,19 @@ func TestRegistrationUsesInjectedReleaseMetadata(t *testing.T) {
 }
 
 func TestNewerAppInstanceQuiescesSupersededBackgroundServices(t *testing.T) {
-	originalVersion := PluginVersion
-	defer func() { PluginVersion = originalVersion }()
+	originalVersion := currentPluginVersion()
+	defer func() { setPluginVersionForTest(originalVersion) }()
 	dataDir := t.TempDir()
 	config := []byte("data_dir: " + dataDir + "\n")
 
-	PluginVersion = "0.3.1202"
+	setPluginVersionForTest("0.3.1202")
 	older := NewApp(&fakeAuthHost{}, []byte("old"))
 	older.runtime.bootstrapEnabled = false
 	older.runtime.heartbeat = 10 * time.Millisecond
 	older.Configure(config)
 	t.Cleanup(older.Close)
 
-	PluginVersion = "0.3.1203"
+	setPluginVersionForTest("0.3.1203")
 	newer := NewApp(&fakeAuthHost{}, []byte("new"))
 	newer.runtime.bootstrapEnabled = false
 	newer.runtime.heartbeat = 10 * time.Millisecond

@@ -194,7 +194,7 @@ func uiOverrideVersionIsNewer(version string) bool {
 	if !uiOverrideVersionLooksComparable(version) {
 		return false
 	}
-	return compareVersions(version, PluginVersion) > 0
+	return compareVersions(version, currentPluginVersion()) > 0
 }
 
 // uiOverrideVersionNote classifies why an override may not be served in fixed, sanitized

@@ -35,6 +35,25 @@ var (
 	PluginRepository = DefaultPluginRepository
 )
 
+// pluginVersionMu guards PluginVersion: tests pin a version while background
+// services from earlier tests may still read it.
+var pluginVersionMu sync.RWMutex
+
+func currentPluginVersion() string {
+	pluginVersionMu.RLock()
+	defer pluginVersionMu.RUnlock()
+	return PluginVersion
+}
+
+// setPluginVersionForTest swaps the linked version and returns the previous one.
+func setPluginVersionForTest(version string) string {
+	pluginVersionMu.Lock()
+	defer pluginVersionMu.Unlock()
+	previous := PluginVersion
+	PluginVersion = version
+	return previous
+}
+
 type Registration struct {
 	SchemaVersion uint32                   `json:"schema_version"`
 	Metadata      cpaapi.Metadata          `json:"metadata"`
@@ -185,7 +204,7 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	autoRetry := NewAutoRetryService()
 	modelRetry := newModelRetryExhaustionTracker()
 	opencodePricing := NewOpenCodePricingService()
-	selfUpdate := NewSelfUpdateService(PluginVersion)
+	selfUpdate := NewSelfUpdateService(currentPluginVersion())
 	codexFingerprints := NewCodexFingerprintProfileService()
 	codexModelControl := NewCodexModelControlService()
 	opencodeModelControl := NewOpenCodeModelControlService()
@@ -232,8 +251,8 @@ func NewApp(host AuthHost, indexHTML []byte) *App {
 	if provider, ok := host.(interface{ RuntimeProcessMarker() string }); ok {
 		runtimeMarker = provider.RuntimeProcessMarker()
 	}
-	runtime := NewRuntimeOwnershipWithMarker(PluginVersion, runtimeMarker)
-	updates := NewUpdateChecker(PluginVersion)
+	runtime := NewRuntimeOwnershipWithMarker(currentPluginVersion(), runtimeMarker)
+	updates := NewUpdateChecker(currentPluginVersion())
 	updates.SetRuntimeOwnership(runtime)
 	force := NewForceSyncEngine(accounts, host, policies, mutations)
 	modelTests.SetExperimentalTransformer(weeklyOverdraft)
@@ -1059,7 +1078,7 @@ func (a *App) Registration() Registration {
 		SchemaVersion: registrationSchema,
 		Metadata: cpaapi.Metadata{
 			Name:             PluginName,
-			Version:          PluginVersion,
+			Version:          currentPluginVersion(),
 			Author:           "cpa-account-config-manager contributors",
 			GitHubRepository: PluginRepository,
 			Logo:             pluginLogoDataURI,

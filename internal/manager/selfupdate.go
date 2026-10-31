@@ -616,7 +616,7 @@ func (s *SelfUpdateService) fetchBounded(ctx context.Context, rawURL string, max
 		return nil, errRequest
 	}
 	request.Header.Set("Accept", accept)
-	request.Header.Set("User-Agent", PluginID+"/"+PluginVersion)
+	request.Header.Set("User-Agent", PluginID+"/"+currentPluginVersion())
 	response, errDo := s.client.Do(request)
 	if errDo != nil {
 		return nil, errDo

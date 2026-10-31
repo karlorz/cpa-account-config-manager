@@ -39,9 +39,8 @@ func resetUIOverrideCache(t *testing.T) {
 // withRunningVersion pins the version the running library reports for one test.
 func withRunningVersion(t *testing.T, version string) {
 	t.Helper()
-	original := PluginVersion
-	PluginVersion = version
-	t.Cleanup(func() { PluginVersion = original })
+	original := setPluginVersionForTest(version)
+	t.Cleanup(func() { setPluginVersionForTest(original) })
 }
 
 // uiOverrideTestApp builds an app whose interface is the embedded copy from the test.

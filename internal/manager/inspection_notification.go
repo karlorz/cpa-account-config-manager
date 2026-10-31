@@ -954,7 +954,7 @@ func (e *InspectionEngine) deliverAnomalyNotification(ctx context.Context, event
 			return anomalyNotificationResult{Attempts: attempt, ReasonCode: "notification_rejected"}
 		}
 		request.Header.Set("Accept", "application/json, text/plain;q=0.9, */*;q=0.1")
-		request.Header.Set("User-Agent", PluginID+"/"+PluginVersion)
+		request.Header.Set("User-Agent", PluginID+"/"+currentPluginVersion())
 		response, errDo := doer.Do(request)
 		if errDo == nil && response != nil {
 			result.StatusCode = boundedHTTPStatus(response.StatusCode)
